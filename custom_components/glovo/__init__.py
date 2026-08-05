@@ -92,6 +92,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
     # auxiliary runtime state and is never exposed as entity state.
     coordinator.ordering_manager = ordering_manager
     coordinator.ordering_surface = ordering_surface
+    # Config-entry update listeners run for both options and internal data. Keep
+    # the options applied to this runtime so token persistence can be ignored
+    # without missing a real scan-interval or ordering-gate change.
+    coordinator.loaded_options = dict(entry.options)
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -115,7 +119,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> bo
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: GlovoConfigEntry) -> None:
-    """Apply either gate closing immediately, then reload for all option changes."""
+    """Reload only when user-facing options changed, not for token persistence."""
+    coordinator = entry.runtime_data
+    if dict(entry.options) == coordinator.loaded_options:
+        return
+
     options = _ordering_options(entry)
     if not (
         options[CONF_ALLOW_ORDERING] is True

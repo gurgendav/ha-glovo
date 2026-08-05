@@ -406,6 +406,39 @@ def test_disabled_or_unacknowledged_entry_keeps_tracking_without_panel(
     assert not ha_runtime.panel_calls
 
 
+def test_token_data_update_does_not_reload_tracking_entities(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    """A rotated API token must not briefly unload every tracking entity."""
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"scan_interval": 15, "allow_ordering": True, "ordering_acknowledged": True}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    manager = entry.runtime_data.ordering_manager
+    generation = manager.generation
+
+    # The coordinator persists a rotated token through async_update_entry, which
+    # invokes this listener even though no integration option changed.
+    entry.data = {"token": "rotated-token"}
+    run(entry.listeners[0](hass, entry))
+
+    assert hass.config_entries.reloaded == []
+    assert manager.enabled is True
+    assert manager.generation == generation
+    assert "glovo-ordering" not in ha_runtime.removed_panels
+
+    # Real option changes still need a reload so the polling interval and gated
+    # runtime are rebuilt from the new options.
+    entry.options = {
+        "scan_interval": 30,
+        "allow_ordering": True,
+        "ordering_acknowledged": True,
+    }
+    run(entry.listeners[0](hass, entry))
+    assert hass.config_entries.reloaded == [entry.entry_id]
+
+
 def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
     ha_runtime: SimpleNamespace,
 ) -> None:
