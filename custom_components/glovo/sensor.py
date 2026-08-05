@@ -159,4 +159,8 @@ class GlovoSensor(GlovoEntity, SensorEntity):
         """Expose the full summary on the primary status sensor."""
         if not self.entity_description.primary:
             return None
-        return dict(self.coordinator.data or {})
+        attributes = dict(self.coordinator.data or {})
+        # Override retained coordinator.data on failures with the coordinator's
+        # fail-closed runtime provenance and immutable build pin.
+        attributes.update(self.coordinator.access_control_attributes())
+        return attributes

@@ -72,7 +72,7 @@ into a Home Assistant REST/command-line sensor. When there are no active
 orders, order_count is 0 and all other fields are None. Example fields:
 
     order_count,           # active orders in orders-list (0 if none)
-    order_id, store_name,
+    order_id, store_name, store_lat, store_lon,
     overall_status,        # our own enum, see ENUMS["overall.status"]
     overall_status_text,
     step, step_text, active, delivered, canceled,
@@ -849,6 +849,8 @@ def empty_active_order_summary() -> dict[str, Any]:
         "order_count": 0,
         "order_id": None,
         "store_name": None,
+        "store_lat": None,
+        "store_lon": None,
         "overall_status": None,
         "overall_status_text": None,
         "step": None,
@@ -893,6 +895,35 @@ def _courier_name_from_message(message: str | None) -> str | None:
 
 def _courier_markers(markers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [m for m in markers if m.get("type") == "COURIER"]
+
+
+def _finite_coordinate(value: Any, *, lower: float, upper: float) -> float | None:
+    """Return a finite, in-range JSON number, rejecting booleans and coercion."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        coordinate = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(coordinate) or not lower <= coordinate <= upper:
+        return None
+    return coordinate
+
+
+def _pickup_coordinates(
+    markers: list[dict[str, Any]],
+) -> tuple[float | None, float | None]:
+    """Return the sole valid PICK_UP position, or a null pair when ambiguous."""
+    pickup_markers = [marker for marker in markers if marker.get("type") == "PICK_UP"]
+    if len(pickup_markers) != 1:
+        return None, None
+
+    marker = pickup_markers[0]
+    latitude = _finite_coordinate(marker.get("latitude"), lower=-90, upper=90)
+    longitude = _finite_coordinate(marker.get("longitude"), lower=-180, upper=180)
+    if latitude is None or longitude is None:
+        return None, None
+    return latitude, longitude
 
 
 def _drop_off_marker(markers: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1258,12 +1289,15 @@ def summarize_active_order(
     )
 
     courier_marker = _pick_nearest_courier_marker(markers)
+    store_lat, store_lon = _pickup_coordinates(markers)
 
     interval_ms = payload.get("pollingIntervalMillis")
 
     return {
         "order_id": order_id,
         "store_name": store_name,
+        "store_lat": store_lat,
+        "store_lon": store_lon,
         "overall_status": _ha_enum(overall),
         "overall_status_text": ENUMS["overall.status"].get(overall),
         "step": _ha_enum(step),

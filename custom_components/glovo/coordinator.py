@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from datetime import timedelta
 from functools import partial
@@ -21,14 +22,34 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_TOKEN,
     DEFAULT_SCAN_INTERVAL,
+    DATA_PROVENANCE_ATTRIBUTE,
     DOMAIN,
     FIXTURES_REL_PATH,
+    INTEGRATION_TRUST_ID,
+    INTEGRATION_TRUST_ID_ATTRIBUTE,
+    PROVENANCE_FIXTURE,
+    PROVENANCE_LIVE_API,
+    PROVENANCE_UNAVAILABLE,
+    PROVENANCE_UNKNOWN,
     TERMINAL_OVERALL_STATUSES,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-type GlovoConfigEntry = ConfigEntry[GlovoDataUpdateCoordinator]
+GlovoConfigEntry = ConfigEntry["GlovoDataUpdateCoordinator"]
+
+_REQUIRED_SUMMARY_KEYS = frozenset(
+    {
+        "active",
+        "courier_lat",
+        "courier_lon",
+        "order_count",
+        "order_id",
+        "overall_status",
+        "store_lat",
+        "store_lon",
+    }
+)
 
 
 class GlovoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -50,6 +71,10 @@ class GlovoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # constant throughout the order lifecycle (original_eta).
         self._original_eta_order_id: int | str | None = None
         self._original_eta_value: str | None = None
+        # This state is authoritative for access control. It is intentionally
+        # separate from coordinator.data because DataUpdateCoordinator retains
+        # stale data after a failed refresh.
+        self._runtime_provenance = PROVENANCE_UNKNOWN
         super().__init__(
             hass,
             _LOGGER,
@@ -59,10 +84,15 @@ class GlovoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _async_update_data(self) -> dict[str, Any]:
+        # Fail closed while this refresh is in flight. The source is promoted
+        # only after its fetch, parse, validation, and local transformations all
+        # complete successfully.
+        self._runtime_provenance = PROVENANCE_UNAVAILABLE
         fallback_order_id = self._cached_order_id
         now = ha_dt.now(ha_dt.get_time_zone(self.hass.config.time_zone))
         fixtures_dir = self.hass.config.path(FIXTURES_REL_PATH)
         if glovo.fixtures_available(fixtures_dir):
+            source = PROVENANCE_FIXTURE
             _LOGGER.warning(
                 "Serving Glovo data from local fixtures in %s (API disabled)",
                 fixtures_dir,
@@ -79,6 +109,7 @@ class GlovoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except (OSError, json.JSONDecodeError, RuntimeError) as err:
                 raise UpdateFailed(f"Invalid Glovo fixture files: {err}") from err
         else:
+            source = PROVENANCE_LIVE_API
             token_json = self.config_entry.data[CONF_TOKEN]
             try:
                 summary, new_token = await self.hass.async_add_executor_job(
@@ -98,6 +129,8 @@ class GlovoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except RuntimeError as err:
                 # Raised when the refresh token is missing/invalid.
                 raise ConfigEntryAuthFailed(str(err)) from err
+            except (TypeError, ValueError) as err:
+                raise UpdateFailed("Malformed Glovo API result") from err
 
             if new_token != token_json:
                 self.hass.config_entries.async_update_entry(
@@ -105,9 +138,88 @@ class GlovoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     data={**self.config_entry.data, CONF_TOKEN: new_token},
                 )
 
-        summary = self._apply_terminal_cache(summary)
-        summary = self._apply_original_eta(summary)
-        self._apply_dynamic_interval(summary)
+        summary = self._validated_summary(summary)
+        try:
+            summary = self._apply_terminal_cache(summary)
+            summary = self._apply_original_eta(summary)
+            self._apply_dynamic_interval(summary)
+        except (TypeError, ValueError, OverflowError) as err:
+            raise UpdateFailed("Malformed Glovo summary values") from err
+
+        # Overwrite any same-named API/fixture keys. Only this coordinator branch
+        # may assert provenance or the build pin.
+        self._runtime_provenance = source
+        summary.update(self.access_control_attributes())
+        return summary
+
+    @property
+    def runtime_provenance(self) -> str:
+        """Return authoritative provenance for the current refresh state."""
+        return self._runtime_provenance
+
+    @property
+    def integration_trust_id(self) -> str:
+        """Return the stable build identifier intended for policy pinning."""
+        return INTEGRATION_TRUST_ID
+
+    def access_control_attributes(self) -> dict[str, str]:
+        """Return fail-closed attributes shared by status and courier entities."""
+        return {
+            DATA_PROVENANCE_ATTRIBUTE: self._runtime_provenance,
+            INTEGRATION_TRUST_ID_ATTRIBUTE: INTEGRATION_TRUST_ID,
+        }
+
+    @staticmethod
+    def _validated_summary(summary: Any) -> dict[str, Any]:
+        """Validate the minimum normalized summary contract without coercion."""
+        if not isinstance(summary, dict) or not summary:
+            raise UpdateFailed("Empty or malformed Glovo summary")
+
+        missing = _REQUIRED_SUMMARY_KEYS.difference(summary)
+        if missing:
+            raise UpdateFailed("Incomplete Glovo summary")
+
+        order_count = summary["order_count"]
+        if isinstance(order_count, bool) or not isinstance(order_count, int):
+            raise UpdateFailed("Invalid Glovo order count")
+        if order_count < 0:
+            raise UpdateFailed("Invalid Glovo order count")
+
+        order_id = summary["order_id"]
+        if isinstance(order_id, bool) or (
+            order_id is not None and not isinstance(order_id, (int, str))
+        ):
+            raise UpdateFailed("Invalid Glovo order identifier")
+        if order_count > 0 and order_id is None:
+            raise UpdateFailed("Active Glovo summary has no order identifier")
+
+        active = summary["active"]
+        if active is not None and not isinstance(active, bool):
+            raise UpdateFailed("Invalid Glovo active flag")
+
+        status = summary["overall_status"]
+        if status is not None and not isinstance(status, str):
+            raise UpdateFailed("Invalid Glovo status")
+
+        coordinate_bounds = {
+            "courier_lat": (-90, 90),
+            "courier_lon": (-180, 180),
+            "store_lat": (-90, 90),
+            "store_lon": (-180, 180),
+        }
+        for key, (lower, upper) in coordinate_bounds.items():
+            value = summary[key]
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise UpdateFailed("Invalid Glovo coordinate")
+            try:
+                valid_coordinate = math.isfinite(value) and lower <= value <= upper
+            except (OverflowError, TypeError):
+                valid_coordinate = False
+            if not valid_coordinate:
+                raise UpdateFailed("Invalid Glovo coordinate")
+
         return summary
 
     def _apply_terminal_cache(self, summary: dict[str, Any]) -> dict[str, Any]:

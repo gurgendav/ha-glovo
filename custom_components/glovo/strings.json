@@ -99,7 +99,8 @@
       "chat_available": { "name": "Chat available" }
     },
     "device_tracker": {
-      "courier": { "name": "Courier location" }
+      "courier": { "name": "Courier location" },
+      "store": { "name": "Store location" }
     }
   },
   "device_automation": {

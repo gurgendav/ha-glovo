@@ -7,7 +7,7 @@ Home Assistant custom integration for the [Glovo](https://glovoapp.com/) deliver
 ## Features
 
 - **Live order tracking** — overall status, delivery stage, store, progress percent, and ETA
-- **Courier on the map** — `device_tracker` with the courier's live GPS position and heading
+- **Courier and store on the map** — `device_tracker` entities for the courier's live GPS position and the order's pickup point
 - **Adaptive polling** — uses your configured interval (default 15 s) when idle, and automatically switches to the API-recommended interval while an order is active
 - **Token auto-refresh** — you enter a refresh token once; the integration keeps the short-lived access token fresh and persists it across restarts
 - **Re-authentication flow** — if the token is ever rejected, Home Assistant prompts you for a new one
@@ -83,7 +83,27 @@ All entities are grouped under one **Glovo** device. When there is no active ord
 
 | Entity | Description |
 |--------|-------------|
-| Courier location | Courier's live GPS position. Extra attributes: `heading`, `courier_name`, `courier_count`. |
+| Courier location | Courier's live GPS position. Extra attributes: `heading`, `courier_name`, privacy-safe two-letter `courier_initials`, and `courier_count`. |
+| Store location | Store/pickup GPS position. Available only when tracking has exactly one valid pickup marker. |
+
+The native map derives its default marker text from initials of the entity's
+friendly-name words; a `device_tracker` cannot set separate marker text. On
+frontend versions that support map `label_mode`, use the `courier_initials`
+attribute for the exact dynamic two-letter marker and a card-level stable store
+label:
+
+```yaml
+type: map
+entities:
+  - entity: device_tracker.glovo_courier_location
+    label_mode: attribute
+    attribute: courier_initials
+  - entity: device_tracker.glovo_store_location
+    name: Store
+```
+
+Existing entity-registry customizations can produce different entity IDs; select
+the two Glovo trackers from the map card editor if yours differ.
 
 ## Order lifecycle
 
