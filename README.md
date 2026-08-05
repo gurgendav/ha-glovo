@@ -15,6 +15,27 @@ Home Assistant custom integration for the [Glovo](https://glovoapp.com/) deliver
 - **Localized** — translations for all Home Assistant UI languages (48 locales)
 - **Device triggers** — one automation trigger per order status (pick from the Glovo device in the UI)
 
+## Experimental mock ordering foundation
+
+This feature branch includes an **experimental, mock-only** ordering foundation for
+local testing. It is **default-off** for new, existing, migrated, restored, reloaded,
+and reauthenticated config entries. An administrator must enable it in the Glovo
+options flow and explicitly acknowledge the warning before an **admin-only** panel
+is registered.
+
+The foundation uses only an in-memory synthetic catalog, local baskets,
+authoritative checkout fixtures, short-lived amount-bound confirmations, and a
+fixture adapter. It is **incapable of live purchases**: there is no checkout HTTP
+transport, paid service/action, button entity, intent, webhook, MQTT command, or
+Glovo cart/order/payment mutation path. The final handler is explicitly named
+`execute_mock_checkout` and returns a result stating that no order was sent.
+Disabling the option immediately closes the gate and invalidates all baskets,
+quotes, confirmations, and unused intents while preserving any durable uncertain
+journal record.
+
+This panel is a development simulation, not an ordering product. Do not use it as
+an indication that a restaurant, courier, payment, or real order exists.
+
 ## Installation
 
 ### HACS

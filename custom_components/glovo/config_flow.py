@@ -18,6 +18,8 @@ from homeassistant.helpers import selector
 
 from . import glovo
 from .const import (
+    CONF_ALLOW_ORDERING,
+    CONF_ORDERING_ACKNOWLEDGED,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
     CONF_TOKEN,
@@ -67,6 +69,7 @@ class GlovoConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the Glovo config flow."""
 
     VERSION = 1
+    MINOR_VERSION = 2
 
     @staticmethod
     @callback
@@ -96,6 +99,8 @@ class GlovoConfigFlow(ConfigFlow, domain=DOMAIN):
                     data={CONF_TOKEN: token_json},
                     options={
                         CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
+                        CONF_ALLOW_ORDERING: False,
+                        CONF_ORDERING_ACKNOWLEDGED: False,
                     },
                 )
 
@@ -134,6 +139,11 @@ class GlovoConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_update_reload_and_abort(
                     entry,
                     data={**entry.data, CONF_TOKEN: token_json},
+                    options={
+                        **entry.options,
+                        CONF_ALLOW_ORDERING: False,
+                        CONF_ORDERING_ACKNOWLEDGED: False,
+                    },
                 )
 
         return self.async_show_form(
@@ -146,20 +156,32 @@ class GlovoConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class GlovoOptionsFlow(OptionsFlow):
-    """Handle Glovo options: scan interval and optional refresh token change."""
+    """Handle tracking options and explicit mock-ordering acknowledgement."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
+        """Manage the options; ordering is never inferred or enabled implicitly."""
         errors: dict[str, str] = {}
         current_interval = self.config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
+        current_allow_ordering = (
+            self.config_entry.options.get(CONF_ALLOW_ORDERING, False) is True
+        )
+        current_acknowledged = (
+            current_allow_ordering
+            and self.config_entry.options.get(CONF_ORDERING_ACKNOWLEDGED, False) is True
+        )
 
         if user_input is not None:
+            allow_ordering = user_input.get(CONF_ALLOW_ORDERING, False) is True
+            acknowledged = user_input.get(CONF_ORDERING_ACKNOWLEDGED, False) is True
+            if allow_ordering and not acknowledged:
+                errors["base"] = "ordering_ack_required"
+
             refresh_token = (user_input.get(CONF_REFRESH_TOKEN) or "").strip()
-            if refresh_token:
+            if refresh_token and not errors:
                 token_json, error = await _validate_refresh_token(
                     self.hass, refresh_token
                 )
@@ -172,7 +194,11 @@ class GlovoOptionsFlow(OptionsFlow):
                     )
             if not errors:
                 return self.async_create_entry(
-                    data={CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL])}
+                    data={
+                        CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
+                        CONF_ALLOW_ORDERING: allow_ordering,
+                        CONF_ORDERING_ACKNOWLEDGED: allow_ordering and acknowledged,
+                    }
                 )
 
         return self.async_show_form(
@@ -183,6 +209,12 @@ class GlovoOptionsFlow(OptionsFlow):
                         CONF_SCAN_INTERVAL, default=current_interval
                     ): _scan_interval_selector(),
                     vol.Optional(CONF_REFRESH_TOKEN): _REFRESH_TOKEN_SELECTOR,
+                    vol.Required(
+                        CONF_ALLOW_ORDERING, default=current_allow_ordering
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_ORDERING_ACKNOWLEDGED, default=current_acknowledged
+                    ): selector.BooleanSelector(),
                 }
             ),
             errors=errors,

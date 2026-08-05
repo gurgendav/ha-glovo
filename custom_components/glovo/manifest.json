@@ -4,6 +4,7 @@
   "codeowners": ["@ClusterM"],
   "config_flow": true,
   "documentation": "https://github.com/ClusterM/ha-glovo",
+  "dependencies": ["frontend", "http", "websocket_api"],
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/ClusterM/ha-glovo/issues",

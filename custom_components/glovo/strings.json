@@ -30,16 +30,19 @@
     "step": {
       "init": {
         "title": "Glovo options",
-        "description": "Leave the refresh token empty to keep the current one.",
+        "description": "Leave the refresh token empty to keep the current one. WARNING: Mock ordering is experimental, admin-only, fixture-only, and incapable of a live purchase. Enabling it exposes only local simulation tools. You must explicitly acknowledge this warning.",
         "data": {
           "scan_interval": "Update interval (seconds)",
-          "refresh_token": "New refresh token (optional)"
+          "refresh_token": "New refresh token (optional)",
+          "allow_ordering": "Enable experimental mock-only ordering panel",
+          "ordering_acknowledged": "I understand this is a local simulation and cannot make a live purchase"
         }
       }
     },
     "error": {
       "invalid_auth": "Invalid refresh token.",
-      "cannot_connect": "Failed to connect to Glovo."
+      "cannot_connect": "Failed to connect to Glovo.",
+      "ordering_ack_required": "Explicitly acknowledge the mock-only safety warning before enabling."
     }
   },
   "entity": {

@@ -37,6 +37,8 @@ CONF_TOKEN = "token"
 
 # Options keys.
 CONF_SCAN_INTERVAL = "scan_interval"
+CONF_ALLOW_ORDERING = "allow_ordering"
+CONF_ORDERING_ACKNOWLEDGED = "ordering_acknowledged"
 
 DEFAULT_SCAN_INTERVAL = 15
 MIN_SCAN_INTERVAL = 5
