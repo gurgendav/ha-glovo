@@ -329,8 +329,10 @@ def _strip_html(text: str | None) -> str:
 class GlovoApiError(RuntimeError):
     def __init__(self, status: int, body: Any):
         self.status = status
-        self.body = body
-        super().__init__(f"Glovo API error {status}: {body}")
+        # Keep response material private and out of repr/logging. Callers classify
+        # solely by the allowlisted HTTP status and never need the provider body.
+        del body
+        super().__init__(f"Glovo API error {status}")
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any]:
@@ -399,6 +401,27 @@ def _request_json(
         raise GlovoApiError(exc.code, payload) from exc
 
 
+def single_attempt_authed_get(
+    method: str,
+    access_token: str,
+    path: str,
+    query: dict[str, str],
+) -> Any:
+    """Perform exactly one authenticated GET for the serialized session.
+
+    Path/query allowlisting belongs to ``SerializedApiSession``. This narrow
+    transport seam adds no refresh, retry, fallback, or mutation behavior.
+    """
+    if method != "GET":
+        raise RuntimeError("Only GET is available through this request seam")
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise RuntimeError("Invalid API path")
+    url = f"{API_URL}{path}"
+    if query:
+        url = f"{url}?{urllib.parse.urlencode(query)}"
+    return _request_json("GET", url, access_token=access_token)
+
+
 def refresh_access_token(refresh_token: str) -> tuple[str, str, int]:
     data = _request_json(
         "POST",
@@ -408,7 +431,7 @@ def refresh_access_token(refresh_token: str) -> tuple[str, str, int]:
     access_token = data.get("accessToken")
     new_refresh_token = data.get("refreshToken")
     if not access_token or not new_refresh_token:
-        raise RuntimeError(f"Unexpected refresh response: {data}")
+        raise RuntimeError("Unexpected refresh response")
     return access_token, new_refresh_token, _access_token_expires_at(access_token)
 
 
@@ -1836,7 +1859,7 @@ def main(argv: list[str] | None = None) -> int:
         emit(data)
         return 0
     except GlovoApiError as exc:
-        print(json.dumps(exc.body, ensure_ascii=False, indent=2), file=sys.stderr)
+        print(f"Glovo API error {exc.status}", file=sys.stderr)
         return 1
     except Exception as exc:
         print(str(exc), file=sys.stderr)

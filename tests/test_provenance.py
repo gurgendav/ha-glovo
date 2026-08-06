@@ -244,6 +244,7 @@ def integration_modules() -> tuple[ModuleType, ModuleType, ModuleType, _FakeGlov
         spec.loader.exec_module(module)
         return module
 
+    load("api_session")
     coordinator = load("coordinator")
     tracker = load("device_tracker")
     status_sensor = load("sensor")

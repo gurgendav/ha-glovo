@@ -54,7 +54,6 @@ _SAFE_DIAGNOSTIC_KEYS = frozenset(
         "basketversion",
         "checkoutsessionid",
         "checkoutversion",
-        "sessionid",
         "templateid",
         "versionid",
     }
@@ -70,6 +69,11 @@ _PRIVATE_KEY_NAMES = frozenset(
         "oauth",
         "pan",
         "paymentid",
+        "paymentinstrumentid",
+        "orderref",
+        "sessionid",
+        "storeaddressid",
+        "storeid",
     }
 )
 _SECRET_KEY_NAMES = frozenset(

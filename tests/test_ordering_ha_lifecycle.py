@@ -252,9 +252,10 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     coordinator_module = _module(f"{prefix}.coordinator")
 
     class GlovoDataUpdateCoordinator:
-        def __init__(self, hass: Any, entry: Any) -> None:
+        def __init__(self, hass: Any, entry: Any, api_session: Any = None) -> None:
             self.hass = hass
             self.entry = entry
+            self.api_session = api_session
             self.refreshed = False
 
         async def async_config_entry_first_refresh(self) -> None:
@@ -271,10 +272,16 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
     glovo_api.GlovoApiError = GlovoApiError
     glovo_api.build_token_json = lambda token: f"token-json:{token}"
+    glovo_api.ensure_access_token = lambda token: ("access-fixture", token)
+    glovo_api.single_attempt_authed_get = lambda method, access, path, query: {}
     monkeypatch.setitem(sys.modules, glovo_api.__name__, glovo_api)
 
     for module_name in (
         "ordering_models",
+        "ordering_contracts",
+        "api_session",
+        "ordering_account",
+        "ordering_live_catalog",
         "ordering_basket",
         "ordering_quote",
         "ordering_catalog",
@@ -316,6 +323,8 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
         def async_update_entry(self, entry: Any, **kwargs: Any) -> None:
             self.updated.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
             if "options" in kwargs:
                 entry.options = kwargs["options"]
             if "version" in kwargs:
@@ -580,6 +589,31 @@ def test_token_data_update_does_not_reload_tracking_entities(
     }
     run(entry.listeners[0](hass, entry))
     assert hass.config_entries.reloaded == [entry.entry_id]
+
+
+def test_shared_session_token_rotation_persists_without_reload_or_generation_bump(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"scan_interval": 15, "allow_ordering": True, "ordering_acknowledged": True}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    coordinator = entry.runtime_data
+    generation = coordinator.ordering_manager.generation
+    session = coordinator.api_session
+    assert coordinator._account_client._session is session
+    assert coordinator._catalog_client._session is session
+
+    session._ensure_token = lambda token: ("access-rotated", "rotated-token-json")
+    session._transport = lambda method, access, path, query: {"ok": True}
+    assert run(session.async_get("account", "/v3/me")) == {"ok": True}
+    assert entry.data["token"] == "rotated-token-json"
+    run(entry.listeners[0](hass, entry))
+
+    assert hass.config_entries.reloaded == []
+    assert coordinator.ordering_manager.generation == generation
+    assert coordinator.ordering_manager.enabled is True
 
 
 def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(

@@ -8,12 +8,21 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_ALLOW_ORDERING, CONF_ORDERING_ACKNOWLEDGED, PLATFORMS
+from . import glovo
+from .api_session import SerializedApiSession
+from .const import (
+    CONF_ALLOW_ORDERING,
+    CONF_ORDERING_ACKNOWLEDGED,
+    CONF_TOKEN,
+    PLATFORMS,
+)
 from .coordinator import GlovoConfigEntry, GlovoDataUpdateCoordinator
 from .ordering_adapter import MockCheckoutAdapter
 from .ordering_catalog import SyntheticCatalogProvider
 from .ordering_journal import AttemptJournal, HomeAssistantJournalStorage
 from .ordering_manager import OrderingManager
+from .ordering_account import AccountClient
+from .ordering_live_catalog import LiveCatalogClient
 from .ordering_state import (
     DurableOrderingState,
     HomeAssistantOrderingStateStorage,
@@ -37,9 +46,6 @@ def _ordering_options(entry: GlovoConfigEntry) -> dict[str, object]:
 
 async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> bool:
     """Set up tracking and an independently gated fixture-only ordering runtime."""
-    coordinator = GlovoDataUpdateCoordinator(hass, entry)
-    await coordinator.async_config_entry_first_refresh()
-
     durable_state = DurableOrderingState(
         HomeAssistantOrderingStateStorage(hass, entry.entry_id)
     )
@@ -66,6 +72,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         durable_state=durable_state,
     )
     await ordering_manager.async_initialize()
+
+    async def persist_token(token_json: str) -> None:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_TOKEN: token_json},
+        )
+
+    # One lock owns access/rotating-refresh-token use and persistence for both
+    # legacy tracking and every private live-ordering GET client.
+    api_session = SerializedApiSession(
+        token_source=lambda: entry.data[CONF_TOKEN],
+        persist_token=persist_token,
+        ensure_token=glovo.ensure_access_token,
+        transport=glovo.single_attempt_authed_get,
+        executor=hass.async_add_executor_job,
+    )
+    coordinator = GlovoDataUpdateCoordinator(hass, entry, api_session)
+    coordinator._account_client = AccountClient(api_session)  # noqa: SLF001
+    coordinator._catalog_client = LiveCatalogClient(api_session)  # noqa: SLF001
 
     ordering_surface = None
     if ordering_manager.enabled or ordering_manager.recovery_required:
@@ -97,11 +122,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
     # auxiliary runtime state and is never exposed as entity state.
     coordinator.ordering_manager = ordering_manager
     coordinator.ordering_surface = ordering_surface
+    coordinator.api_session = api_session
     # Config-entry update listeners run for both options and internal data. Keep
     # the options applied to this runtime so token persistence can be ignored
     # without missing a real scan-interval or ordering-gate change.
     coordinator.loaded_options = dict(entry.options)
     entry.runtime_data = coordinator
+    await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
@@ -111,6 +138,12 @@ async def _async_shutdown_ordering(entry: GlovoConfigEntry) -> None:
     coordinator = entry.runtime_data
     manager: OrderingManager | None = getattr(coordinator, "ordering_manager", None)
     surface: Any = getattr(coordinator, "ordering_surface", None)
+    account_client: Any = getattr(coordinator, "_account_client", None)
+    api_session: Any = getattr(coordinator, "api_session", None)
+    if account_client is not None:
+        account_client.invalidate()
+    if api_session is not None:
+        api_session.invalidate()
     if manager is not None:
         await manager.async_set_enabled(False)
     if surface is not None:

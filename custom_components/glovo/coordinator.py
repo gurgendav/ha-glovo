@@ -17,6 +17,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as ha_dt
 
 from . import glovo
+from .api_session import ApiSessionError, SerializedApiSession
 from .const import (
     CACHE_TERMINAL_HOLD_SEC,
     CONF_SCAN_INTERVAL,
@@ -57,7 +58,12 @@ class GlovoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     config_entry: GlovoConfigEntry
 
-    def __init__(self, hass: HomeAssistant, entry: GlovoConfigEntry) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: GlovoConfigEntry,
+        api_session: SerializedApiSession | None = None,
+    ) -> None:
         """Initialize the coordinator."""
         self._base_interval = timedelta(
             seconds=entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
@@ -75,6 +81,7 @@ class GlovoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # separate from coordinator.data because DataUpdateCoordinator retains
         # stale data after a failed refresh.
         self._runtime_provenance = PROVENANCE_UNKNOWN
+        self.api_session = api_session
         super().__init__(
             hass,
             _LOGGER,
@@ -112,14 +119,30 @@ class GlovoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             source = PROVENANCE_LIVE_API
             token_json = self.config_entry.data[CONF_TOKEN]
             try:
-                summary, new_token = await self.hass.async_add_executor_job(
-                    partial(
-                        glovo.get_last_active_order_summary,
-                        token_json,
-                        fallback_order_id=fallback_order_id,
-                        now=now,
+                if self.api_session is not None:
+                    summary = await self.api_session.async_legacy_read(
+                        lambda current_token: glovo.get_last_active_order_summary(
+                            current_token,
+                            fallback_order_id=fallback_order_id,
+                            now=now,
+                        )
                     )
-                )
+                    new_token = token_json
+                else:
+                    summary, new_token = await self.hass.async_add_executor_job(
+                        partial(
+                            glovo.get_last_active_order_summary,
+                            token_json,
+                            fallback_order_id=fallback_order_id,
+                            now=now,
+                        )
+                    )
+            except ApiSessionError as err:
+                if err.category == "auth" or err.status in (401, 403):
+                    raise ConfigEntryAuthFailed(
+                        "Glovo token rejected, re-authentication required"
+                    ) from err
+                raise UpdateFailed("Glovo API read failed") from err
             except glovo.GlovoApiError as err:
                 if err.status in (401, 403):
                     raise ConfigEntryAuthFailed(
@@ -132,7 +155,7 @@ class GlovoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except (TypeError, ValueError) as err:
                 raise UpdateFailed("Malformed Glovo API result") from err
 
-            if new_token != token_json:
+            if self.api_session is None and new_token != token_json:
                 self.hass.config_entries.async_update_entry(
                     self.config_entry,
                     data={**self.config_entry.data, CONF_TOKEN: new_token},
