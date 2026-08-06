@@ -12,6 +12,14 @@ class LiveOrderingUnavailable(RuntimeError):
     """Raised before any attempt when execution is not explicitly fixture-only."""
 
 
+class FixtureHTTP5xx(RuntimeError):
+    """Mock-only stand-in for an ambiguous provider 5xx after dispatch."""
+
+
+class FixtureMalformedResponse(RuntimeError):
+    """Mock-only stand-in for a malformed post-dispatch provider response."""
+
+
 @dataclass(frozen=True, slots=True)
 class MockCheckoutResult:
     """Clearly synthetic deterministic result."""

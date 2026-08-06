@@ -637,7 +637,7 @@ def test_journal_restart_recovery_corruption_and_uncertain_preservation(
 
     restarted = journal_module.AttemptJournal(storage, clock=clock)
     records = run(restarted.async_load())
-    assert records[0].state is journal_module.JournalState.UNCERTAIN
+    assert records[0].state is journal_module.JournalState.LEGACY_MOCK_NO_REMOTE_EFFECT
     manager, _, _, _ = run(
         make_manager(
             ordering,
@@ -649,7 +649,7 @@ def test_journal_restart_recovery_corruption_and_uncertain_preservation(
     )
     run(manager.async_set_enabled(False))
     assert any(
-        item.state is journal_module.JournalState.UNCERTAIN
+        item.state is journal_module.JournalState.LEGACY_MOCK_NO_REMOTE_EFFECT
         for item in manager.journal.records
     )
 
@@ -835,7 +835,7 @@ def test_generation_is_durable_monotonic_across_disable_unload_and_rebuild(
     ordering: dict[str, ModuleType],
 ) -> None:
     state_storage = ordering["ordering_state"].MemoryOrderingStateStorage(
-        {"version": 1, "generation": 9, "safety_fault": False}
+        {"version": 2, "generation": 9, "manual_check_required": False, "integrity_fault": False}
     )
     options = {"allow_ordering": True, "ordering_acknowledged": True}
     manager, _, journal_storage = run(
@@ -911,9 +911,10 @@ def test_durable_generation_race_is_rechecked_before_mock_adapter(
         manager.async_prepare_mock_confirmation(user, generation, quote["fingerprint"])
     )
     state_storage.data = {
-        "version": 1,
+        "version": 2,
         "generation": generation + 1,
-        "safety_fault": False,
+        "manual_check_required": False,
+        "integrity_fault": False,
     }
     with pytest.raises(ordering["ordering_manager"].OrderingSecurityFault):
         run(
@@ -926,7 +927,7 @@ def test_durable_generation_race_is_rechecked_before_mock_adapter(
         )
     assert adapter.execution_count == 0
     assert state_storage.data["generation"] >= generation + 2
-    assert state_storage.data["safety_fault"] is True
+    assert state_storage.data["integrity_fault"] is True
 
 
 class FailingSaveStorage:
@@ -1027,11 +1028,12 @@ def test_post_execution_cancellation_recovers_uncertain_latches_and_blocks_rebui
         assert manager._quotes == {}
         assert manager._confirmations == {}
         assert state_storage.data == {
-            "version": 1,
+            "version": 2,
             "generation": generation + 1,
-            "safety_fault": True,
+            "manual_check_required": False,
+            "integrity_fault": True,
         }
-        assert journal_base.data["records"][-1]["state"] == "UNCERTAIN"
+        assert journal_base.data["records"][-1]["state"] == "LEGACY_MOCK_NO_REMOTE_EFFECT"
 
         with pytest.raises(manager_module.OrderingSecurityFault):
             await manager.async_prepare_mock_confirmation(
@@ -1090,9 +1092,9 @@ def test_repeated_caller_cancellation_cannot_interrupt_uncertain_recovery(
         cancelling.release_recovery.set()
         with pytest.raises(asyncio.CancelledError):
             await execution
-        assert journal_base.data["records"][-1]["state"] == "UNCERTAIN"
+        assert journal_base.data["records"][-1]["state"] == "LEGACY_MOCK_NO_REMOTE_EFFECT"
         assert state_storage.data["generation"] == generation + 1
-        assert state_storage.data["safety_fault"] is True
+        assert state_storage.data["integrity_fault"] is True
         assert manager.enabled is False
         assert manager.security_fault is True
 
@@ -1125,7 +1127,7 @@ def test_cancelled_final_save_with_failed_uncertain_write_still_latches_safety_s
         assert manager.enabled is False
         assert manager.security_fault is True
         assert state_storage.data["generation"] == generation + 1
-        assert state_storage.data["safety_fault"] is True
+        assert state_storage.data["integrity_fault"] is True
         assert journal_base.data["records"][-1]["state"] == "DISPATCHING"
 
         rebuilt, rebuilt_adapter, _ = await build_with_durable_state(
@@ -1134,7 +1136,7 @@ def test_cancelled_final_save_with_failed_uncertain_write_still_latches_safety_s
         assert rebuilt.enabled is False
         assert rebuilt.security_fault is True
         assert rebuilt_adapter.execution_count == 0
-        assert journal_base.data["records"][-1]["state"] == "UNCERTAIN"
+        assert journal_base.data["records"][-1]["state"] == "LEGACY_MOCK_NO_REMOTE_EFFECT"
         with pytest.raises(manager_module.OrderingSecurityFault):
             await rebuilt.async_get_basket(user, generation)
 
@@ -1144,7 +1146,9 @@ def test_cancelled_final_save_with_failed_uncertain_write_still_latches_safety_s
 def test_generation_storage_failure_never_publishes_advance_and_rebuild_stays_blocked(
     ordering: dict[str, ModuleType],
 ) -> None:
-    state_base = ordering["ordering_state"].MemoryOrderingStateStorage()
+    state_base = ordering["ordering_state"].MemoryOrderingStateStorage(
+        {"version": 2, "generation": 1, "manual_check_required": False, "integrity_fault": False}
+    )
     failing_state = FailingSaveStorage(state_base, 1)
     journal_storage = ordering["ordering_journal"].MemoryJournalStorage()
     manager, _, _ = run(
@@ -1172,7 +1176,7 @@ def test_generation_storage_failure_never_publishes_advance_and_rebuild_stays_bl
     )
     assert rebuilt.enabled is False
     assert rebuilt.security_fault is True
-    assert state_base.data["safety_fault"] is True
+    assert state_base.data["integrity_fault"] is True
 
 
 @pytest.mark.parametrize("fail_on,expected_executions", [(1, 0), (2, 0), (3, 0), (4, 1)])
@@ -1205,9 +1209,8 @@ def test_every_journal_write_failure_latches_and_blocks_retry_and_rebuild(
         )
     assert adapter.execution_count == expected_executions
     assert manager.enabled is False
-    assert state_storage.data["safety_fault"] is True
-    with pytest.raises(ordering["ordering_manager"].OrderingSecurityFault):
-        run(manager.async_state(user))
+    assert state_storage.data["integrity_fault"] is True
+    assert run(manager.async_state(user))["integrityFault"] is True
 
     rebuilt, rebuilt_adapter, _ = run(
         build_with_durable_state(
@@ -1219,7 +1222,7 @@ def test_every_journal_write_failure_latches_and_blocks_retry_and_rebuild(
     assert rebuilt_adapter.execution_count == 0
     if expected_executions:
         assert any(
-            record.state is journal_module.JournalState.UNCERTAIN
+            record.state is journal_module.JournalState.LEGACY_MOCK_NO_REMOTE_EFFECT
             for record in rebuilt.journal.records
         )
 
@@ -1427,3 +1430,251 @@ def test_full_added_ordering_source_has_no_network_or_remote_mutation_capability
         "xmlhttprequest",
     )
     assert not [needle for needle in forbidden if needle in combined]
+
+
+def _live_manual_record() -> dict[str, Any]:
+    return {
+        "attempt_id": "attempt-live-one",
+        "state": "MANUAL_CHECK_REQUIRED",
+        "created_at": 1_800_000_000.0,
+        "updated_at": 1_800_000_010.0,
+        "generation": 4,
+        "amount_minor": 624000,
+        "currency": "AMD",
+        "execution_mode": "live",
+        "request_fingerprint": "f" * 64,
+        "provider_session_hash": "a" * 64,
+        "checkout_id": None,
+        "dispatch_started_at": 1_800_000_005.0,
+        "failure_class": "connection_reset",
+        "resolution": None,
+        "evidence_source": None,
+        "record_revision": 3,
+        "store_display_name": "Fixture Kitchen",
+        "item_count": 1,
+        "item_summary": "1 item",
+        "masked_payment_label": "Test card •••• 4242",
+        "masked_address_alias": "Saved destination ••••",
+        "last_reviewed_at": None,
+    }
+
+
+def _manual_state(
+    record: dict[str, Any], *, generation: int = 4, resolution: str | None = None
+) -> dict[str, Any]:
+    return {
+        "version": 2,
+        "generation": generation,
+        "manual_check_required": True,
+        "integrity_fault": False,
+        "manual_binding": {
+            "attempt_id": record["attempt_id"],
+            "record_revision": record["record_revision"],
+            "generation": generation,
+            "resolution": resolution,
+        },
+    }
+
+
+def test_v2_restart_converts_only_live_inflight_to_manual_check(
+    ordering: dict[str, ModuleType],
+) -> None:
+    journal_module = ordering["ordering_journal"]
+    live = {
+        **_live_manual_record(),
+        "state": "DISPATCHING",
+        "record_revision": 2,
+        "failure_class": None,
+    }
+    mock = {
+        **live,
+        "attempt_id": "attempt-mock-one",
+        "execution_mode": "mock",
+        "state": "VERIFYING",
+    }
+    storage = journal_module.MemoryJournalStorage(
+        {"version": 2, "records": [live, mock]}
+    )
+    journal = journal_module.AttemptJournal(
+        storage, clock=FakeClock(1_800_000_100.0)
+    )
+    records = run(journal.async_load())
+    assert records[0].state is journal_module.JournalState.MANUAL_CHECK_REQUIRED
+    assert records[0].failure_class == "restart_inflight"
+    assert records[1].state is journal_module.JournalState.LEGACY_MOCK_NO_REMOTE_EFFECT
+
+
+def test_legacy_v1_migration_is_explicit_mock_only_and_preserves_integrity_fault(
+    ordering: dict[str, ModuleType],
+) -> None:
+    journal_module = ordering["ordering_journal"]
+    legacy = {
+        "version": 1,
+        "records": [
+            {
+                "attempt_id": "attempt-old-inflight",
+                "state": "DISPATCHING",
+                "created_at": 1_800_000_000.0,
+                "updated_at": 1_800_000_001.0,
+                "generation": 2,
+                "quote_fingerprint": "b" * 64,
+                "outcome": None,
+            },
+            {
+                "attempt_id": "attempt-old-fault",
+                "state": "SECURITY_FAULT",
+                "created_at": 1_800_000_000.0,
+                "updated_at": 1_800_000_001.0,
+                "generation": 2,
+                "quote_fingerprint": "c" * 64,
+                "outcome": "authority_storage_failure",
+            },
+        ],
+    }
+    storage = journal_module.MemoryJournalStorage(legacy)
+    journal = journal_module.AttemptJournal(
+        storage, clock=FakeClock(1_800_000_100.0)
+    )
+    records = run(journal.async_load())
+    assert journal.load_source == "v1"
+    assert records[0].state is journal_module.JournalState.LEGACY_MOCK_NO_REMOTE_EFFECT
+    assert records[0].resolution == "legacy_mock_no_remote_effect"
+    assert records[1].state is journal_module.JournalState.INTEGRITY_FAULT
+    assert storage.legacy_data == legacy
+    assert storage.data["version"] == 2
+
+
+def test_manual_resolution_is_challenged_generation_bumping_and_privacy_safe(
+    ordering: dict[str, ModuleType],
+) -> None:
+    journal_module = ordering["ordering_journal"]
+    state_module = ordering["ordering_state"]
+    journal_storage = journal_module.MemoryJournalStorage(
+        {"version": 2, "records": [_live_manual_record()]}
+    )
+    state_storage = state_module.MemoryOrderingStateStorage(
+        _manual_state(_live_manual_record())
+    )
+    manager, adapter, _ = run(
+        build_with_durable_state(
+            ordering,
+            state_storage,
+            journal_storage=journal_storage,
+            clock=FakeClock(1_800_000_100.0),
+        )
+    )
+    user = admin(ordering)
+    assert manager.manual_check_required is True
+    with pytest.raises(ordering["ordering_manager"].OrderingManualCheckRequired):
+        run(manager.async_add_item(
+            user,
+            manager.generation,
+            store_key="fixture-store",
+            product_key="fixture-meal",
+            variant_key="standard",
+            modifier_keys=(),
+            quantity=1,
+        ))
+    checks = run(manager.async_list_manual_checks(user))
+    assert len(checks["attempts"]) == 1
+    public = checks["attempts"][0]
+    assert set(public) == {
+        "attemptRef", "state", "recordRevision", "submittedAt",
+        "storeDisplayName", "amountMinor", "currency", "itemCount",
+        "itemSummary", "maskedPaymentLabel", "maskedAddressAlias",
+        "hasCheckoutId", "ambiguityReason", "lastReviewedAt",
+    }
+    forbidden = (
+        "fingerprint", "generation", "session", "checkout_id", "selection",
+        "coordinates", "token", "cookie", "idempotency",
+    )
+    encoded = json.dumps(public).casefold()
+    assert not [value for value in forbidden if value in encoded]
+
+    prepared = run(manager.async_prepare_manual_resolution(
+        user,
+        attempt_id="attempt-live-one",
+        expected_revision=3,
+        expected_state="MANUAL_CHECK_REQUIRED",
+        resolution="found_failed_or_cancelled",
+    ))
+    old_generation = manager.generation
+    result = run(manager.async_resolve_manual_check(
+        user,
+        attempt_id="attempt-live-one",
+        expected_revision=3,
+        expected_state="MANUAL_CHECK_REQUIRED",
+        resolution="found_failed_or_cancelled",
+        challenge=prepared["challenge"],
+        acknowledged=True,
+    ))
+    assert result["resolved"] is True
+    assert manager.generation == old_generation + 1
+    assert manager.manual_check_required is False
+    assert state_storage.data["manual_check_required"] is False
+    assert adapter.execution_count == 0
+    with pytest.raises(ordering["ordering_manager"].InvalidManualResolution):
+        run(manager.async_resolve_manual_check(
+            user,
+            attempt_id="attempt-live-one",
+            expected_revision=3,
+            expected_state="MANUAL_CHECK_REQUIRED",
+            resolution="found_failed_or_cancelled",
+            challenge=prepared["challenge"],
+            acknowledged=True,
+        ))
+
+
+def test_still_unknown_keeps_manual_block_and_multiple_live_unknowns_are_integrity_fault(
+    ordering: dict[str, ModuleType],
+) -> None:
+    journal_module = ordering["ordering_journal"]
+    state_module = ordering["ordering_state"]
+    record = _live_manual_record()
+    journal_storage = journal_module.MemoryJournalStorage(
+        {"version": 2, "records": [record]}
+    )
+    state_storage = state_module.MemoryOrderingStateStorage(_manual_state(record))
+    manager, _, _ = run(build_with_durable_state(
+        ordering,
+        state_storage,
+        journal_storage=journal_storage,
+        clock=FakeClock(1_800_000_100.0),
+    ))
+    user = admin(ordering)
+    prepared = run(manager.async_prepare_manual_resolution(
+        user,
+        attempt_id=record["attempt_id"],
+        expected_revision=record["record_revision"],
+        expected_state=record["state"],
+        resolution="still_unknown",
+    ))
+    result = run(manager.async_resolve_manual_check(
+        user,
+        attempt_id=record["attempt_id"],
+        expected_revision=record["record_revision"],
+        expected_state=record["state"],
+        resolution="still_unknown",
+        challenge=prepared["challenge"],
+        acknowledged=True,
+    ))
+    assert result["resolved"] is False
+    assert manager.manual_check_required is True
+
+    second = {**record, "attempt_id": "attempt-live-two"}
+    bad_journal = journal_module.MemoryJournalStorage(
+        {"version": 2, "records": [record, second]}
+    )
+    bad_state = state_module.MemoryOrderingStateStorage(_manual_state(record))
+    bad_manager, _, _ = run(build_with_durable_state(
+        ordering, bad_state, journal_storage=bad_journal
+    ))
+    assert bad_manager.integrity_fault is True
+    with pytest.raises(ordering["ordering_manager"].OrderingSecurityFault):
+        run(bad_manager.async_prepare_manual_resolution(
+            user,
+            attempt_id=record["attempt_id"],
+            expected_revision=record["record_revision"],
+            expected_state=record["state"],
+            resolution="found_succeeded",
+        ))

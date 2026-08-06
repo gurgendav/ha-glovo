@@ -68,10 +68,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
     await ordering_manager.async_initialize()
 
     ordering_surface = None
-    if ordering_manager.enabled:
+    if ordering_manager.enabled or ordering_manager.recovery_required:
         try:
-            # Import HA frontend/HTTP/WebSocket APIs only for the literal two-gate
-            # enabled path. Tracking remains available if an API is unavailable.
+            # Recovery remains registered while a manual/integrity block exists,
+            # even when the default-off mutation gates are closed.
             from .ordering_ha import HomeAssistantOrderingSurfaceAdapter
             from .ordering_surface import OrderingSurface
 
@@ -80,9 +80,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
                 HomeAssistantOrderingSurfaceAdapter(hass),
             )
             await ordering_surface.async_setup()
-        except Exception:  # noqa: BLE001 - optional UI must not break tracking
+        except Exception:  # noqa: BLE001 - recovery failure must fail setup closed
+            if ordering_manager.recovery_required:
+                _LOGGER.exception(
+                    "Glovo ordering recovery API unavailable; setup remains blocked"
+                )
+                raise
             _LOGGER.exception(
-                "Glovo mock ordering UI unavailable; tracking will continue safely"
+                "Glovo mock ordering API unavailable; tracking will continue safely"
             )
             await ordering_manager.async_set_enabled(False)
             ordering_surface = None
@@ -109,6 +114,9 @@ async def _async_shutdown_ordering(entry: GlovoConfigEntry) -> None:
     if manager is not None:
         await manager.async_set_enabled(False)
     if surface is not None:
+        # HA retains WebSocket command shells. Every unload/reload boundary must
+        # remove their callables; a subsequent setup restores recovery from the
+        # durable journal/latch before exposing any normal ordering handlers.
         await surface.async_unload()
 
 

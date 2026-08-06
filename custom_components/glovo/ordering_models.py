@@ -32,6 +32,23 @@ _PHYSICAL_ADDRESS_WORD_RE = re.compile(
     r"floor|highway|house|hwy|lane|ln|postal|road|rd|square|sq|street|st|unit|zip)\b",
     re.IGNORECASE,
 )
+_SENSITIVE_DISPLAY_RE = re.compile(
+    r"(?:\b(?:access[_ -]?token|api[_ -]?key|authorization|bearer|cookie|credential|"
+    r"idempotency|oauth|password|refresh[_ -]?token|secret|set[_ -]?cookie)\b|"
+    r"\b(?:address|checkout|customer|order|payment|provider|selection|session)"
+    r"(?:[_ -]?(?:id|key|ref|reference))\b|"
+    r"\b(?:addr|chk|cus|ord|pay|prov|sess)_[A-Za-z0-9_-]{3,}\b)",
+    re.IGNORECASE,
+)
+_RAW_ERROR_RE = re.compile(
+    r"\b(?:exception|traceback|stack\s*trace|errno|response\s*body|raw\s*error)\b|"
+    r"\bfile\s+\"[^\"]+\",\s+line\s+\d+",
+    re.IGNORECASE,
+)
+_BODY_FRAGMENT_RE = re.compile(
+    r"[{}\[\]<>]|(?:^|\s)[A-Za-z0-9_.-]+\s*[=:]\s*\S|https?://",
+    re.IGNORECASE,
+)
 _SAFE_DIAGNOSTIC_KEYS = frozenset(
     {
         "basketversion",
@@ -110,6 +127,55 @@ def _safe_label(value: object, name: str, *, maximum: int = 100) -> str:
     return normalized
 
 
+def _privacy_safe_display_label(
+    value: object,
+    name: str,
+    *,
+    maximum: int,
+    reject_physical_address: bool = True,
+) -> str:
+    """Construct a display-only label from a strict non-sensitive allowlist."""
+    label = _safe_label(value, name, maximum=maximum)
+    if (
+        _SENSITIVE_DISPLAY_RE.search(label)
+        or _RAW_ERROR_RE.search(label)
+        or _BODY_FRAGMENT_RE.search(label)
+        or (reject_physical_address and _PHYSICAL_ADDRESS_WORD_RE.search(label))
+    ):
+        raise ValueError(f"{name} contains private or diagnostic data")
+    return label
+
+
+@dataclass(frozen=True, slots=True)
+class StoreDisplayName:
+    """Sanitized durable store label, never a provider identifier or address."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "value",
+            _privacy_safe_display_label(
+                self.value, "store display name", maximum=80
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ItemDisplaySummary:
+    """Sanitized aggregate item description with no request/body fragments."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "value",
+            _privacy_safe_display_label(self.value, "item summary", maximum=100),
+        )
+
+
 def _redacts_diagnostic_key(value: object) -> bool:
     """Match common private/credential key spellings without hiding safe model IDs."""
     normalized = re.sub(r"[^a-z0-9]", "", str(value).casefold())
@@ -156,7 +222,9 @@ class SavedAddressSummary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selection_key", _safe_key(self.selection_key, "address key"))
-        label = _safe_label(self.masked_label, "address label", maximum=45)
+        label = _privacy_safe_display_label(
+            self.masked_label, "address label", maximum=45
+        )
         alias = label.removesuffix(" ••••")
         if not _MASKED_ADDRESS_RE.fullmatch(label) or _PHYSICAL_ADDRESS_WORD_RE.search(alias):
             raise ValueError("address label must be a short opaque alias ending in ••••")
@@ -178,7 +246,9 @@ class MaskedPaymentSummary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selection_key", _safe_key(self.selection_key, "payment key"))
-        label = _safe_label(self.masked_label, "payment label")
+        label = _privacy_safe_display_label(
+            self.masked_label, "payment label", maximum=100
+        )
         digits = "".join(character for character in label if character.isdigit())
         if not any(marker in label for marker in ("•", "*", "ending")) or len(digits) > 4:
             raise ValueError("payment label must be masked and contain at most four visible digits")

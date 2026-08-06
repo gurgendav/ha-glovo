@@ -1,4 +1,4 @@
-"""Admin-only panel and WebSocket registration semantics for mock ordering."""
+"""Admin-only ordering and recovery panel registration semantics."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class OrderingSurfaceAdapter(Protocol):
 
 
 class OrderingSurface:
-    """Register no ordering surface unless the live manager gate is enabled."""
+    """Expose mutations only when enabled, but retain narrow recovery while blocked."""
 
     def __init__(self, manager: OrderingManager, adapter: OrderingSurfaceAdapter) -> None:
         self._manager = manager
@@ -43,34 +43,54 @@ class OrderingSurface:
         return self._registered
 
     async def async_setup(self) -> None:
-        if self._registered or not self._manager.enabled:
+        if self._registered or not (
+            self._manager.enabled or self._manager.recovery_required
+        ):
             return
-        handlers: dict[str, Handler] = {
+        recovery_handlers: dict[str, Handler] = {
             "glovo/ordering/state": self._state,
-            "glovo/ordering/catalog": self._catalog,
-            "glovo/ordering/basket": self._basket,
-            "glovo/ordering/basket_add_fixture_item": self._basket_add,
-            "glovo/ordering/basket_clear": self._basket_clear,
-            "glovo/ordering/fixture_quote": self._quote,
-            "glovo/ordering/prepare_mock_confirmation": self._prepare,
-            "glovo/ordering/execute_mock_checkout": self._execute_mock,
+            "glovo/ordering/manual_checks": self._manual_checks,
+            "glovo/ordering/manual_check": self._manual_check,
+            "glovo/ordering/prepare_manual_resolution": self._prepare_manual_resolution,
+            "glovo/ordering/resolve_manual_check": self._resolve_manual_check,
         }
+        normal_handlers: dict[str, Handler] = {}
+        if self._manager.enabled:
+            normal_handlers = {
+                "glovo/ordering/catalog": self._catalog,
+                "glovo/ordering/basket": self._basket,
+                "glovo/ordering/basket_add_fixture_item": self._basket_add,
+                "glovo/ordering/basket_clear": self._basket_clear,
+                "glovo/ordering/fixture_quote": self._quote,
+                "glovo/ordering/prepare_mock_confirmation": self._prepare,
+                "glovo/ordering/execute_mock_checkout": self._execute_mock,
+            }
+        try:
+            # Required recovery commands are independent of the optional panel and
+            # are always installed first, including when ordering options are off.
+            for name, handler in recovery_handlers.items():
+                await self._adapter.async_register_handler(name, handler)
+            for name, handler in normal_handlers.items():
+                await self._adapter.async_register_handler(name, handler)
+        except Exception:
+            await self._adapter.async_remove_handlers()
+            raise
+        self._registered = True
         try:
             await self._adapter.async_register_panel(
                 url_path=PANEL_URL_PATH,
-                title="Glovo Mock Ordering",
-                icon="mdi:cart-outline",
+                title=(
+                    "Glovo Ordering Recovery"
+                    if self._manager.recovery_required
+                    else "Glovo Mock Ordering"
+                ),
+                icon="mdi:cart-alert" if self._manager.recovery_required else "mdi:cart-outline",
                 require_admin=True,
             )
-            for name, handler in handlers.items():
-                await self._adapter.async_register_handler(name, handler)
-            self._registered = True
         except Exception:
-            # Registration spans several HA APIs; roll back callable handlers and
-            # the panel if any later step fails. Retained WS shells fail closed.
-            await self._adapter.async_remove_handlers()
+            # WebSocket recovery is the authority. A panel/static-path failure must
+            # never remove already-registered recovery handlers.
             await self._adapter.async_remove_panel()
-            raise
 
     async def async_unload(self) -> None:
         if not self._registered:
@@ -83,6 +103,40 @@ class OrderingSurface:
         self, user: OrderingUser, _message: Mapping[str, Any]
     ) -> dict[str, Any]:
         return await self._manager.async_state(user)
+
+    async def _manual_checks(
+        self, user: OrderingUser, _message: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return await self._manager.async_list_manual_checks(user)
+
+    async def _manual_check(
+        self, user: OrderingUser, message: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return await self._manager.async_get_manual_check(user, message["attemptRef"])
+
+    async def _prepare_manual_resolution(
+        self, user: OrderingUser, message: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return await self._manager.async_prepare_manual_resolution(
+            user,
+            attempt_id=message["attemptRef"],
+            expected_revision=message["expectedRecordRevision"],
+            expected_state=message["expectedState"],
+            resolution=message["resolution"],
+        )
+
+    async def _resolve_manual_check(
+        self, user: OrderingUser, message: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return await self._manager.async_resolve_manual_check(
+            user,
+            attempt_id=message["attemptRef"],
+            expected_revision=message["expectedRecordRevision"],
+            expected_state=message["expectedState"],
+            resolution=message["resolution"],
+            challenge=message["challenge"],
+            acknowledged=message["acknowledged"],
+        )
 
     async def _catalog(
         self, user: OrderingUser, message: Mapping[str, Any]

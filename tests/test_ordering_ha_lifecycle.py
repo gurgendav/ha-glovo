@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
+import socket
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+import voluptuous as vol
 
 ROOT = Path(__file__).parents[1]
 GLOVO_ROOT = ROOT / "custom_components" / "glovo"
@@ -35,6 +40,22 @@ def _load(name: str, path: Path, *, package: bool = False) -> ModuleType:
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse=True)
+def no_outbound_socket(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Fail every HA lifecycle test on an unexpected network escape."""
+    attempted: list[str] = []
+
+    def blocked(*args: Any, **kwargs: Any) -> Any:
+        attempted.append(repr((args, kwargs)))
+        pytest.fail("ordering HA lifecycle attempted an outbound socket/network call")
+
+    monkeypatch.setattr(socket, "create_connection", blocked)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    yield
+    assert attempted == []
 
 
 @pytest.fixture()
@@ -145,14 +166,46 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         panel_calls.append(kwargs)
 
     def websocket_command(schema: Any):
+        validator = vol.Schema({vol.Required("id"): int, **schema})
+
         def decorate(function: Any) -> Any:
-            function.ws_schema = schema
-            return function
+            @wraps(function)
+            async def validated(hass: Any, connection: Any, message: Any) -> None:
+                try:
+                    clean_message = validator(message)
+                except vol.Invalid:
+                    connection.send_error(
+                        message.get("id", 0) if isinstance(message, dict) else 0,
+                        "invalid_format",
+                        "Invalid message format",
+                    )
+                    return
+                await function(hass, connection, clean_message)
+
+            validated.ws_schema = validator
+            validated.ws_type = next(
+                value
+                for key, value in schema.items()
+                if getattr(key, "schema", None) == "type"
+            )
+            return validated
 
         return decorate
 
-    def identity(function: Any) -> Any:
+    def async_response(function: Any) -> Any:
         return function
+
+    def require_admin(function: Any) -> Any:
+        @wraps(function)
+        async def admin_only(hass: Any, connection: Any, message: Any) -> None:
+            if connection.user.is_admin is not True:
+                connection.send_error(
+                    message["id"], "admin_required", "Administrator access is required"
+                )
+                return
+            await function(hass, connection, message)
+
+        return admin_only
 
     def async_register_command(hass: Any, command: Any) -> None:
         commands.append(command)
@@ -160,8 +213,8 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     frontend.async_remove_panel = async_remove_panel
     panel_custom.async_register_panel = async_register_panel
     websocket_api.websocket_command = websocket_command
-    websocket_api.require_admin = identity
-    websocket_api.async_response = identity
+    websocket_api.require_admin = require_admin
+    websocket_api.async_response = async_response
     websocket_api.async_register_command = async_register_command
     websocket_api.ActiveConnection = object
     components.frontend = frontend
@@ -323,6 +376,96 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     )
 
 
+RECOVERY_COMMANDS = {
+    "glovo/ordering/state",
+    "glovo/ordering/manual_checks",
+    "glovo/ordering/manual_check",
+    "glovo/ordering/prepare_manual_resolution",
+    "glovo/ordering/resolve_manual_check",
+}
+
+
+def _command_map(runtime: SimpleNamespace) -> dict[str, Any]:
+    return {command.ws_type: command for command in runtime.commands}
+
+
+def _call_ws(
+    runtime: SimpleNamespace,
+    hass: Any,
+    command_type: str,
+    message: dict[str, Any],
+    *,
+    admin: bool = True,
+    user_id: str = "admin-one",
+) -> Any:
+    connection = runtime.Connection(admin=admin)
+    connection.user.id = user_id
+    run(_command_map(runtime)[command_type](hass, connection, {"id": 1, **message}))
+    return connection
+
+
+def _manual_record(*, integrity: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+    record = {
+        "attempt_id": "attempt-live-ha",
+        "state": "MANUAL_CHECK_REQUIRED",
+        "created_at": 1_700_000_000.0,
+        "updated_at": 1_700_000_010.0,
+        "generation": 4,
+        "amount_minor": 624000,
+        "currency": "AMD",
+        "execution_mode": "live",
+        "request_fingerprint": "f" * 64,
+        "provider_session_hash": "a" * 64,
+        "checkout_id": "checkout-private-synthetic",
+        "dispatch_started_at": 1_700_000_005.0,
+        "failure_class": "timeout",
+        "resolution": None,
+        "evidence_source": None,
+        "record_revision": 3,
+        "store_display_name": "Fixture Kitchen",
+        "item_count": 1,
+        "item_summary": "1 fixture item",
+        "masked_payment_label": "Test card •••• 4242",
+        "masked_address_alias": "Saved destination ••••",
+        "last_reviewed_at": None,
+    }
+    state = {
+        "version": 2,
+        "generation": 4,
+        "manual_check_required": True,
+        "integrity_fault": integrity,
+        "manual_binding": {
+            "attempt_id": record["attempt_id"],
+            "record_revision": record["record_revision"],
+            "generation": 4,
+            "resolution": None,
+        },
+    }
+    return record, state
+
+
+def _seed_manual_recovery(runtime: SimpleNamespace, *, integrity: bool = False) -> None:
+    record, state = _manual_record(integrity=integrity)
+    runtime.Store.values["glovo.ordering_journal_v2.entry-one"] = {
+        "version": 2,
+        "records": [record],
+    }
+    runtime.Store.values["glovo.ordering_safety_v2.entry-one"] = state
+
+
+def _seed_integrity_fault(runtime: SimpleNamespace) -> None:
+    runtime.Store.values["glovo.ordering_journal_v2.entry-one"] = {
+        "version": 2,
+        "records": [],
+    }
+    runtime.Store.values["glovo.ordering_safety_v2.entry-one"] = {
+        "version": 2,
+        "generation": 4,
+        "manual_check_required": False,
+        "integrity_fault": True,
+    }
+
+
 def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     ha_runtime: SimpleNamespace,
 ) -> None:
@@ -337,7 +480,7 @@ def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     assert len(runtime.panel_calls) == 1
     assert runtime.panel_calls[0]["require_admin"] is True
     assert len(hass.http.static_paths) == 1
-    assert len(runtime.commands) == 8
+    assert len(runtime.commands) == 12
 
     state_shell = runtime.commands[0]
     admin_connection = runtime.Connection(admin=True)
@@ -346,7 +489,7 @@ def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
 
     non_admin = runtime.Connection(admin=False)
     run(state_shell(hass, non_admin, {"id": 2, "type": "glovo/ordering/state"}))
-    assert non_admin.errors[0][1] == "invalid_mock_ordering_request"
+    assert non_admin.errors[0][1] == "admin_required"
 
     # Options mutate before the update listener/reload: the retained active handler
     # reads entry.options live and rejects immediately.
@@ -357,7 +500,7 @@ def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     }
     raced = runtime.Connection(admin=True)
     run(state_shell(hass, raced, {"id": 3, "type": "glovo/ordering/state"}))
-    assert raced.errors[0][1] == "invalid_mock_ordering_request"
+    assert raced.errors[0][1] == "ordering_disabled"
 
     run(entry.listeners[0](hass, entry))
     assert hass.config_entries.reloaded == [entry.entry_id]
@@ -378,7 +521,7 @@ def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     assert run(runtime.integration.async_setup_entry(hass, entry)) is True
     assert entry.runtime_data.ordering_manager.generation == old_generation
     assert entry.runtime_data.ordering_manager.enabled is True
-    assert len(runtime.commands) == 8
+    assert len(runtime.commands) == 12
     assert run(runtime.integration.async_unload_entry(hass, entry)) is True
     assert entry.runtime_data.ordering_manager.enabled is False
     assert entry.runtime_data.ordering_manager.generation > old_generation
@@ -514,7 +657,7 @@ def test_options_flow_requires_acknowledgement_behaviorally(
     assert accepted["data"]["ordering_acknowledged"] is True
 
 
-def test_partial_panel_registration_failure_rolls_back_and_tracking_continues(
+def test_panel_registration_failure_preserves_websocket_api_and_tracking(
     ha_runtime: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ordering_ha = sys.modules[f"{ha_runtime.prefix}.ordering_ha"]
@@ -529,7 +672,564 @@ def test_partial_panel_registration_failure_rolls_back_and_tracking_continues(
     )
     assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
     assert entry.runtime_data.refreshed is True
-    assert entry.runtime_data.ordering_manager.enabled is False
-    assert entry.runtime_data.ordering_surface is None
+    assert entry.runtime_data.ordering_manager.enabled is True
+    assert entry.runtime_data.ordering_surface is not None
     assert "glovo-ordering" in ha_runtime.removed_panels
+    assert len(ha_runtime.commands) == 12
+    state = ha_runtime.Connection(admin=True)
+    run(
+        ha_runtime.commands[0](
+            hass, state, {"id": 7, "type": "glovo/ordering/state"}
+        )
+    )
+    assert state.results[0][1]["enabled"] is True
     assert hass.config_entries.forwarded
+
+
+def test_A_recovery_websocket_commands_are_admin_only_strict_and_sanitized(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    _seed_manual_recovery(ha_runtime)
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": False, "ordering_acknowledged": False}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    commands = _command_map(ha_runtime)
+    assert set(commands) == RECOVERY_COMMANDS
+
+    valid = {
+        "glovo/ordering/state": {"type": "glovo/ordering/state"},
+        "glovo/ordering/manual_checks": {"type": "glovo/ordering/manual_checks"},
+        "glovo/ordering/manual_check": {
+            "type": "glovo/ordering/manual_check",
+            "attemptRef": "attempt-live-ha",
+        },
+        "glovo/ordering/prepare_manual_resolution": {
+            "type": "glovo/ordering/prepare_manual_resolution",
+            "attemptRef": "attempt-live-ha",
+            "expectedRecordRevision": 3,
+            "expectedState": "MANUAL_CHECK_REQUIRED",
+            "resolution": "still_unknown",
+        },
+        "glovo/ordering/resolve_manual_check": {
+            "type": "glovo/ordering/resolve_manual_check",
+            "attemptRef": "attempt-live-ha",
+            "expectedRecordRevision": 3,
+            "expectedState": "MANUAL_CHECK_REQUIRED",
+            "resolution": "still_unknown",
+            "challenge": "synthetic-unused-challenge-value",
+            "acknowledged": True,
+        },
+    }
+    for command_type, message in valid.items():
+        denied = _call_ws(
+            ha_runtime, hass, command_type, message, admin=False, user_id="non-admin"
+        )
+        assert denied.errors == [
+            (1, "admin_required", "Administrator access is required")
+        ]
+
+        unknown = _call_ws(
+            ha_runtime, hass, command_type, {**message, "unexpected": "private-value"}
+        )
+        assert unknown.errors == [(1, "invalid_format", "Invalid message format")]
+
+    missing_ack = dict(valid["glovo/ordering/resolve_manual_check"])
+    missing_ack.pop("acknowledged")
+    assert _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/resolve_manual_check",
+        missing_ack,
+    ).errors[0][1] == "invalid_format"
+
+    for acknowledged, expected_code in (
+        (False, "invalid_manual_resolution"),
+        (0, "invalid_format"),
+        (1, "invalid_format"),
+        ("true", "invalid_format"),
+    ):
+        message = {
+            **valid["glovo/ordering/resolve_manual_check"],
+            "acknowledged": acknowledged,
+        }
+        assert _call_ws(
+            ha_runtime, hass, "glovo/ordering/resolve_manual_check", message
+        ).errors[0][1] == expected_code
+
+    bool_revision = {
+        **valid["glovo/ordering/prepare_manual_resolution"],
+        "expectedRecordRevision": True,
+    }
+    assert _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/prepare_manual_resolution",
+        bool_revision,
+    ).errors[0][1] == "invalid_format"
+    invalid_outcome = {
+        **valid["glovo/ordering/prepare_manual_resolution"],
+        "resolution": "retry",
+    }
+    assert _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/prepare_manual_resolution",
+        invalid_outcome,
+    ).errors[0][1] == "invalid_format"
+
+
+def test_A_recovery_challenges_reject_stale_bindings_owner_ttl_and_reuse(
+    ha_runtime: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Clock:
+        value = 1_800_000_000.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+    monkeypatch.setattr(ha_runtime.integration.time, "time", clock)
+    _seed_manual_recovery(ha_runtime)
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": False, "ordering_acknowledged": False}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    prepare = {
+        "type": "glovo/ordering/prepare_manual_resolution",
+        "attemptRef": "attempt-live-ha",
+        "expectedRecordRevision": 3,
+        "expectedState": "MANUAL_CHECK_REQUIRED",
+        "resolution": "still_unknown",
+    }
+
+    for mutation in (
+        {"expectedRecordRevision": 2},
+        {"expectedState": "CONFIRMED_FAILED"},
+    ):
+        stale = _call_ws(
+            ha_runtime,
+            hass,
+            "glovo/ordering/prepare_manual_resolution",
+            {**prepare, **mutation},
+        )
+        assert stale.errors[0][1] == "invalid_manual_resolution"
+
+    def prepared_challenge() -> str:
+        response = _call_ws(
+            ha_runtime, hass, "glovo/ordering/prepare_manual_resolution", prepare
+        )
+        assert not response.errors
+        return response.results[0][1]["challenge"]
+
+    def resolve(challenge: str, *, user_id: str = "admin-one") -> Any:
+        return _call_ws(
+            ha_runtime,
+            hass,
+            "glovo/ordering/resolve_manual_check",
+            {
+                "type": "glovo/ordering/resolve_manual_check",
+                "attemptRef": "attempt-live-ha",
+                "expectedRecordRevision": 3,
+                "expectedState": "MANUAL_CHECK_REQUIRED",
+                "resolution": "still_unknown",
+                "challenge": challenge,
+                "acknowledged": True,
+            },
+            user_id=user_id,
+        )
+
+    assert resolve(prepared_challenge(), user_id="admin-two").errors[0][1] == (
+        "invalid_manual_resolution"
+    )
+
+    challenge = prepared_challenge()
+    clock.value += 301
+    assert resolve(challenge).errors[0][1] == "invalid_manual_resolution"
+
+    challenge = prepared_challenge()
+    run(entry.runtime_data.ordering_manager.async_set_enabled(False))
+    assert resolve(challenge).errors[0][1] == "invalid_manual_resolution"
+
+    challenge = prepared_challenge()
+    success = resolve(challenge)
+    assert success.results[0][1]["manualCheckRequired"] is True
+    assert resolve(challenge).errors[0][1] == "invalid_manual_resolution"
+
+
+def test_B_recovery_handlers_restore_after_disabled_option_reload(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    _seed_manual_recovery(ha_runtime)
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": True, "ordering_acknowledged": True}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    assert set(_command_map(ha_runtime)) == RECOVERY_COMMANDS
+    retained_state = _command_map(ha_runtime)["glovo/ordering/state"]
+    assert _call_ws(
+        ha_runtime, hass, "glovo/ordering/state", {"type": "glovo/ordering/state"}
+    ).results[0][1]["manualCheckRequired"] is True
+
+    entry.options = {"allow_ordering": False, "ordering_acknowledged": False}
+    run(entry.listeners[0](hass, entry))
+    assert hass.config_entries.reloaded == [entry.entry_id]
+    disabled = ha_runtime.Connection(admin=True)
+    run(retained_state(hass, disabled, {"id": 2, "type": "glovo/ordering/state"}))
+    assert disabled.errors[0][1] == "ordering_disabled"
+
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    restored = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/manual_checks",
+        {"type": "glovo/ordering/manual_checks"},
+    )
+    assert restored.results[0][1]["attempts"][0]["attemptRef"] == "attempt-live-ha"
+    assert set(_command_map(ha_runtime)) == RECOVERY_COMMANDS
+
+
+def test_C_unload_deactivates_retained_shell_and_restart_restores_durable_recovery(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    _seed_manual_recovery(ha_runtime)
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": False, "ordering_acknowledged": False}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    retained = _command_map(ha_runtime)["glovo/ordering/manual_checks"]
+    assert run(ha_runtime.integration.async_unload_entry(hass, entry)) is True
+    after_unload = ha_runtime.Connection(admin=True)
+    run(
+        retained(
+            hass,
+            after_unload,
+            {"id": 3, "type": "glovo/ordering/manual_checks"},
+        )
+    )
+    assert after_unload.errors[0][1] == "ordering_disabled"
+
+    restarted_hass = ha_runtime.FakeHass()
+    restarted_entry = ha_runtime.FakeEntry(
+        {"allow_ordering": True, "ordering_acknowledged": True}
+    )
+    assert run(
+        ha_runtime.integration.async_setup_entry(restarted_hass, restarted_entry)
+    ) is True
+    assert restarted_entry.runtime_data.ordering_manager.manual_check_required is True
+    assert restarted_entry.runtime_data.ordering_manager.enabled is False
+    restored = _call_ws(
+        ha_runtime,
+        restarted_hass,
+        "glovo/ordering/state",
+        {"type": "glovo/ordering/state"},
+    )
+    assert restored.results[0][1]["orderingBlocked"] is True
+    assert set(_command_map(ha_runtime)) == RECOVERY_COMMANDS
+
+
+@pytest.mark.parametrize("failure", ["static", "panel"])
+def test_D_optional_frontend_failure_preserves_recovery_api_and_durable_block(
+    ha_runtime: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    _seed_manual_recovery(ha_runtime)
+    hass = ha_runtime.FakeHass()
+
+    async def fail(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError(f"injected {failure} failure")
+
+    if failure == "static":
+        monkeypatch.setattr(hass.http, "async_register_static_paths", fail)
+    else:
+        ordering_ha = sys.modules[f"{ha_runtime.prefix}.ordering_ha"]
+        monkeypatch.setattr(ordering_ha.panel_custom, "async_register_panel", fail)
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": False, "ordering_acknowledged": False}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    state = _call_ws(
+        ha_runtime, hass, "glovo/ordering/state", {"type": "glovo/ordering/state"}
+    )
+    assert state.results[0][1]["manualCheckRequired"] is True
+    assert ha_runtime.Store.values["glovo.ordering_safety_v2.entry-one"][
+        "manual_check_required"
+    ] is True
+    assert hass.config_entries.forwarded
+
+
+def test_D_required_recovery_handler_partial_registration_fails_setup_closed(
+    ha_runtime: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_manual_recovery(ha_runtime)
+    ordering_ha = sys.modules[f"{ha_runtime.prefix}.ordering_ha"]
+    original = ordering_ha.websocket_api.async_register_command
+    registrations = 0
+
+    def fail_second(hass: Any, command: Any) -> None:
+        nonlocal registrations
+        registrations += 1
+        if registrations == 2:
+            raise RuntimeError("injected required handler registration failure")
+        original(hass, command)
+
+    monkeypatch.setattr(
+        ordering_ha.websocket_api, "async_register_command", fail_second
+    )
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": False, "ordering_acknowledged": False}
+    )
+    with pytest.raises(
+        RuntimeError, match="injected required handler registration failure"
+    ):
+        run(ha_runtime.integration.async_setup_entry(hass, entry))
+    assert hass.config_entries.forwarded == []
+    assert hass.data["glovo"]["ordering_websocket_handlers"] == {}
+    retained = ha_runtime.commands[0]
+    connection = ha_runtime.Connection(admin=True)
+    run(retained(hass, connection, {"id": 4, "type": "glovo/ordering/state"}))
+    assert connection.errors[0][1] == "ordering_disabled"
+    assert ha_runtime.Store.values["glovo.ordering_safety_v2.entry-one"][
+        "manual_check_required"
+    ] is True
+
+
+def test_E_integrity_fault_is_privacy_safe_permanent_and_not_clearable(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    _seed_integrity_fault(ha_runtime)
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": False, "ordering_acknowledged": False}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    assert set(_command_map(ha_runtime)) == RECOVERY_COMMANDS
+    assert not {
+        command
+        for command in _command_map(ha_runtime)
+        if "retry" in command or "clear" in command
+    }
+    state = _call_ws(
+        ha_runtime, hass, "glovo/ordering/state", {"type": "glovo/ordering/state"}
+    )
+    assert state.results[0][1] == {
+        "enabled": False,
+        "mockOnly": True,
+        "liveOrderingAvailable": False,
+        "manualCheckRequired": False,
+        "integrityFault": True,
+        "orderingBlocked": True,
+    }
+    checks = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/manual_checks",
+        {"type": "glovo/ordering/manual_checks"},
+    )
+    assert checks.results[0][1] == {"attempts": []}
+    rejected = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/prepare_manual_resolution",
+        {
+            "type": "glovo/ordering/prepare_manual_resolution",
+            "attemptRef": "attempt-live-ha",
+            "expectedRecordRevision": 3,
+            "expectedState": "MANUAL_CHECK_REQUIRED",
+            "resolution": "still_unknown",
+        },
+    )
+    assert rejected.errors == [
+        (1, "ordering_integrity_fault", "Ordering is blocked by an integrity fault")
+    ]
+    assert entry.runtime_data.ordering_manager.integrity_fault is True
+
+
+def test_F_recovery_websocket_payloads_and_errors_use_privacy_allowlist(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    _seed_manual_recovery(ha_runtime)
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": False, "ordering_acknowledged": False}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    payloads = []
+    for command_type, message in (
+        ("glovo/ordering/state", {"type": "glovo/ordering/state"}),
+        (
+            "glovo/ordering/manual_checks",
+            {"type": "glovo/ordering/manual_checks"},
+        ),
+        (
+            "glovo/ordering/manual_check",
+            {
+                "type": "glovo/ordering/manual_check",
+                "attemptRef": "attempt-live-ha",
+            },
+        ),
+    ):
+        response = _call_ws(ha_runtime, hass, command_type, message)
+        payloads.append(response.results[0][1])
+
+    prepare_message = {
+        "type": "glovo/ordering/prepare_manual_resolution",
+        "attemptRef": "attempt-live-ha",
+        "expectedRecordRevision": 3,
+        "expectedState": "MANUAL_CHECK_REQUIRED",
+        "resolution": "still_unknown",
+    }
+    prepared = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/prepare_manual_resolution",
+        prepare_message,
+    )
+    prepared_payload = prepared.results[0][1]
+    payloads.append(prepared_payload)
+    resolved = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/resolve_manual_check",
+        {
+            "type": "glovo/ordering/resolve_manual_check",
+            "attemptRef": "attempt-live-ha",
+            "expectedRecordRevision": 3,
+            "expectedState": "MANUAL_CHECK_REQUIRED",
+            "resolution": "still_unknown",
+            "challenge": prepared_payload["challenge"],
+            "acknowledged": True,
+        },
+    )
+    payloads.append(resolved.results[0][1])
+
+    attempt_keys = {
+        "attemptRef",
+        "state",
+        "recordRevision",
+        "submittedAt",
+        "storeDisplayName",
+        "amountMinor",
+        "currency",
+        "itemCount",
+        "itemSummary",
+        "maskedPaymentLabel",
+        "maskedAddressAlias",
+        "hasCheckoutId",
+        "ambiguityReason",
+        "lastReviewedAt",
+    }
+    list_attempt = payloads[1]["attempts"][0]
+    get_attempt = payloads[2]
+    resolved_attempt = payloads[-1]["attempt"]
+    assert set(list_attempt) == attempt_keys
+    assert set(get_attempt) == attempt_keys
+    assert set(resolved_attempt) == attempt_keys
+    assert list_attempt["hasCheckoutId"] is True
+
+    encoded = json.dumps(payloads, sort_keys=True).lower()
+    for forbidden in (
+        "provider_session",
+        "payment_key",
+        "address_key",
+        "selection_key",
+        "checkout-private-synthetic",
+        "request_fingerprint",
+        "idempotency",
+        "latitude",
+        "longitude",
+        "cookie",
+        "bearer",
+        "raw_body",
+        "f" * 64,
+        "a" * 64,
+    ):
+        assert forbidden not in encoded
+
+    async def raw_failure(user: Any, message: Any) -> dict[str, Any]:
+        raise ValueError(
+            "Bearer synthetic-not-a-secret Cookie raw_body synthetic provider parser"
+        )
+
+    hass.data["glovo"]["ordering_websocket_handlers"][
+        "glovo/ordering/state"
+    ] = raw_failure
+    sanitized = _call_ws(
+        ha_runtime, hass, "glovo/ordering/state", {"type": "glovo/ordering/state"}
+    )
+    assert sanitized.errors == [
+        (1, "invalid_ordering_request", "Ordering request is invalid")
+    ]
+
+
+def test_G_recovery_frontend_has_only_nonretrying_challenge_acknowledged_outcomes() -> None:
+    source = (GLOVO_ROOT / "frontend" / "glovo-ordering-panel.js").read_text()
+    lowered = source.lower()
+    assert source.count('data-resolution="') == 3
+    for resolution in (
+        "found_succeeded",
+        "found_failed_or_cancelled",
+        "still_unknown",
+    ):
+        assert source.count(f'data-resolution="{resolution}"') == 1
+    assert "do not place this order again" in lowered
+    assert lowered.index("if (state.manualcheckrequired)") < lowered.index(
+        'type: "glovo/ordering/catalog"'
+    )
+    assert "prepared.challenge" in source
+    assert 'acknowledged: true' in source
+    assert '.checked === true' in source
+    assert source.count(".innerHTML") == 1
+    assert ".textContent" in source
+    for prohibited in (
+        "localstorage",
+        "sessionstorage",
+        "console.",
+        "analytics",
+        "glovo/ordering/retry",
+        "glovo/ordering/clear",
+        "clear_integrity",
+        "retryattempt",
+    ):
+        assert prohibited not in lowered
+
+
+def test_H_default_off_tracking_and_mock_only_command_inventory_remain_unchanged(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    disabled_hass = ha_runtime.FakeHass()
+    disabled_entry = ha_runtime.FakeEntry({})
+    assert run(
+        ha_runtime.integration.async_setup_entry(disabled_hass, disabled_entry)
+    ) is True
+    assert disabled_entry.runtime_data.refreshed is True
+    assert disabled_entry.runtime_data.ordering_surface is None
+    assert disabled_hass.config_entries.forwarded
+    assert ha_runtime.commands == []
+
+    enabled_hass = ha_runtime.FakeHass()
+    enabled_entry = ha_runtime.FakeEntry(
+        {"allow_ordering": True, "ordering_acknowledged": True}
+    )
+    assert run(
+        ha_runtime.integration.async_setup_entry(enabled_hass, enabled_entry)
+    ) is True
+    assert set(_command_map(ha_runtime)) == RECOVERY_COMMANDS | {
+        "glovo/ordering/catalog",
+        "glovo/ordering/basket",
+        "glovo/ordering/basket_add_fixture_item",
+        "glovo/ordering/basket_clear",
+        "glovo/ordering/fixture_quote",
+        "glovo/ordering/prepare_mock_confirmation",
+        "glovo/ordering/execute_mock_checkout",
+    }
+    assert enabled_entry.runtime_data.ordering_manager.enabled is True
+    assert enabled_entry.runtime_data.ordering_manager._checkout_adapter.execution_count == 0
+    assert enabled_hass.config_entries.forwarded
+    assert socket.create_connection.__name__ == "blocked"
