@@ -1020,7 +1020,8 @@ def test_legacy_mock_mixed_source_and_already_latched_boots_repair_once(
         legacy = {
             "version": 1,
             "records": [
-                _legacy_record("DISPATCHING", "attempt-old-mock-dispatch")
+                _legacy_record("DISPATCHING", "attempt-old-mock-dispatch"),
+                _legacy_record("SECURITY_FAULT", "attempt-old-mock-fault"),
             ],
         }
 
@@ -1037,9 +1038,10 @@ def test_legacy_mock_mixed_source_and_already_latched_boots_repair_once(
         assert first.integrity_fault is False
         assert first.manual_check_required is False
         assert first.enabled is False
-        assert first.journal.records[0].state.value == (
-            "LEGACY_MOCK_NO_REMOTE_EFFECT"
-        )
+        assert [record.state.value for record in first.journal.records] == [
+            "LEGACY_MOCK_NO_REMOTE_EFFECT",
+            "LEGACY_MOCK_NO_REMOTE_EFFECT",
+        ]
         assert first_state.data == {
             "version": 2,
             "generation": 71,
@@ -1144,24 +1146,26 @@ def test_legacy_mock_repair_requires_pristine_preparation_authority(
 
 @pytest.mark.parametrize(
     "case",
-    ["live-record", "manual-binding", "preparation-binding", "journal-integrity"],
+    [
+        "live-record",
+        "manual-binding",
+        "preparation-binding",
+        "native-v2-integrity",
+    ],
 )
 def test_legacy_mock_repair_rejects_any_live_or_bound_ambiguity(
     ordering: dict[str, ModuleType], case: str
 ) -> None:
     async def scenario() -> None:
-        legacy_records = (
-            [_legacy_record("SECURITY_FAULT", "attempt-old-fault")]
-            if case == "journal-integrity"
-            else []
-        )
-        journal_storage = await _migrated_legacy_journal_storage(
-            ordering, legacy_records
-        )
+        journal_storage = await _migrated_legacy_journal_storage(ordering, [])
         state_raw = _state(None, generation=71, integrity=True)
         if case == "live-record":
             journal_storage.data["records"] = [
                 _record("CONFIRMED_FAILED", attempt_id="attempt-live-terminal")
+            ]
+        elif case == "native-v2-integrity":
+            journal_storage.data["records"] = [
+                _record("INTEGRITY_FAULT", attempt_id="attempt-v2-integrity")
             ]
         elif case == "manual-binding":
             manual = _record(attempt_id="attempt-live-bound")

@@ -394,12 +394,11 @@ class OrderingManager:
             or not self._preparation_authority_is_pristine()
             or not self.journal.loaded
             or self.journal.corrupt
-            or self.journal.integrity_fault
             or self.journal.unresolved_manual_checks
         ):
             return False
         try:
-            if not await self.journal.async_proves_legacy_mock_no_remote_effect():
+            if not await self.journal.async_repair_legacy_mock_no_remote_effect():
                 return False
             expected_generation = state.generation
             await state._async_repair_legacy_mock_integrity(  # noqa: SLF001

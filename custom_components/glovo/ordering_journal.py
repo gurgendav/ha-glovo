@@ -735,10 +735,10 @@ class AttemptJournal:
                 self._records = []
                 raise
 
-    async def async_proves_legacy_mock_no_remote_effect(self) -> bool:
-        """Re-read v1 and prove the loaded v2 journal is its exact mock-only image."""
+    async def async_repair_legacy_mock_no_remote_effect(self) -> bool:
+        """Prove the exact retained v1 image and terminalize its mock-only faults."""
         async with self._lock:
-            if not self.loaded or self.corrupt or self.integrity_fault:
+            if not self.loaded or self.corrupt:
                 return False
             legacy_loader = getattr(self._storage, "async_load_legacy", None)
             if legacy_loader is None:
@@ -757,35 +757,57 @@ class AttemptJournal:
                 or len(raw["records"]) > MAX_JOURNAL_RECORDS
             ):
                 raise JournalCorrupt("legacy journal evidence schema mismatch")
-            records = [_migrate_v1_record(item) for item in raw["records"]]
-            if len({item.attempt_id for item in records}) != len(records):
+            migrated = [_migrate_v1_record(item) for item in raw["records"]]
+            if len({item.attempt_id for item in migrated}) != len(migrated):
                 raise JournalCorrupt("legacy journal evidence keys are not unique")
 
-            def exact_mock_terminal(record: AttemptRecord) -> bool:
+            normalized: list[AttemptRecord] = []
+            for record in migrated:
+                if record.state is JournalState.INTEGRITY_FAULT:
+                    # V1 had only the fixture adapter. Its SECURITY_FAULT marker can
+                    # therefore prove local uncertainty, never a provider effect.
+                    record = replace(
+                        record,
+                        state=JournalState.LEGACY_MOCK_NO_REMOTE_EFFECT,
+                        resolution="legacy_mock_no_remote_effect",
+                        evidence_source="legacy_migration",
+                        record_revision=record.record_revision + 1,
+                    )
                 if record.state is JournalState.LEGACY_MOCK_NO_REMOTE_EFFECT:
-                    return (
+                    valid = (
                         record.execution_mode == "mock"
                         and record.resolution == "legacy_mock_no_remote_effect"
                         and record.evidence_source == "legacy_migration"
+                        and record.failure_class is None
                     )
-                if record.state is JournalState.CONFIRMED_SUCCEEDED:
-                    return (
+                elif record.state is JournalState.CONFIRMED_SUCCEEDED:
+                    valid = (
                         record.execution_mode == "mock"
                         and record.resolution == "synthetic_success"
                         and record.evidence_source == "mock_adapter"
+                        and record.failure_class is None
                     )
-                if record.state is JournalState.CONFIRMED_FAILED:
-                    return (
+                elif record.state is JournalState.CONFIRMED_FAILED:
+                    valid = (
                         record.execution_mode == "mock"
                         and record.resolution == "synthetic_failure"
                         and record.evidence_source == "mock_adapter"
+                        and record.failure_class is None
                     )
-                return False
+                else:
+                    valid = False
+                if not valid:
+                    return False
+                normalized.append(AttemptRecord.from_dict(record.to_dict()))
 
-            return (
-                all(exact_mock_terminal(record) for record in records)
-                and records == self._records
-            )
+            # A previous interrupted repair may already have persisted the exact
+            # normalized image. No other v2-native difference is acceptable.
+            if self._records == migrated:
+                await self._async_save_records_unlocked(normalized)
+                self._records = normalized
+            elif self._records != normalized:
+                return False
+            return True
 
     @staticmethod
     def _bounded(records: list[AttemptRecord]) -> list[AttemptRecord]:
