@@ -184,12 +184,23 @@ class SerializedApiSession:
             try:
                 result = await asyncio.shield(pending)
             except asyncio.CancelledError:
+                # A cancellation cannot stop the synchronous executor call. Keep
+                # this lock owner alive until its retained Future is definitive;
+                # each later cancellation is only another untrusted caller outcome.
+                while not pending.done():
+                    try:
+                        await asyncio.shield(pending)
+                    except asyncio.CancelledError:
+                        continue
+                    except BaseException:
+                        # Its result is deliberately unknowable to the cancelled
+                        # caller, but its completion still returns lock authority.
+                        pass
                 try:
-                    await asyncio.shield(pending)
+                    pending.result()
                 except BaseException:
-                    # The first caller has no trustworthy outcome regardless of
-                    # the executor result. The enclosing mutation converts the
-                    # cancellation to an ambiguity after authority is retained.
+                    # Consume any completed executor failure before reporting the
+                    # original cancellation as a dispatch uncertainty.
                     pass
                 raise
         if inspect.isawaitable(result):

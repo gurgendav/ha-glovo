@@ -135,10 +135,12 @@ class StatusError(RuntimeError):
         super().__init__("private provider detail")
 
 
-def test_executor_cancellation_retains_mutation_authority_until_real_thread_finishes(
-    live: dict[str, ModuleType],
+@pytest.mark.parametrize("worker_outcome", [{"ok": True}, RuntimeError("fixture worker failure")])
+@pytest.mark.parametrize("cancellation_count", [2, 4])
+def test_executor_repeated_cancellation_retains_mutation_authority_until_real_thread_finishes(
+    live: dict[str, ModuleType], worker_outcome: Any, cancellation_count: int
 ) -> None:
-    """A barrier-driven real-thread regression: no second write overlaps the first."""
+    """Repeated cancels cannot release mutation authority before its thread returns."""
     api = live["api_session"]
 
     async def scenario() -> None:
@@ -149,14 +151,25 @@ def test_executor_cancellation_retains_mutation_authority_until_real_thread_fini
 
         def mutation(method: str, token: str, path: str, query: dict[str, str], body: Any) -> Any:
             del method, token, path, query, body
-            calls.append("write")
-            if len(calls) == 1:
+            if not calls:
+                calls.append("FIRST_STARTED")
                 entered.wait()
                 release.result()
-            return {"ok": True}
+                calls.append("FIRST_RETURNED")
+                if isinstance(worker_outcome, BaseException):
+                    raise worker_outcome
+                return worker_outcome
+            if "FIRST_RETURNED" not in calls:
+                calls.append("SECOND_STARTED_BEFORE_FIRST_RETURNED")
+            calls.append("SECOND_STARTED")
+            return {"second": True}
 
         async def executor(function: Any) -> Any:
             return await loop.run_in_executor(None, function)
+
+        async def checkpoint() -> None:
+            """Yield through a completed executor Future without a timing sleep."""
+            await asyncio.to_thread(lambda: None)
 
         client = api.SerializedApiSession(
             token_source=lambda: "token-fixture",
@@ -175,25 +188,33 @@ def test_executor_cancellation_retains_mutation_authority_until_real_thread_fini
             )
         )
         await asyncio.to_thread(entered.wait)
-        first.cancel()
-        # Yield only through a completed executor Future; no timing sleeps.
-        await asyncio.to_thread(lambda: None)
-        assert client.lock.locked()
-        second = asyncio.create_task(
-            client.async_mutate(
-                api.MutationPurpose.CREATE_BASKET,
-                "POST",
-                "/v1/authenticated/customers/42/baskets",
-                {},
+        second: asyncio.Task[Any] | None = None
+        try:
+            for _ in range(cancellation_count):
+                assert first.cancel()
+                await checkpoint()
+                assert client.lock.locked()
+                assert calls == ["FIRST_STARTED"]
+            second = asyncio.create_task(
+                client.async_mutate(
+                    api.MutationPurpose.CREATE_BASKET,
+                    "POST",
+                    "/v1/authenticated/customers/42/baskets",
+                    {},
+                )
             )
-        )
-        await asyncio.to_thread(lambda: None)
-        assert calls == ["write"]
-        release.set_result(None)
-        with pytest.raises(api.MutationDispatchUncertain):
-            await first
-        assert await second == {"ok": True}
-        assert calls == ["write", "write"]
+            await checkpoint()
+            assert calls == ["FIRST_STARTED"]
+            release.set_result(None)
+            with pytest.raises(api.MutationDispatchUncertain):
+                await first
+            assert await second == {"second": True}
+            assert calls == ["FIRST_STARTED", "FIRST_RETURNED", "SECOND_STARTED"]
+            assert "SECOND_STARTED_BEFORE_FIRST_RETURNED" not in calls
+        finally:
+            if not release.done():
+                release.set_result(None)
+            await asyncio.gather(first, *(task for task in (second,) if task is not None), return_exceptions=True)
 
     asyncio.run(scenario())
 
