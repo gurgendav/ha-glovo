@@ -8,6 +8,14 @@ venv/
 .mypy_cache/
 .pytest_cache/
 
-# Local API dumps and the personal refresh/access token used during development.
-# They contain real account data (addresses, order history) and secrets.
-tests/
+# Local captures only: deterministic public fixtures and all tests stay tracked.
+# Captures may contain account data, addresses, checkout references, or secrets.
+tests/private/
+tests/**/private/
+tests/**/private_fixtures/
+tests/**/*.{har,pcap,trace}
+tests/**/*.{dump,sql,sqlite,sqlite3}
+tests/**/*token*
+tests/**/*cookie*
+tests/**/*secret*
+tests/**/*credential*

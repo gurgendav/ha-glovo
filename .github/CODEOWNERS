@@ -1,1 +1,7 @@
+# Core integration, release controls, and public safety evidence require review.
 * @ClusterM
+/.github/ @ClusterM
+/docs/ @ClusterM
+/scripts/ @ClusterM
+/tests/ @ClusterM
+/custom_components/glovo/manifest.json @ClusterM

@@ -7,9 +7,78 @@ on:
     - cron: "0 0 * * *"
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
+  static-and-clean-checkout:
+    name: Static, privacy, and clean checkout
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install offline validation tools
+        run: python -m pip install --upgrade pip pytest voluptuous ruff
+      - name: Ruff
+        run: ruff check custom_components tests scripts
+      - name: Compile and AST parse Python
+        run: |
+          python -m compileall -q custom_components tests scripts
+          python -c "import ast, pathlib; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in pathlib.Path('.').glob('custom_components/**/*.py')]; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in pathlib.Path('.').glob('tests/**/*.py')]; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in pathlib.Path('scripts').glob('*.py')]"
+      - name: Validate JSON and translation parity
+        run: |
+          python -c "import json, pathlib; [json.loads(p.read_text(encoding='utf-8')) for p in pathlib.Path('.').glob('**/*.json')]"
+          python -c "import json, pathlib; canonical=json.loads(pathlib.Path('custom_components/glovo/strings.json').read_text(encoding='utf-8')); expected=set(canonical); files=pathlib.Path('custom_components/glovo/translations').glob('*.json'); mismatches=[str(p) for p in files if set(json.loads(p.read_text(encoding='utf-8'))) != expected]; assert not mismatches, f'translation root-key mismatch: {mismatches}'"
+      - name: JavaScript syntax (when Node is available)
+        run: |
+          if command -v node >/dev/null 2>&1; then
+            find custom_components -name '*.js' -print0 | xargs -0 -r -n1 node --check
+          else
+            echo "Node unavailable; JavaScript syntax check skipped"
+          fi
+      - name: Privacy and capability gates
+        run: |
+          python scripts/scan_ordering_privacy.py
+          python scripts/scan_ordering_privacy.py --capabilities-only
+      - name: Phase mutation allowlist parity
+        run: python -m pytest -q tests/test_ordering_live_checkout.py -k allowlists
+      - name: Full tests from clean tracked archive
+        run: python scripts/verify_clean_checkout.py
+      - name: Reject whitespace errors
+        run: git diff --check HEAD^ HEAD
+
+  home-assistant-compatibility:
+    name: HA ${{ matrix.label }} / Python 3.13
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "2024.12"
+            homeassistant: "homeassistant==2024.12.0"
+          - label: current
+            homeassistant: homeassistant
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up supported Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install selected Home Assistant without secrets
+        run: python -m pip install --upgrade pip ${{ matrix.homeassistant }} pytest voluptuous
+      - name: Verify imports and offline lifecycle boundary
+        run: |
+          python -c "import homeassistant; print(homeassistant.__version__)"
+          python -m compileall -q custom_components
+          python -m pytest -q tests/test_ordering_ha_lifecycle.py
+
   hassfest:
     name: hassfest
     runs-on: ubuntu-latest
