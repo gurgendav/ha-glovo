@@ -60,6 +60,9 @@ def _address_payload_fingerprint(payload: Any) -> str:
     direct = first.get("address") if isinstance(first, Mapping) else None
     candidate = address if isinstance(address, Mapping) else direct
     covered = len(_ADDRESS_FIELDS.intersection(candidate)) if isinstance(candidate, Mapping) else 0
+    row_metadata = {"title", "subtitle", "isDefault", "default", "defaultAddress"}
+    allowed_row = {"entryType", "entry", "address", *row_metadata}
+    address_metadata = {"isDefault", "default", "defaultAddress"}
     return (
         f"root={type(payload).__name__} data_depth={data_depth} "
         f"leaf={type(cursor).__name__} addresses={type(addresses).__name__} "
@@ -67,7 +70,12 @@ def _address_payload_fingerprint(payload: Any) -> str:
         f"item={type(first).__name__} "
         f"entryType={isinstance(first, Mapping) and 'entryType' in first} "
         f"entry={isinstance(entry, Mapping)} nested_address={isinstance(address, Mapping)} "
-        f"direct_address={isinstance(direct, Mapping)} fields={covered}/{len(_ADDRESS_FIELDS)}"
+        f"direct_address={isinstance(direct, Mapping)} fields={covered}/{len(_ADDRESS_FIELDS)} "
+        f"row_keys={len(first) if isinstance(first, Mapping) else -1} "
+        f"row_known={len(set(first).intersection(allowed_row)) if isinstance(first, Mapping) else -1} "
+        f"row_metadata={len(set(first).intersection(row_metadata)) if isinstance(first, Mapping) else -1} "
+        f"address_keys={len(candidate) if isinstance(candidate, Mapping) else -1} "
+        f"address_metadata={len(set(candidate).intersection(address_metadata)) if isinstance(candidate, Mapping) else -1}"
     )
 
 
