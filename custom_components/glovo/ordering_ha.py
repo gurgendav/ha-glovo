@@ -14,6 +14,7 @@ from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
+from .api_session import ApiSessionError
 from .const import DOMAIN
 from .ordering_manager import (
     InvalidConfirmation,
@@ -242,11 +243,35 @@ class HomeAssistantOrderingSurfaceAdapter:
                 result = await active(user, message)
             except (OrderingError, KeyError, TypeError, ValueError) as err:
                 code, public_message = _error_code(err)
-                _LOGGER.debug("Rejected Glovo ordering request: %s", type(err).__name__)
+                if isinstance(err, OrderingError):
+                    _LOGGER.debug(
+                        "Rejected Glovo ordering command %s: %s",
+                        name,
+                        type(err).__name__,
+                    )
+                else:
+                    _LOGGER.warning(
+                        "Glovo ordering command %s failed contract validation: %s",
+                        name,
+                        type(err).__name__,
+                    )
                 connection.send_error(message["id"], code, public_message)
                 return
-            except Exception:  # noqa: BLE001 - public error boundary must redact
-                _LOGGER.debug("Rejected Glovo ordering request")
+            except Exception as err:  # noqa: BLE001 - public error boundary must redact
+                if isinstance(err, ApiSessionError):
+                    _LOGGER.warning(
+                        "Glovo ordering command %s failed provider read: category=%s family=%s status=%s",
+                        name,
+                        err.category,
+                        err.endpoint_family,
+                        err.status,
+                    )
+                else:
+                    _LOGGER.warning(
+                        "Glovo ordering command %s failed internally: %s",
+                        name,
+                        type(err).__name__,
+                    )
                 connection.send_error(
                     message["id"],
                     "invalid_ordering_request",
