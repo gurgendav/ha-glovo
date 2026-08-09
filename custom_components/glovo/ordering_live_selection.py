@@ -205,14 +205,24 @@ class LiveSelectionRegistry:
             parent=address_handle,
         )
         # Fees are display-only catalog facts; they are not payment authority.
-        return {
+        result: dict[str, Any] = {
             "storeHandle": handle,
             "label": store.name,
             "category": store.category,
-            "deliveryFeeMinor": store.delivery_fee.amount_minor,
-            "serviceFeeMinor": store.service_fee.amount_minor,
-            "currency": store.delivery_fee.currency,
         }
+        if (
+            store.delivery_fee is not None
+            and store.service_fee is not None
+            and store.delivery_fee.currency == store.service_fee.currency
+        ):
+            result.update(
+                {
+                    "deliveryFeeMinor": store.delivery_fee.amount_minor,
+                    "serviceFeeMinor": store.service_fee.amount_minor,
+                    "currency": store.delivery_fee.currency,
+                }
+            )
+        return result
 
     def issue_menu(self, store_handle: str, menu: CatalogMenu, *, owner: str, generation: int) -> dict[str, Any]:
         store = self._resolve(store_handle, owner=owner, generation=generation, expected=LiveStore)

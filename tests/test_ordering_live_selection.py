@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -83,6 +84,33 @@ def test_handles_are_owner_generation_ttl_bound_and_provider_ids_never_projected
     clock.value += registry.selection_ttl_seconds
     with pytest.raises(live["ordering_live_selection"].LiveSelectionError):
         registry.resolve_store(public_store["storeHandle"], owner="owner-a", generation=1)
+
+
+def test_store_handle_omits_display_fees_when_current_schema_has_no_currency(
+    live: dict[str, ModuleType],
+) -> None:
+    store, _menu = fixtures(live["ordering_contracts"])
+    current_store = replace(store, delivery_fee=None, service_fee=None)
+    registry = live["ordering_live_selection"].LiveSelectionRegistry(
+        handle_source=iter(("store-local",)).__next__
+    )
+    public = registry.issue_store(
+        current_store,
+        owner="owner-a",
+        generation=1,
+        address_handle="address-a",
+    )
+    assert public == {
+        "storeHandle": "store-local",
+        "label": "Kitchen",
+        "category": "RESTAURANT",
+    }
+    assert registry.resolve_store(
+        "store-local",
+        owner="owner-a",
+        generation=1,
+        address_handle="address-a",
+    ) is current_store
 
 
 def test_compiler_uses_default_or_exact_choice_and_rejects_duplicate_and_constraints(live: dict[str, ModuleType]) -> None:
