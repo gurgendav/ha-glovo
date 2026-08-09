@@ -531,10 +531,13 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
                 if label in row and row[label] is not None:
                     _text(row[label], maximum=250, allow_empty=True)
             if "faulty" in address:
-                _bool(address["faulty"])
-            if "originalLatitude" in address:
+                try:
+                    _bool(address["faulty"])
+                except ContractError:
+                    raise ContractError("saved_address_metadata") from None
+            if "originalLatitude" in address and address["originalLatitude"] is not None:
                 _number(address["originalLatitude"], minimum=-90, maximum=90)
-            if "originalLongitude" in address:
+            if "originalLongitude" in address and address["originalLongitude"] is not None:
                 _number(address["originalLongitude"], minimum=-180, maximum=180)
         else:
             row = _object(
@@ -546,34 +549,46 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
             address = _object(entry["address"], required=required, allowed=required)
         if row["entryType"] != "SAVED_ADDRESS":
             _fail()
-        remote_id = _int(address["id"], minimum=1)
+        try:
+            remote_id = _int(address["id"], minimum=1)
+        except ContractError:
+            raise ContractError("saved_address_identity") from None
         if remote_id in ids:
             _fail()
         ids.add(remote_id)
-        kind = _text(address["kind"], maximum=20)
-        if kind not in ADDRESS_KINDS:
-            _fail()
+        try:
+            kind = _text(address["kind"], maximum=20)
+            if kind not in ADDRESS_KINDS:
+                _fail()
+        except ContractError:
+            raise ContractError("saved_address_kind") from None
         tag = address["tag"]
         if tag is not None:
             tag = _text(tag, maximum=80)
-        raw_fields = _array(address["fields"], maximum=MAX_ADDRESS_FIELDS)
-        fields: list[AddressField] = []
-        field_types: set[str] = set()
-        for raw_field in raw_fields:
-            field_data = _object(
-                raw_field,
-                required={"type", "value"},
-                allowed={"type", "value"},
-            )
-            field_type = _text(field_data["type"], maximum=40)
-            if field_type not in ADDRESS_FIELD_TYPES or field_type in field_types:
-                _fail()
-            field_types.add(field_type)
-            fields.append(
-                AddressField(field_type, _text(field_data["value"], maximum=250, allow_empty=True))
-            )
-        parsed.append(
-            AddressSnapshot(
+        try:
+            raw_fields = _array(address["fields"], maximum=MAX_ADDRESS_FIELDS)
+            fields: list[AddressField] = []
+            field_types: set[str] = set()
+            for raw_field in raw_fields:
+                field_data = _object(
+                    raw_field,
+                    required={"type", "value"},
+                    allowed={"type", "value"},
+                )
+                field_type = _text(field_data["type"], maximum=40)
+                if field_type not in ADDRESS_FIELD_TYPES or field_type in field_types:
+                    _fail()
+                field_types.add(field_type)
+                fields.append(
+                    AddressField(
+                        field_type,
+                        _text(field_data["value"], maximum=250, allow_empty=True),
+                    )
+                )
+        except ContractError:
+            raise ContractError("saved_address_fields") from None
+        try:
+            snapshot = AddressSnapshot(
                 remote_id=remote_id,
                 address_line=_text(address["addressLine"], maximum=500),
                 details=_text(address["details"], maximum=500, allow_empty=True),
@@ -586,7 +601,9 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
                 tag=tag,
                 fields=tuple(fields),
             )
-        )
+        except ContractError:
+            raise ContractError("saved_address_snapshot") from None
+        parsed.append(snapshot)
     return tuple(parsed)
 
 

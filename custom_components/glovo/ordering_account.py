@@ -172,7 +172,8 @@ class AccountClient:
             snapshots = parse_saved_addresses(payload)
         except ContractError as err:
             _LOGGER.warning(
-                "Glovo saved-address response failed schema validation: %s",
+                "Glovo saved-address response failed schema validation at %s: %s",
+                err.category,
                 _address_payload_fingerprint(payload),
             )
             raise ApiSessionError(
