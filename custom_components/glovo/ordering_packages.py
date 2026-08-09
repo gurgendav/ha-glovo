@@ -190,13 +190,15 @@ def product_digest(product: CatalogProduct) -> str:
 def group_digest(group: CatalogOptionGroup) -> str:
     if not isinstance(group, CatalogOptionGroup):
         raise PackageLibraryError
-    return _domain_digest("group", (group.key, group.position))
+    return _domain_digest("group", (group.key, group.external_id, group.position))
 
 
 def option_digest(group: CatalogOptionGroup, option: CatalogOption) -> str:
     if not isinstance(group, CatalogOptionGroup) or not isinstance(option, CatalogOption):
         raise PackageLibraryError
-    return _domain_digest("option", (group.key, option.key))
+    return _domain_digest(
+        "option", (group.key, group.external_id, option.key, option.external_id)
+    )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -561,14 +563,28 @@ class PackageLibrary:
         async with self._lock:
             if self._loaded:
                 return
+            candidate: LibraryImage | None = None
+            saving_initial_image = False
             try:
                 raw = await self._storage.async_load()
                 candidate = LibraryImage() if raw is None else parse_library_image(raw)
                 if raw is None:
+                    saving_initial_image = True
                     await self._async_save_candidate(candidate)
             except asyncio.CancelledError:
-                if self._image == LibraryImage():
+                # A cancellation while reading leaves durable state unknown and
+                # must not publish the constructor's empty default. If the read
+                # proved storage empty and the cancellation-resistant initial
+                # save completed, _async_save_candidate already published the
+                # exact persisted candidate and it is safe to mark loaded.
+                if (
+                    saving_initial_image
+                    and candidate is not None
+                    and self._image is candidate
+                ):
                     self._loaded = True
+                else:
+                    self._loaded = False
                 raise
             except Exception:
                 self._writable = False

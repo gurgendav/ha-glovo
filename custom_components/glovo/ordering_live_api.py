@@ -234,8 +234,6 @@ class LiveOrderingFacade:
     @staticmethod
     def _basket_public(state: _BasketState) -> dict[str, Any]:
         provider_total = state.snapshot.basket_price.minor
-        if provider_total is None:
-            raise PublicContractError
         return {
             "revision": state.revision,
             "storeHandle": state.store_handle,
@@ -523,9 +521,19 @@ class LiveOrderingFacade:
                             "reason": "address_missing_or_changed",
                         }
                     fresh_address = address_matches[0]
-                    store = await self._catalog.async_store(
-                        package.store_slug, fresh_address
-                    )
+                    try:
+                        store = await self._catalog.async_store(
+                            package.store_slug, fresh_address
+                        )
+                    except ApiSessionError as err:
+                        if err.category == "http" and err.status == 404:
+                            return {
+                                "status": "stale",
+                                "packageRef": package.package_ref,
+                                "packageRevision": package.revision,
+                                "reason": "store_missing_or_changed",
+                            }
+                        raise
                     try:
                         if package.store_digest != store_digest(store):
                             raise PackageStale("store_missing_or_changed")

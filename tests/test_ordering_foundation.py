@@ -802,10 +802,18 @@ def test_no_purchase_endpoint_or_network_capability_exists_in_ordering_modules(
     assert "mode != MOCK_MODE" in source
 
 
-def test_documentation_calls_feature_mock_only_default_off_admin_only() -> None:
+def test_documentation_calls_feature_default_off_admin_only_preparation() -> None:
     readme = (ROOT / "README.md").read_text().lower()
-    for phrase in ("mock-only", "default-off", "admin-only", "incapable of live purchases"):
+    for phrase in (
+        "default-off",
+        "administrator-only ordering workspace",
+        "durable packages and address aliases",
+        "zero basket writes",
+        "registers no home assistant ordering service",
+        "paid checkout is unavailable",
+    ):
         assert phrase in readme
+    assert "mock-only" not in readme
 
 
 def test_manifest_version_and_trust_identity_are_unchanged() -> None:

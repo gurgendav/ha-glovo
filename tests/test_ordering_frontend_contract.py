@@ -96,6 +96,7 @@ def test_frontend_responsive_theme_and_input_mode_contract() -> None:
         "--warning-color", "--success-color", "--ha-card-border-radius", "--ha-card-box-shadow",
         "prefers-reduced-motion", "forced-colors", "env(safe-area-inset-bottom)", "inset-inline",
         "min-block-size: 44px", "direction", "mobile-basket-bar", "basket-dialog", "customizer-dialog",
+        "Selected full delivery address", ".selected-address", "overflow-wrap: anywhere",
     ):
         assert token in source
 

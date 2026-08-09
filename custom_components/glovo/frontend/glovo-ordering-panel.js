@@ -74,6 +74,7 @@ class GlovoOrderingPanel extends HTMLElement {
         .field > span, .field-label { font-size: .84rem; color: var(--secondary-text-color); font-weight: 600; }
         .field-row { display: flex; gap: 8px; min-inline-size: 0; }
         .field-row input, .field-row select { min-inline-size: 0; inline-size: 100%; border: 1px solid var(--divider-color); border-radius: 9px; padding-inline: 11px; background: var(--card-background-color); }
+        .selected-address { overflow-wrap: anywhere; line-height: 1.35; }
         .store-summary { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px 16px; padding-block-start: 4px; }
         .view-nav { display: flex; gap: 6px; margin-block: 12px; }
         .view-nav button[aria-current="page"] { color: var(--primary-color); border-color: var(--primary-color); background: var(--secondary-background-color); font-weight: 700; }
@@ -402,6 +403,11 @@ class GlovoOrderingPanel extends HTMLElement {
     address.value = this._model.context.addressHandle;
     const refresh = this._button("Refresh", "refresh-addresses"); refresh.setAttribute("aria-label", "Refresh saved addresses");
     addressRow.append(address, refresh); addressField.append(addressRow);
+    if (this._model.context.addressHandle && this._model.context.addressLabel) {
+      const selectedAddress = this._el("div", "selected-address quiet", this._model.context.addressLabel);
+      selectedAddress.setAttribute("aria-label", "Selected full delivery address");
+      addressField.append(selectedAddress);
+    }
     const storeField = this._el("label", "field");
     storeField.append(this._el("span", "", "Explicit store slug or URL"));
     const storeRow = this._el("div", "field-row");

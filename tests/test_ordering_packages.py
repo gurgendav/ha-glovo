@@ -308,6 +308,36 @@ def test_exact_recipe_reconciliation_and_closed_drift(modules: dict[str, ModuleT
         )
     assert err.value.reason == "option_missing_or_changed"
 
+    changed_option_identity = replace(
+        objects["option"], external_id="other-option-external"
+    )
+    group_with_changed_option_identity = replace(
+        objects["group"], options=(changed_option_identity,)
+    )
+    with pytest.raises(packages.PackageStale) as err:
+        packages.reconcile_recipe(
+            package,
+            objects["store"],
+            (
+                replace(
+                    objects["product"],
+                    option_groups=(group_with_changed_option_identity,),
+                ),
+            ),
+        )
+    assert err.value.reason == "option_missing_or_changed"
+
+    changed_group_identity = replace(
+        objects["group"], external_id="other-group-external"
+    )
+    with pytest.raises(packages.PackageStale) as err:
+        packages.reconcile_recipe(
+            package,
+            objects["store"],
+            (replace(objects["product"], option_groups=(changed_group_identity,)),),
+        )
+    assert err.value.reason == "option_missing_or_changed"
+
     newly_required = modules["ordering_contracts"].CatalogOptionGroup(
         "new-group",
         "new-group-external",
@@ -408,6 +438,48 @@ def test_cancelled_save_finishes_persistence_before_publish(modules: dict[str, M
         assert library.revision == 1
         assert storage.value["revision"] == 1
         assert (await library.async_list())["addresses"][0]["name"] == "Home 2"
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_initial_load_never_publishes_empty_writable_state(
+    modules: dict[str, ModuleType],
+) -> None:
+    async def scenario() -> None:
+        packages = modules["ordering_packages"]
+
+        class BlockingLoadStorage:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+                self.saved = False
+
+            async def async_load(self) -> dict[str, Any]:
+                self.started.set()
+                await self.release.wait()
+                return {
+                    "version": 1,
+                    "revision": 7,
+                    "account_digest": None,
+                    "addresses": [],
+                    "packages": [],
+                }
+
+            async def async_save(self, _value: dict[str, Any]) -> None:
+                self.saved = True
+
+        storage = BlockingLoadStorage()
+        library = packages.PackageLibrary(storage)
+        task = asyncio.create_task(library.async_load())
+        await storage.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert library.loaded is False
+        assert library.writable is False
+        assert storage.saved is False
+        with pytest.raises(packages.PackageLibraryUnavailable):
+            await library.async_list()
 
     asyncio.run(scenario())
 
@@ -520,6 +592,44 @@ def test_package_prepare_is_get_only_and_rematerializes_fresh_handles(
             "fresh_handle_issue",
         ]
 
+        calls.clear()
+
+        class MissingCatalog(Catalog):
+            async def async_store(self, slug: str, address: Any) -> Any:
+                calls.append("store_get")
+                assert slug == "kitchen-private-slug"
+                assert address is objects["address"]
+                raise modules["api_session"].ApiSessionError(
+                    category="http", endpoint_family="catalog", status=404
+                )
+
+        missing_facade = api.LiveOrderingFacade(
+            account=Account(),
+            catalog=MissingCatalog(),
+            selections=Selections(),
+            baskets=ForbiddenMutationClient(),
+            quotes=ForbiddenMutationClient(),
+            confirmations=Confirmations(),
+            preparation_authority=ForbiddenMutationClient(),
+            package_library=library,
+        )
+        missing = await missing_facade.async_dispatch(
+            owner="admin-owner",
+            operation="library/package_prepare",
+            request={
+                "generation": 1,
+                "packageKey": package.package_ref,
+                "addressKey": "",
+            },
+        )
+        assert missing == {
+            "status": "stale",
+            "packageRef": package.package_ref,
+            "packageRevision": package.revision,
+            "reason": "store_missing_or_changed",
+        }
+        assert calls == ["customer_get", "addresses_get", "store_get"]
+
     asyncio.run(scenario())
 
 
@@ -574,7 +684,7 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
             def invalidate(self) -> None:
                 return None
 
-        def snapshot(total: int) -> Any:
+        def snapshot(total: int | None) -> Any:
             return SimpleNamespace(
                 basket_price=SimpleNamespace(minor=total),
                 products=(SimpleNamespace(quantity=1),),
@@ -591,7 +701,7 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
                 replace_calls += 1
                 assert previous.basket_price.minor == 500
                 assert len(products) == 1
-                return snapshot(600)
+                return snapshot(None)
 
         class Authority:
             loaded = True
@@ -647,11 +757,18 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
             },
         )
         assert first["providerTotal"] == 500
-        assert second["providerTotal"] == 600
+        assert second["providerTotal"] is None
         assert second["revision"] == 2
         assert second["storeHandle"] == "store-fresh"
         assert second["lines"][0]["productHandle"] == "product-fresh"
         assert create_calls == 1
         assert replace_calls == 1
+        current = await facade.async_dispatch(
+            owner="admin-owner",
+            operation="live/basket",
+            request={"generation": 1},
+        )
+        assert current["revision"] == 2
+        assert current["providerTotal"] is None
 
     asyncio.run(scenario())
