@@ -964,8 +964,10 @@ def test_catalog_client_uses_preferred_get_and_narrow_legacy_fallback(live: dict
 
     harness.transport.calls.clear()
     harness.transport.responses[preferred] = {"error": {"code": "UNKNOWN", "detail": "raw"}}
-    with pytest.raises(live["ordering_contracts"].ContractError):
+    with pytest.raises(api_error) as malformed:
         run(client.async_menu(store, delivery_address))
+    assert malformed.value.category == "schema"
+    assert malformed.value.endpoint_family == "catalog"
     assert [call[1] for call in harness.transport.calls] == [preferred]
 
 

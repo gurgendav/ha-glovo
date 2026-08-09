@@ -10,6 +10,7 @@ from .api_session import ApiSessionError, DeliveryLocation
 from .ordering_contracts import (
     AddressSnapshot,
     CatalogMenu,
+    ContractError,
     LiveStore,
     parse_menu,
     parse_store,
@@ -54,7 +55,12 @@ class LiveCatalogClient:
             {"includeClosed": "true", "includeDisabled": "false"},
             delivery_location=location,
         )
-        store = parse_store(payload)
+        try:
+            store = parse_store(payload)
+        except ContractError as err:
+            raise ApiSessionError(
+                category=err.category, endpoint_family="catalog"
+            ) from None
         if store.city_code != delivery_address.city_code:
             raise ApiSessionError(category="schema", endpoint_family="catalog")
         return store
@@ -134,4 +140,11 @@ class LiveCatalogClient:
                 "catalog", legacy, query, delivery_location=location
             )
             self._raise_classified_outcome(payload)
-        return parse_menu(payload, expected_store_address_id=store.address_id)
+        try:
+            return parse_menu(
+                payload, expected_store_address_id=store.address_id
+            )
+        except ContractError as err:
+            raise ApiSessionError(
+                category=err.category, endpoint_family="catalog"
+            ) from None
