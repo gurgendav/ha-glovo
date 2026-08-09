@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -172,8 +173,13 @@ class HomeAssistantOrderingSurfaceAdapter:
         require_admin: bool,
     ) -> None:
         domain_data = self._hass.data[DOMAIN]
+        panel_file = Path(__file__).with_name("frontend") / "glovo-ordering-panel.js"
+        asset_version = hashlib.sha256(panel_file.read_bytes()).hexdigest()[:12]
+        component_name = f"glovo-ordering-panel-{asset_version}"
+        module_url = (
+            f"{_STATIC_URL}?v={asset_version}&component={component_name}"
+        )
         if not domain_data[_DATA_STATIC_REGISTERED]:
-            panel_file = Path(__file__).with_name("frontend") / "glovo-ordering-panel.js"
             await self._hass.http.async_register_static_paths(
                 [StaticPathConfig(_STATIC_URL, str(panel_file), cache_headers=False)]
             )
@@ -183,10 +189,10 @@ class HomeAssistantOrderingSurfaceAdapter:
             await panel_custom.async_register_panel(
                 self._hass,
                 frontend_url_path=url_path,
-                webcomponent_name="glovo-ordering-panel",
+                webcomponent_name=component_name,
                 sidebar_title=title,
                 sidebar_icon=icon,
-                module_url=_STATIC_URL,
+                module_url=module_url,
                 embed_iframe=False,
                 trust_external=False,
                 require_admin=require_admin,

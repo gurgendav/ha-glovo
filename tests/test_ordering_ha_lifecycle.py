@@ -558,8 +558,19 @@ def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     assert entry.runtime_data.ordering_manager.enabled is True
     generation = entry.runtime_data.ordering_manager.generation
     assert len(runtime.panel_calls) == 1
-    assert runtime.panel_calls[0]["require_admin"] is True
+    panel = runtime.panel_calls[0]
+    assert panel["require_admin"] is True
+    assert panel["webcomponent_name"].startswith("glovo-ordering-panel-")
+    asset_version = panel["webcomponent_name"].removeprefix(
+        "glovo-ordering-panel-"
+    )
+    assert len(asset_version) == 12
+    assert panel["module_url"] == (
+        "/glovo_ordering/glovo-ordering-panel.js"
+        f"?v={asset_version}&component={panel['webcomponent_name']}"
+    )
     assert len(hass.http.static_paths) == 1
+    assert hass.http.static_paths[0].cache_headers is False
     assert len(runtime.commands) == len(_enabled_commands(runtime))
 
     state_shell = runtime.commands[0]

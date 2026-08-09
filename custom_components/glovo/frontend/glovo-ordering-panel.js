@@ -290,4 +290,5 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 }
 
-customElements.define("glovo-ordering-panel", GlovoOrderingPanel);
+const componentName = new URL(import.meta.url).searchParams.get("component") || "glovo-ordering-panel";
+if (!customElements.get(componentName)) customElements.define(componentName, GlovoOrderingPanel);
