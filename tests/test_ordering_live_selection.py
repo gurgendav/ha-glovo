@@ -86,6 +86,55 @@ def test_handles_are_owner_generation_ttl_bound_and_provider_ids_never_projected
         registry.resolve_store(public_store["storeHandle"], owner="owner-a", generation=1)
 
 
+def test_closed_store_menu_is_browseable_but_never_compiles_authority(
+    live: dict[str, ModuleType],
+) -> None:
+    contracts = live["ordering_contracts"]
+    selection = live["ordering_live_selection"]
+    store, menu = fixtures(contracts)
+    store = replace(store, is_open=False)
+    registry = selection.LiveSelectionRegistry(
+        handle_source=iter(
+            ("store-local", "product-local", "group-local", "option-local", "option-local-2")
+        ).__next__
+    )
+    public_store = registry.issue_store(
+        store, owner="owner-a", generation=1, address_handle="address-a"
+    )
+    assert public_store["isOpen"] is False
+    assert public_store["orderingAvailable"] is False
+    public_menu = registry.issue_menu(
+        public_store["storeHandle"], menu, owner="owner-a", generation=1
+    )
+    assert public_menu["isOpen"] is False
+    assert public_menu["orderingAvailable"] is False
+    assert len(public_menu["products"]) == 1
+    choices = selection.parse_selected_products(
+        [
+            {
+                "productHandle": public_menu["products"][0]["productHandle"],
+                "quantity": 1,
+                "options": [],
+            }
+        ]
+    )
+    with pytest.raises(selection.LiveSelectionError):
+        registry.capture_selection(
+            owner="owner-a",
+            generation=1,
+            store_handle=public_store["storeHandle"],
+            selections=choices,
+        )
+    with pytest.raises(selection.LiveSelectionError):
+        registry.compile_intent(
+            owner="owner-a",
+            generation=1,
+            customer_id=42,
+            store_handle=public_store["storeHandle"],
+            selections=choices,
+        )
+
+
 def test_store_handle_omits_display_fees_when_current_schema_has_no_currency(
     live: dict[str, ModuleType],
 ) -> None:
@@ -104,6 +153,8 @@ def test_store_handle_omits_display_fees_when_current_schema_has_no_currency(
         "storeHandle": "store-local",
         "label": "Kitchen",
         "category": "RESTAURANT",
+        "isOpen": True,
+        "orderingAvailable": True,
     }
     assert registry.resolve_store(
         "store-local",

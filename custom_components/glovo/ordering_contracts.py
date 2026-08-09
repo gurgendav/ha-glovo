@@ -233,6 +233,7 @@ class LiveStore:
     delivery_fee: ExactMoney | None
     service_fee: ExactMoney | None
     items_type: str
+    is_open: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -787,7 +788,8 @@ def _parse_legacy_store(payload: Any) -> LiveStore:
         "itemsType",
     }
     root = _object(payload, required=required, allowed=required)
-    if _bool(root["open"]) is not True or _bool(root["enabled"]) is not True:
+    is_open = _bool(root["open"])
+    if _bool(root["enabled"]) is not True:
         _fail("ineligible")
     slug = _text(root["slug"], maximum=100)
     if not _SLUG_RE.fullmatch(slug):
@@ -848,6 +850,7 @@ def _parse_legacy_store(payload: Any) -> LiveStore:
         delivery_fee=_money(fee_info["fee"]),
         service_fee=_money(root["serviceFee"]),
         items_type=items_type,
+        is_open=is_open,
     )
 
 
@@ -887,7 +890,8 @@ def _parse_current_store(payload: Any) -> LiveStore:
         required=_CURRENT_STORE_REQUIRED,
         allowed=_CURRENT_STORE_ALLOWED,
     )
-    if not _bool(root["open"]) or not _bool(root["enabled"]):
+    is_open = _bool(root["open"])
+    if not _bool(root["enabled"]):
         _fail("ineligible")
     if _text(root["category"], maximum=50) != "RESTAURANT" or not _bool(root["food"]):
         _fail("restricted")
@@ -947,6 +951,7 @@ def _parse_current_store(payload: Any) -> LiveStore:
         delivery_fee=None,
         service_fee=None,
         items_type=items_type,
+        is_open=is_open,
     )
 
 
@@ -1249,9 +1254,12 @@ def _parse_current_option_groups(
                     selected=_bool(option["selected"]),
                 )
             )
-        provider_maximum = _int(
-            group["max"], maximum=MAX_OPTIONS_PER_GROUP
-        )
+        # The current Glovo web catalog uses 1000 as an exact "all options"
+        # sentinel. Accept only that observed bounded provider range, then clamp
+        # authority to the strictly parsed options actually present.
+        provider_maximum = _int(group["max"], maximum=1000)
+        if provider_maximum > MAX_OPTIONS_PER_GROUP and provider_maximum != 1000:
+            _fail("schema")
         maximum = min(provider_maximum, len(options))
         result.append(
             CatalogOptionGroup(

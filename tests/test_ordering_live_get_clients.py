@@ -420,6 +420,43 @@ def test_current_web_store_and_menu_shapes_are_strictly_supported(
         contracts.parse_menu(drifted_menu, expected_store_address_id=81)
 
 
+def test_closed_enabled_store_remains_browseable_but_disabled_store_is_rejected(
+    live: dict[str, ModuleType],
+) -> None:
+    contracts = live["ordering_contracts"]
+    closed = current_store_payload()
+    closed["open"] = False
+    store = contracts.parse_store(closed)
+    assert store.is_open is False
+
+    disabled = copy.deepcopy(closed)
+    disabled["enabled"] = False
+    with pytest.raises(contracts.ContractError) as caught:
+        contracts.parse_store(disabled)
+    assert caught.value.category == "ineligible"
+
+
+def test_current_menu_clamps_observed_provider_unlimited_option_sentinel(
+    live: dict[str, ModuleType],
+) -> None:
+    contracts = live["ordering_contracts"]
+    payload = current_menu_payload()
+    group = payload["data"]["body"][0]["data"]["elements"][0]["data"][
+        "attributeGroups"
+    ][0]
+    group["max"] = 1000
+    menu = contracts.parse_menu(payload, expected_store_address_id=81)
+    assert menu.products[0].option_groups[0].maximum == len(group["attributes"])
+
+    group["max"] = 65
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_menu(payload, expected_store_address_id=81)
+
+    group["max"] = 1001
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_menu(payload, expected_store_address_id=81)
+
+
 def test_me_customer_id_is_response_derived_positive_strict_int(live: dict[str, ModuleType]) -> None:
     parser = live["ordering_contracts"].parse_customer
     assert parser({"id": 42}).customer_id == 42
@@ -722,7 +759,7 @@ def test_store_parser_eligibility_cost_enum_duplicates_and_strict_types(live: di
     store = contracts.parse_store(store_payload())
     assert store.store_id == 71 and store.address_id == 81
     for key, value in (
-        ("id", True), ("open", False), ("enabled", False), ("viewType", "UNKNOWN"),
+        ("id", True), ("enabled", False), ("viewType", "UNKNOWN"),
         ("itemsType", "PHARMACY"), ("rating", math.inf), ("serviceFee", {"amount": -1, "currency": "AMD"}),
     ):
         payload = store_payload()

@@ -209,6 +209,8 @@ class LiveSelectionRegistry:
             "storeHandle": handle,
             "label": store.name,
             "category": store.category,
+            "isOpen": store.is_open,
+            "orderingAvailable": store.is_open,
         }
         if (
             store.delivery_fee is not None
@@ -240,7 +242,12 @@ class LiveSelectionRegistry:
                     options.append({"optionHandle": option_handle, "label": option.label, "priceMinor": option.price.amount_minor, "currency": option.price.currency, "selected": option.selected})
                 groups.append({"groupHandle": group_handle, "label": group.label, "min": group.minimum, "max": group.maximum, "multipleSelection": group.multiple_selection, "options": options})
             result.append({"productHandle": product_handle, "label": product.name, "priceMinor": product.price.amount_minor, "currency": product.price.currency, "optionGroups": groups})
-        return {"storeHandle": store_handle, "products": result}
+        return {
+            "storeHandle": store_handle,
+            "isOpen": store.is_open,
+            "orderingAvailable": store.is_open,
+            "products": result,
+        }
 
     def capture_selection(
         self,
@@ -258,12 +265,14 @@ class LiveSelectionRegistry:
         ...,
     ]:
         """Resolve a complete selection to private DTOs without provider effects."""
-        self._resolve(
+        store = self._resolve(
             store_handle,
             owner=owner,
             generation=generation,
             expected=LiveStore,
         )
+        if store.is_open is not True:
+            raise LiveSelectionError
         if not isinstance(selections, tuple) or not 1 <= len(selections) <= MAX_PRODUCTS:
             raise LiveSelectionError
         captured: list[
@@ -387,6 +396,8 @@ class LiveSelectionRegistry:
         generation: int,
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         """Rematerialize fresh handles for an exact GET-only reconciliation."""
+        if not isinstance(store, LiveStore) or store.is_open is not True:
+            raise LiveSelectionError
         store_public = self.issue_store(
             store,
             owner=owner,
@@ -449,6 +460,8 @@ class LiveSelectionRegistry:
         selections: Sequence[SelectedProduct],
     ) -> BasketIntent:
         store = self._resolve(store_handle, owner=owner, generation=generation, expected=LiveStore)
+        if store.is_open is not True:
+            raise LiveSelectionError
         if not isinstance(selections, tuple) or not 1 <= len(selections) <= MAX_PRODUCTS:
             raise LiveSelectionError
         if not all(isinstance(item, SelectedProduct) for item in selections):

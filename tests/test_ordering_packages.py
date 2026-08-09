@@ -630,6 +630,45 @@ def test_package_prepare_is_get_only_and_rematerializes_fresh_handles(
         }
         assert calls == ["customer_get", "addresses_get", "store_get"]
 
+        calls.clear()
+
+        class ClosedCatalog(Catalog):
+            async def async_store(self, slug: str, address: Any) -> Any:
+                calls.append("store_get")
+                assert slug == "kitchen-private-slug"
+                assert address is objects["address"]
+                return replace(objects["store"], is_open=False)
+
+            async def async_menu(self, _store: Any, _address: Any) -> Any:
+                raise AssertionError("closed package preparation must stop before menu")
+
+        closed_facade = api.LiveOrderingFacade(
+            account=Account(),
+            catalog=ClosedCatalog(),
+            selections=Selections(),
+            baskets=ForbiddenMutationClient(),
+            quotes=ForbiddenMutationClient(),
+            confirmations=Confirmations(),
+            preparation_authority=ForbiddenMutationClient(),
+            package_library=library,
+        )
+        closed = await closed_facade.async_dispatch(
+            owner="admin-owner",
+            operation="library/package_prepare",
+            request={
+                "generation": 1,
+                "packageKey": package.package_ref,
+                "addressKey": "",
+            },
+        )
+        assert closed == {
+            "status": "blocked",
+            "packageRef": package.package_ref,
+            "packageRevision": package.revision,
+            "reason": "store_closed",
+        }
+        assert calls == ["customer_get", "addresses_get", "store_get"]
+
     asyncio.run(scenario())
 
 
@@ -649,6 +688,9 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
 
             async def async_customer(self) -> Any:
                 return objects["customer"]
+
+            async def async_saved_payments(self, **_kwargs: Any) -> Any:
+                raise AssertionError("closed store must not issue payment handles")
 
             def invalidate(self) -> None:
                 return None
@@ -720,9 +762,20 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
             def invalidate_all(self) -> None:
                 return None
 
+        class Catalog:
+            def __init__(self) -> None:
+                self.closed = False
+
+            async def async_store(self, slug: str, address: Any) -> Any:
+                assert slug == objects["store"].slug
+                assert address is objects["address"]
+                return replace(objects["store"], is_open=not self.closed)
+
+        catalog = Catalog()
+
         facade = api.LiveOrderingFacade(
             account=Account(),
-            catalog=SimpleNamespace(),
+            catalog=catalog,
             selections=Selections(),
             baskets=Baskets(),
             quotes=SimpleNamespace(),
@@ -761,6 +814,33 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
         assert second["revision"] == 2
         assert second["storeHandle"] == "store-fresh"
         assert second["lines"][0]["productHandle"] == "product-fresh"
+        assert create_calls == 1
+        assert replace_calls == 1
+        catalog.closed = True
+        with pytest.raises(api.PublicContractError):
+            await facade.async_dispatch(
+                owner="admin-owner",
+                operation="live/payment_methods",
+                request={"generation": 1},
+            )
+        with pytest.raises(api.PublicContractError):
+            await facade.async_dispatch(
+                owner="admin-owner",
+                operation="live/basket_set",
+                request={
+                    "generation": 1,
+                    "expectedRevision": 2,
+                    "storeHandle": "store-fresh",
+                    "addressHandle": "address-fresh",
+                    "products": [
+                        {
+                            "productHandle": "product-fresh",
+                            "quantity": 1,
+                            "options": [],
+                        }
+                    ],
+                },
+            )
         assert create_calls == 1
         assert replace_calls == 1
         current = await facade.async_dispatch(

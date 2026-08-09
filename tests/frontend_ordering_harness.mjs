@@ -168,6 +168,31 @@ panel._lookupStore = () => { retryLookups += 1; };
 panel._onClick({ target: { closest: () => ({ dataset: { action: "retry-menu" } }) } });
 assert.equal(retryLookups, 1);
 
+// Closed-store menus are read-only. UI helpers must refuse every path that can
+// create a draft or synchronize provider state, even when invoked directly.
+panel._model.context.store = {
+  storeHandle: "closed-store",
+  label: "Closed Kitchen",
+  isOpen: false,
+  orderingAvailable: false,
+};
+panel._model.context.addressHandle = "choice-current";
+panel._model.menu.products = [product, { productHandle: "p1", label: "Soup", optionGroups: [] }];
+panel._model.draft.lines = [];
+panel._model.overlay = null;
+panel._renderCustomizer = () => {};
+panel._openDialog = () => {};
+panel._openCustomizer("p2", null);
+assert.equal(panel._model.overlay, null);
+panel._addSimple("p1");
+assert.deepEqual(panel._model.draft.lines, []);
+panel._model.draft.lines = [{ productHandle: "p1", quantity: 1, options: [] }];
+let closedMutationRequests = 0;
+panel._request = async () => { closedMutationRequests += 1; return {}; };
+panel._renderBasketSurfaces = () => {};
+await panel._syncBasket();
+assert.equal(closedMutationRequests, 0);
+
 panel._rendered = false;
 panel._invalidateAuthority = Panel.prototype._invalidateAuthority.bind(panel);
 panel._model.overlay = { type: "customizer" };

@@ -97,6 +97,7 @@ class _BasketState:
     generation: int
     revision: int
     store_handle: str
+    address_handle: str = field(repr=False)
     currency: str
     store_label: str
     lines: tuple[dict[str, Any], ...]
@@ -230,6 +231,15 @@ class LiveOrderingFacade:
         if state is None or state.generation != generation:
             raise PublicContractError
         return state
+
+    async def _async_require_store_open(self, store: Any, address: Any) -> None:
+        """GET-only freshness barrier immediately before issuing authority."""
+        fresh_store = await self._catalog.async_store(store.slug, address)
+        if (
+            getattr(fresh_store, "is_open", False) is not True
+            or store_digest(fresh_store) != store_digest(store)
+        ):
+            raise PublicContractError
 
     @staticmethod
     def _basket_public(state: _BasketState) -> dict[str, Any]:
@@ -534,6 +544,13 @@ class LiveOrderingFacade:
                                 "reason": "store_missing_or_changed",
                             }
                         raise
+                    if getattr(store, "is_open", False) is not True:
+                        return {
+                            "status": "blocked",
+                            "packageRef": package.package_ref,
+                            "packageRevision": package.revision,
+                            "reason": "store_closed",
+                        }
                     try:
                         if package.store_digest != store_digest(store):
                             raise PackageStale("store_missing_or_changed")
@@ -680,6 +697,7 @@ class LiveOrderingFacade:
                     generation=generation,
                     store_handle=store_handle,
                 )
+                await self._async_require_store_open(store, delivery_address)
                 snapshot = await self._async_preparation_mutation(
                     operation="live/basket_set",
                     generation=generation,
@@ -696,6 +714,7 @@ class LiveOrderingFacade:
                     generation=generation,
                     revision=expected + 1,
                     store_handle=store_handle,
+                    address_handle=address_handle,
                     currency=currency,
                     store_label=store.name,
                     lines=tuple(lines),
@@ -730,6 +749,12 @@ class LiveOrderingFacade:
                 return {"status": "unsupported"}
             if operation == "live/payment_methods":
                 state = self._state(owner, generation)
+                address = self._account.resolve_address(
+                    state.address_handle, owner_key=owner, generation=generation
+                )
+                if address.canonical_fingerprint != state.address_fingerprint:
+                    raise PublicContractError
+                await self._async_require_store_open(state.store, address)
                 minor = state.snapshot.basket_price.minor
                 if minor is None or not state.currency:
                     raise PublicContractError
@@ -746,6 +771,7 @@ class LiveOrderingFacade:
                 if payment.selected is not True:
                     raise PublicContractError
                 store = state.store
+                await self._async_require_store_open(store, address)
                 quote_request = QuoteRequest(owner_key=owner, generation=generation, intent_key=f"intent-{state.revision}", source_screen="BASKET", basket=state.snapshot, delivery_address=address, payment=payment, masked_address="Saved destination ••••", masked_payment=f"Saved card •••• {payment.last_four_digits or ''}".strip(), store_display_name=store.name)
                 # A replacement attempt removes previous authority before dispatch.
                 self._confirmations.invalidate(owner)
@@ -769,6 +795,18 @@ class LiveOrderingFacade:
                 state = self._quote.get(owner)
                 if state is None or state.generation != generation:
                     raise PublicContractError
+                basket_state = self._state(owner, generation)
+                address = self._account.resolve_address(
+                    basket_state.address_handle,
+                    owner_key=owner,
+                    generation=generation,
+                )
+                try:
+                    await self._async_require_store_open(basket_state.store, address)
+                except PublicContractError:
+                    self._quote.pop(owner, None)
+                    self._confirmations.invalidate(owner)
+                    raise
                 return self._confirmations.prepare(owner_key=owner)
             if operation == "live/execute_checkout":
                 if request["acknowledged"] is not True or not isinstance(request["challenge"], str):
@@ -776,6 +814,18 @@ class LiveOrderingFacade:
                 state = self._quote.get(owner)
                 if state is None or state.generation != generation:
                     raise PublicContractError
+                basket_state = self._state(owner, generation)
+                address = self._account.resolve_address(
+                    basket_state.address_handle,
+                    owner_key=owner,
+                    generation=generation,
+                )
+                try:
+                    await self._async_require_store_open(basket_state.store, address)
+                except PublicContractError:
+                    self._quote.pop(owner, None)
+                    self._confirmations.invalidate(owner)
+                    raise
                 self._confirmations.consume(owner_key=owner, challenge=request["challenge"], current=state.quote)
                 self._quote.pop(owner, None)
                 return {"status": "not_dispatched"}

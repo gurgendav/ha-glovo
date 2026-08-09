@@ -724,7 +724,13 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         "/customer_profile/api/v1/address_book/me/addresses": [
             address_payload(), address_payload()
         ],
-        "/v3/stores/fixture-kitchen": [store_payload()],
+        "/v3/stores/fixture-kitchen": [
+            store_payload(),
+            store_payload(),
+            store_payload(),
+            store_payload(),
+            store_payload(),
+        ],
         "/v4/stores/71/addresses/81/content/main": [menu_payload()],
         "/v3/me": [{"id": 42}],
         "/v4/payment_methods": [payment_payload(), payment_payload()],
@@ -872,11 +878,15 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         ("GET", "/v3/stores/fixture-kitchen"),
         ("GET", "/v4/stores/71/addresses/81/content/main"),
         ("GET", "/v3/me"),
+        ("GET", "/v3/stores/fixture-kitchen"),
         ("POST", "/v1/authenticated/customers/42/baskets"),
+        ("GET", "/v3/stores/fixture-kitchen"),
         ("GET", "/v4/payment_methods"),
+        ("GET", "/v3/stores/fixture-kitchen"),
         ("POST", "/v3/checkouts/order/1/template"),
         ("GET", "/customer_profile/api/v1/address_book/me/addresses"),
         ("GET", "/v4/payment_methods"),
+        ("GET", "/v3/stores/fixture-kitchen"),
     ]
     expected_location = {
         "countryCode": "AM",
@@ -884,8 +894,15 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         "latitude": "40.177",
         "longitude": "44.513",
     }
-    assert location_contexts == [expected_location, expected_location]
-    assert ledger[4][2] == {} and ledger[6][2] == {}
+    assert location_contexts == [
+        expected_location,
+        expected_location,
+        expected_location,
+        expected_location,
+        expected_location,
+        expected_location,
+    ]
+    assert ledger[5][2] == {} and ledger[9][2] == {}
     runtime = entry.runtime_data
     assert runtime.ordering_runtime.live_checkout_available is False
 

@@ -75,6 +75,8 @@ class GlovoOrderingPanel extends HTMLElement {
         .field-row input, .field-row select { min-inline-size: 0; inline-size: 100%; border: 1px solid var(--divider-color); border-radius: 9px; padding-inline: 11px; background: var(--card-background-color); }
         .selected-address { overflow-wrap: anywhere; line-height: 1.35; }
         .store-summary { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px 16px; padding-block-start: 4px; }
+        .closed-store-warning { grid-column: 1 / -1; display: grid; gap: 5px; padding: 14px 16px; border: 2px solid var(--warning-color); border-radius: 10px; background: color-mix(in srgb, var(--warning-color) 13%, var(--card-background-color)); }
+        .closed-store-warning strong { font-size: 1rem; color: var(--warning-color); }
         .view-nav { display: flex; gap: 6px; margin-block: 12px; }
         .view-nav button[aria-current="page"] { color: var(--primary-color); border-color: var(--primary-color); background: var(--secondary-background-color); font-weight: 700; }
         .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: var(--workspace-gap); align-items: start; }
@@ -224,6 +226,7 @@ class GlovoOrderingPanel extends HTMLElement {
   _command(operation) { return `glovo/ordering/${operation}`; }
   _request(operation, request = {}) { return this._hass.callWS({ type: this._command(operation), ...request }); }
   _withGeneration() { return { generation: this._generation }; }
+  _storeAllowsOrdering() { const store = this._model.context.store; return store?.isOpen === true && store?.orderingAvailable === true; }
   _el(tag, className, text) { const element = document.createElement(tag); if (className) element.className = className; if (text !== undefined) element.textContent = text; return element; }
   _button(text, action, className = "") { const button = this._el("button", className, text); button.type = "button"; button.dataset.action = action; return button; }
 
@@ -427,6 +430,11 @@ class GlovoOrderingPanel extends HTMLElement {
       if (this._model.context.store.category) summary.append(this._el("span", "quiet", this._model.context.store.category));
       for (const key of ["deliveryFee", "serviceFee", "minimumOrder"]) if (this._model.context.store[key]) summary.append(this._el("span", "quiet", String(this._model.context.store[key])));
       grid.append(summary);
+      if (!this._storeAllowsOrdering()) {
+        const warning = this._el("div", "closed-store-warning"); warning.setAttribute("role", "alert");
+        warning.append(this._el("strong", "", "Store closed — browsing only"), this._el("span", "", "This menu is visible for reference, but this store is not accepting orders."));
+        grid.append(warning);
+      }
     }
     if (contextLocked) grid.append(this._el("div", "store-summary warning", "Address and store switching are locked while a provider basket exists. Keep it, or clear the provider basket with explicit confirmation before switching."));
     host.append(grid);
@@ -503,9 +511,12 @@ class GlovoOrderingPanel extends HTMLElement {
     if (line) {
       const selected = line.options.flatMap((group) => group.optionLabels || []).join(", ");
       card.append(this._el("div", "quiet", selected || "No optional extras"));
-    } else card.append(this._el("div", "quiet", customizable ? "Choose required and optional selections." : "Add directly to your local draft."));
+    } else if (!this._storeAllowsOrdering()) card.append(this._el("div", "quiet", "Visible for reference while this store is closed."));
+    else card.append(this._el("div", "quiet", customizable ? "Choose required and optional selections." : "Add directly to your local draft."));
     const actions = this._el("div", "card-actions");
-    if (line) {
+    if (!this._storeAllowsOrdering()) {
+      const browseOnly = this._button("Browsing only", ""); browseOnly.disabled = true; actions.append(browseOnly);
+    } else if (line) {
       actions.append(this._lineStepper(line));
       const edit = this._button(customizable ? "Edit" : "Remove", customizable ? "customize-product" : "remove-line"); edit.dataset.productHandle = product.productHandle; actions.append(edit);
     } else {
@@ -560,6 +571,8 @@ class GlovoOrderingPanel extends HTMLElement {
     this._model.context.stores = [];
     this._model.context.store = null;
     this._model.menu = { status: "idle", products: [], query: "", filter: "all", error: "" };
+    this._model.draft = { lines: [], dirty: false };
+    if (!this._model.basket.itemCount) this._model.basket.status = "empty";
     this._setLifecycle("ready", "Looking up the explicit store…");
     this._renderAll();
     try {
@@ -597,9 +610,10 @@ class GlovoOrderingPanel extends HTMLElement {
     try {
       const response = await this._request("live/store_menu", { ...this._withGeneration(), storeHandle: store.storeHandle, addressHandle: this._model.context.addressHandle });
       if (!this._isLatestRead("menu", token, capturedGeneration)) return;
-      if (response?.storeHandle !== store.storeHandle) throw new Error("stale menu association");
+      if (response?.storeHandle !== store.storeHandle || response?.isOpen !== store.isOpen || response?.orderingAvailable !== store.orderingAvailable) throw new Error("stale menu association");
+      this._model.context.store = { ...store, isOpen: response.isOpen, orderingAvailable: response.orderingAvailable };
       this._model.menu.status = "ready"; this._model.menu.products = Array.isArray(response?.products) ? response.products : [];
-      this._setLifecycle("ready", "Menu loaded. Add items to the local draft; nothing syncs until you choose Sync basket.");
+      this._setLifecycle("ready", this._storeAllowsOrdering() ? "Menu loaded. Add items to the local draft; nothing syncs until you choose Sync basket." : "Closed-store menu loaded for browsing only. Basket and package preparation are unavailable.", this._storeAllowsOrdering() ? "status" : "warning");
       this._renderAll();
     } catch (_error) {
       if (!this._isLatestRead("menu", token, capturedGeneration)) return;
@@ -609,6 +623,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   _openCustomizer(productHandle, trigger) {
+    if (!this._storeAllowsOrdering()) { this._setLifecycle("ready", "This closed-store menu is browse-only. No draft or provider basket was changed.", "warning"); return; }
     const product = this._model.menu.products.find((item) => item.productHandle === productHandle);
     if (!product) return;
     const existing = this._model.draft.lines.find((line) => line.productHandle === productHandle);
@@ -687,6 +702,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   _commitCustomization() {
+    if (!this._storeAllowsOrdering()) { this._model.overlay = null; this._setLifecycle("ready", "This closed-store menu is browse-only. No draft or provider basket was changed.", "warning"); return; }
     const overlay = this._model.overlay;
     if (!overlay || overlay.type !== "customizer") return;
     const validation = this._validateCustomization(overlay); overlay.errors = validation.errors;
@@ -711,6 +727,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   _addSimple(productHandle) {
+    if (!this._storeAllowsOrdering()) { this._setLifecycle("ready", "This closed-store menu is browse-only. No draft or provider basket was changed.", "warning"); return; }
     const product = this._model.menu.products.find((item) => item.productHandle === productHandle); if (!product) return;
     const existing = this._model.draft.lines.find((line) => line.productHandle === productHandle);
     if (existing) { this._stepLine(productHandle, 1); return; }
@@ -720,6 +737,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   _stepLine(productHandle, delta) {
+    if (!this._storeAllowsOrdering()) { this._setLifecycle("ready", "This closed-store menu is browse-only. No draft or provider basket was changed.", "warning"); return; }
     const line = this._model.draft.lines.find((item) => item.productHandle === productHandle); if (!line) return;
     const next = line.quantity + Number(delta);
     if (next <= 0) { this._removeLine(productHandle); return; }
@@ -788,7 +806,7 @@ class GlovoOrderingPanel extends HTMLElement {
     if (this._model.basket.providerTotal !== null) { const provider = this._el("div", "total-row"); provider.append(this._el("span", "", "Authoritative provider total"), this._el("strong", "", this._formatMinor(this._model.basket.providerTotal, this._model.basket.currency))); totals.append(provider); }
     host.append(totals);
     const actions = this._el("div", "basket-actions");
-    const sync = this._button(this._model.basket.status === "syncing" ? "Syncing…" : "Sync basket", "sync-basket", "primary"); sync.disabled = !this._model.draft.lines.length || this._model.basket.status === "syncing" || !this._model.context.store || !this._model.context.addressHandle; actions.append(sync);
+    const sync = this._button(this._model.basket.status === "syncing" ? "Syncing…" : "Sync basket", "sync-basket", "primary"); sync.disabled = !this._model.draft.lines.length || this._model.basket.status === "syncing" || !this._model.context.store || !this._model.context.addressHandle || !this._storeAllowsOrdering(); actions.append(sync);
     if (this._model.basket.revision > 0 || this._model.basket.itemCount > 0) actions.append(this._button("Clear provider basket", "ask-clear-basket", "danger"));
     actions.append(this._button("Refresh provider status", "refresh-basket"));
     if (this._model.basket.status === "synced" && this._model.basket.itemCount > 0) {
@@ -817,6 +835,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   async _syncBasket() {
+    if (!this._storeAllowsOrdering()) { this._setLifecycle("ready", "The store is closed. Basket synchronization is unavailable and no provider request was sent.", "warning"); return; }
     return this._runSingleFlight("basket-sync", async () => {
       const capturedGeneration = this._generation;
       const products = this._serializeBasket(); const storeHandle = this._model.context.store?.storeHandle; const addressHandle = this._model.context.addressHandle;
@@ -1072,12 +1091,14 @@ class GlovoOrderingPanel extends HTMLElement {
     const address = this._el("label", "field"); address.append(this._el("span", "", "Versioned address alias")); const select = this._el("select"); select.dataset.libraryField = "package-address"; select.add(new Option("Select address alias", "")); this._model.library.addresses.forEach((item) => select.add(new Option(`${item.name} · v${item.revision}`, item.addressRef))); select.value = editor.addressRef; address.append(select); form.append(address);
     form.append(this._el("p", "quiet", `${this._model.draft.lines.length} current draft line(s) will be saved. Loading or preparing a package never syncs the provider basket.`));
     if (!this._model.context.store) form.append(this._el("p", "field-error", "Select an explicit store and load its menu before saving a package."));
+    else if (!this._storeAllowsOrdering()) form.append(this._el("p", "field-error", "Closed-store menus are browse-only and cannot be saved as prepared packages."));
     host.append(form);
-    const footer = this.shadowRoot.querySelector("#package-editor-footer"); footer.replaceChildren(this._button("Cancel", "close-dialog"), this._button(editor.packageRef ? "Update package" : "Create package", "save-package", "primary")); footer.firstElementChild.dataset.dialog = "package-dialog";
+    const footer = this.shadowRoot.querySelector("#package-editor-footer"); const save = this._button(editor.packageRef ? "Update package" : "Create package", "save-package", "primary"); save.disabled = !this._storeAllowsOrdering(); footer.replaceChildren(this._button("Cancel", "close-dialog"), save); footer.firstElementChild.dataset.dialog = "package-dialog";
   }
 
   async _savePackage() {
     const editor = this._model.library.packageEditor; const address = this._model.library.addresses.find((item) => item.addressRef === editor?.addressRef);
+    if (!this._storeAllowsOrdering()) { this._setLifecycle("ready", "Closed-store menus are browse-only. No package or provider state was changed.", "warning"); return; }
     if (!editor || !editor.name.trim() || !address || !this._model.context.store || !this._model.draft.lines.length) { this._setLifecycle("ready", "Package name, versioned address alias, loaded store, and draft items are required.", "warning"); return; }
     const aliases = editor.aliases.map((item) => item.trim()).filter(Boolean);
     return this._runSingleFlight("library-write", async () => {
@@ -1136,7 +1157,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   _safeStaleReason(reason) {
-    const safe = { account_changed: "provider account changed", address_missing_or_changed: "address missing or changed", store_missing_or_changed: "store missing or changed", product_missing_or_changed: "product missing or changed", option_missing_or_changed: "option missing or changed", selection_constraints_changed: "selection constraints changed" };
+    const safe = { account_changed: "provider account changed", address_missing_or_changed: "address missing or changed", store_missing_or_changed: "store missing or changed", store_closed: "store is currently closed", product_missing_or_changed: "product missing or changed", option_missing_or_changed: "option missing or changed", selection_constraints_changed: "selection constraints changed" };
     return safe[reason] || "saved package is stale";
   }
 

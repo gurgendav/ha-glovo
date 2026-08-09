@@ -88,6 +88,20 @@ def test_frontend_menu_basket_and_customizer_accessibility_contract() -> None:
     assert "option price" not in source.lower() or "priceMinor" in source
 
 
+def test_closed_store_menu_is_prominently_read_only() -> None:
+    source = _source()
+    for token in (
+        "Store closed — browsing only",
+        "This menu is visible for reference, but this store is not accepting orders.",
+        "Visible for reference while this store is closed.",
+        "orderingAvailable",
+        "closed-store-warning",
+        "_storeAllowsOrdering",
+    ):
+        assert token in source
+    assert 'setAttribute("role", "alert")' in source
+
+
 def test_frontend_responsive_theme_and_input_mode_contract() -> None:
     source = _source()
     for token in (

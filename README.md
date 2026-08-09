@@ -31,6 +31,13 @@ receive one attempt, and are never automatically retried after an ambiguous resu
 Changing the address invalidates store, menu, basket, quote, and confirmation
 authority. A quote remains fresh for at most 45 seconds.
 
+Store availability and menu availability are independent. When Glovo returns a menu
+for an enabled but currently closed store, the panel keeps it visible with a prominent
+browse-only warning. Closed-store handles cannot create a local prepared package,
+compile or synchronize a basket, request a quote, prepare confirmation, check out, pay,
+or order. Basket synchronization also performs one fresh GET-only store eligibility
+check immediately before its single provider mutation attempt.
+
 ### Durable packages and address aliases
 
 The admin panel also stores private, account-bound address aliases and reusable
