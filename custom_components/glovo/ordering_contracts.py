@@ -465,28 +465,87 @@ def parse_customer(payload: Any) -> CustomerIdentity:
 
 def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
     _bounded_payload(payload)
-    addresses = _array(_envelope(payload, "addresses"), maximum=MAX_ADDRESSES)
+    root = _object(payload, required={"data"}, allowed={"data"})
+    outer_raw = root["data"]
+    if not isinstance(outer_raw, dict):
+        _fail()
+    address_items: Any = None
+    live_shape = set(outer_raw) == {"addresses"}
+    legacy_shape = set(outer_raw) == {"data"}
+    if live_shape:
+        outer = _object(outer_raw, required={"addresses"}, allowed={"addresses"})
+        address_items = outer["addresses"]
+    elif legacy_shape:
+        outer = _object(outer_raw, required={"data"}, allowed={"data"})
+        inner = _object(
+            outer["data"], required={"addresses"}, allowed={"addresses"}
+        )
+        address_items = inner["addresses"]
+    else:
+        _fail()
+    addresses = _array(address_items, maximum=MAX_ADDRESSES)
     parsed: list[AddressSnapshot] = []
     ids: set[int] = set()
+    required = {
+        "id",
+        "addressLine",
+        "details",
+        "latitude",
+        "longitude",
+        "countryCode",
+        "cityCode",
+        "cityName",
+        "kind",
+        "tag",
+        "fields",
+    }
+    live_row_fields = {
+        "entryType",
+        "title",
+        "subtitle",
+        "coachmark",
+        "editIcon",
+        "icon",
+        "notice",
+        "redirectOnTap",
+        "address",
+    }
+    live_address_fields = required | {
+        "faulty",
+        "originalLatitude",
+        "originalLongitude",
+    }
     for item in addresses:
-        row = _object(item, required={"entryType", "entry"}, allowed={"entryType", "entry"})
+        if live_shape:
+            row = _object(
+                item,
+                required={"entryType", "address"},
+                allowed=live_row_fields,
+            )
+            address = _object(
+                row["address"],
+                required=required,
+                allowed=live_address_fields,
+            )
+            for label in ("title", "subtitle"):
+                if label in row and row[label] is not None:
+                    _text(row[label], maximum=250, allow_empty=True)
+            if "faulty" in address:
+                _bool(address["faulty"])
+            if "originalLatitude" in address:
+                _number(address["originalLatitude"], minimum=-90, maximum=90)
+            if "originalLongitude" in address:
+                _number(address["originalLongitude"], minimum=-180, maximum=180)
+        else:
+            row = _object(
+                item,
+                required={"entryType", "entry"},
+                allowed={"entryType", "entry"},
+            )
+            entry = _object(row["entry"], required={"address"}, allowed={"address"})
+            address = _object(entry["address"], required=required, allowed=required)
         if row["entryType"] != "SAVED_ADDRESS":
             _fail()
-        entry = _object(row["entry"], required={"address"}, allowed={"address"})
-        required = {
-            "id",
-            "addressLine",
-            "details",
-            "latitude",
-            "longitude",
-            "countryCode",
-            "cityCode",
-            "cityName",
-            "kind",
-            "tag",
-            "fields",
-        }
-        address = _object(entry["address"], required=required, allowed=required)
         remote_id = _int(address["id"], minimum=1)
         if remote_id in ids:
             _fail()

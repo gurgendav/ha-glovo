@@ -149,6 +149,36 @@ def address_payload() -> dict[str, Any]:
     }
 
 
+def live_address_payload() -> dict[str, Any]:
+    address = copy.deepcopy(
+        address_payload()["data"]["data"]["addresses"][0]["entry"]["address"]
+    )
+    address.update(
+        {
+            "faulty": False,
+            "originalLatitude": address["latitude"],
+            "originalLongitude": address["longitude"],
+        }
+    )
+    return {
+        "data": {
+            "addresses": [
+                {
+                    "entryType": "SAVED_ADDRESS",
+                    "title": "Saved home",
+                    "subtitle": "Saved destination",
+                    "coachmark": None,
+                    "editIcon": None,
+                    "icon": None,
+                    "notice": None,
+                    "redirectOnTap": False,
+                    "address": address,
+                }
+            ]
+        }
+    }
+
+
 def payment_payload() -> dict[str, Any]:
     return {
         "data": {
@@ -257,6 +287,36 @@ def test_me_customer_id_is_response_derived_positive_strict_int(live: dict[str, 
     for bad in ({}, {"id": True}, {"id": 0}, {"id": -1}, {"id": "42"}, {"id": 1, "email": "private"}):
         with pytest.raises(live["ordering_contracts"].ContractError):
             parser(bad)
+
+
+def test_saved_addresses_accept_exact_live_shape_and_reject_schema_drift(
+    live: dict[str, ModuleType],
+) -> None:
+    contracts = live["ordering_contracts"]
+    current = live_address_payload()
+    parsed = contracts.parse_saved_addresses(current)
+    assert len(parsed) == 1
+    assert parsed[0].kind == "APARTMENT"
+    assert "Private" not in repr(parsed[0])
+
+    unknown_row = copy.deepcopy(current)
+    unknown_row["data"]["addresses"][0]["providerExtra"] = True
+    unknown_address = copy.deepcopy(current)
+    unknown_address["data"]["addresses"][0]["address"]["providerExtra"] = True
+    mixed_envelope = copy.deepcopy(current)
+    mixed_envelope["data"]["data"] = {"addresses": []}
+    wrong_original_coordinate = copy.deepcopy(current)
+    wrong_original_coordinate["data"]["addresses"][0]["address"][
+        "originalLatitude"
+    ] = "40.177"
+    for malformed in (
+        unknown_row,
+        unknown_address,
+        mixed_envelope,
+        wrong_original_coordinate,
+    ):
+        with pytest.raises(contracts.ContractError):
+            contracts.parse_saved_addresses(malformed)
 
 
 def test_all_contracts_accept_minimal_forms_and_reject_missing_wrong_types(
