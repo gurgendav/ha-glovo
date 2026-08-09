@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import json
 import math
+import re
 import socket
 import sys
 from collections.abc import Iterator
@@ -494,21 +495,23 @@ def test_address_handles_are_random_owner_generation_ttl_bound_and_revalidated(
         client.resolve_address(current.selection_key, owner_key="admin-a", generation=9)
 
 
-def test_live_address_uses_provider_title_but_never_subtitle_or_physical_title(
+def test_live_address_uses_redacted_provider_subtitle_then_safe_title(
     live: dict[str, ModuleType],
 ) -> None:
     path = "/customer_profile/api/v1/address_book/me/addresses"
     payload = live_address_payload()
     payload["data"]["addresses"][0]["title"] = "Parents Home"
-    payload["data"]["addresses"][0]["subtitle"] = "Private subtitle"
+    payload["data"]["addresses"][0]["subtitle"] = "Northern Street 70/3, Yerevan"
     harness = SessionHarness(live, {path: payload})
     client = live["ordering_account"].AccountClient(harness.session)
     public = run(client.async_saved_addresses(owner_key="admin-a", generation=2))[0]
-    assert public.public_dict()["label"] == "Parents Home ••••"
-    assert "subtitle" not in json.dumps(public.public_dict()).lower()
+    assert public.public_dict()["label"] == "Northern ••••"
+    assert "70" not in json.dumps(public.public_dict())
+    assert "yerevan" not in json.dumps(public.public_dict()).lower()
 
     unsafe = live_address_payload()
     unsafe["data"]["addresses"][0]["title"] = "70 Example Street"
+    unsafe["data"]["addresses"][0]["subtitle"] = "70/3 Street"
     harness.transport.responses[path] = unsafe
     fallback = run(
         client.async_saved_addresses(owner_key="admin-a", generation=2)
@@ -698,7 +701,12 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
         "Glovo-App-Type",
         "Glovo-App-Version",
         "Glovo-Client-Info",
+        "Glovo-Device-Urn",
         "Glovo-Language-Code",
+        "Glovo-Perseus-Client-Id",
+        "Glovo-Perseus-Session-Id",
+        "Glovo-Perseus-Session-Timestamp",
+        "Glovo-Perseus-Consent",
         "Glovo-Location-Country-Code",
         "Glovo-Location-City-Code",
         "Glovo-Delivery-Location-Latitude",
@@ -710,6 +718,10 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
     }
     assert headers["Glovo-Location-Country-Code"] == "AM"
     assert headers["Glovo-Location-City-Code"] == "YRV"
+    assert re.fullmatch(r"glv:device:[0-9a-f-]{36}", headers["Glovo-Device-Urn"])
+    assert headers["Glovo-Perseus-Client-Id"] == headers["Glovo-Perseus-Session-Id"]
+    assert re.fullmatch(r"[0-9a-f-]{36}", headers["Glovo-Perseus-Client-Id"])
+    assert headers["Glovo-Perseus-Session-Timestamp"].isdigit()
     malformed = dict(context)
     malformed["Authorization"] = "forbidden"
     with pytest.raises(RuntimeError, match="Invalid delivery context"):

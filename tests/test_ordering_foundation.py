@@ -154,6 +154,9 @@ def test_money_currency_and_reference_models_are_strict_and_redaction_safe(
         models.MaskedPaymentSummary("choice", "Unmasked payment digits 12345")
 
     address = models.SavedAddressSummary("local-destination", "Saved destination ••••")
+    assert models.SavedAddressSummary(
+        "local-unicode", "Հյուսիսային ••••"
+    ).masked_label == "Հյուսիսային ••••"
     assert address.public_dict() == {
         "key": "local-destination",
         "label": "Saved destination ••••",

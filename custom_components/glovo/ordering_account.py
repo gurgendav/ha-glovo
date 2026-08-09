@@ -28,6 +28,14 @@ _ADDRESS_PATH: Final = "/customer_profile/api/v1/address_book/me/addresses"
 _PAYMENT_PATH: Final = "/v4/payment_methods"
 _CUSTOMER_PATH: Final = "/v3/me"
 SELECTION_TTL_SECONDS: Final = 300.0
+_ROAD_TYPE_WORDS: Final = frozenset(
+    {
+        "apartment", "apt", "avenue", "ave", "boulevard", "blvd",
+        "building", "court", "ct", "drive", "dr", "floor", "highway",
+        "house", "hwy", "lane", "ln", "road", "rd", "square", "sq",
+        "street", "st", "unit",
+    }
+)
 
 _LOGGER = logging.getLogger(__name__)
 _ADDRESS_FIELDS: Final = frozenset(
@@ -123,6 +131,26 @@ def _address_payload_fingerprint(payload: Any) -> str:
         f"field_count={len(field_rows)} field_schema={','.join(field_schema)} "
         f"field_types={','.join(field_types)} field_value_types={','.join(field_value_types)}"
     )
+
+
+def _safe_saved_address_alias(snapshot: AddressSnapshot) -> str | None:
+    """Derive a non-exact alias from Glovo's display subtitle, then title."""
+    if snapshot.display_subtitle:
+        first_segment = snapshot.display_subtitle.split(",", 1)[0]
+        words: list[str] = []
+        for token in first_segment.split():
+            if any(char.isdigit() for char in token):
+                continue
+            cleaned = "".join(
+                char for char in token if char.isalpha() or char in "-'’"
+            ).strip("-'’")
+            if not cleaned or cleaned.casefold() in _ROAD_TYPE_WORDS:
+                continue
+            words.append(cleaned)
+        candidate = " ".join(words)
+        if 1 <= len(candidate) <= 40:
+            return candidate
+    return snapshot.display_title
 
 
 class InvalidSelection(ValueError):
@@ -223,7 +251,7 @@ class AccountClient:
                 owner, current_generation, expires_at, snapshot
             )
             label = labels[snapshot.kind]
-            alias = snapshot.display_title
+            alias = _safe_saved_address_alias(snapshot)
             if alias:
                 try:
                     label = SavedAddressSummary(handle, f"{alias} ••••").masked_label

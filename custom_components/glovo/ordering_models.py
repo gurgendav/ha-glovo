@@ -26,7 +26,7 @@ ISO_4217_EXPONENTS = {
     "USD": 2,
 }
 _KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,63}$")
-_MASKED_ADDRESS_RE = re.compile(r"^[A-Za-z][A-Za-z -]{0,39} ••••$")
+_MASKED_ADDRESS_SUFFIX = " ••••"
 _PHYSICAL_ADDRESS_WORD_RE = re.compile(
     r"\b(?:apartment|apt|avenue|ave|boulevard|blvd|building|court|ct|drive|dr|"
     r"floor|highway|house|hwy|lane|ln|postal|road|rd|square|sq|street|st|unit|zip)\b",
@@ -217,6 +217,18 @@ class Money:
         return f"{sign}{int(digits):,} {self.currency}"
 
 
+def _is_masked_address_alias(label: str) -> bool:
+    if not label.endswith(_MASKED_ADDRESS_SUFFIX):
+        return False
+    alias = label[: -len(_MASKED_ADDRESS_SUFFIX)]
+    return (
+        1 <= len(alias) <= 40
+        and alias[0].isalpha()
+        and all(char.isalpha() or char in " -'’" for char in alias)
+        and alias == " ".join(alias.split())
+    )
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class SavedAddressSummary:
     """Opaque fixture address selection with no physical address or remote identifier."""
@@ -230,7 +242,7 @@ class SavedAddressSummary:
             self.masked_label, "address label", maximum=45
         )
         alias = label.removesuffix(" ••••")
-        if not _MASKED_ADDRESS_RE.fullmatch(label) or _PHYSICAL_ADDRESS_WORD_RE.search(alias):
+        if not _is_masked_address_alias(label) or _PHYSICAL_ADDRESS_WORD_RE.search(alias):
             raise ValueError("address label must be a short opaque alias ending in ••••")
         object.__setattr__(self, "masked_label", label)
 

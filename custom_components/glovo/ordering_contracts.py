@@ -110,6 +110,7 @@ class AddressSnapshot:
     tag: str | None = field(repr=False)
     fields: tuple[AddressField, ...] = field(repr=False)
     display_title: str | None = field(default=None, repr=False)
+    display_subtitle: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "remote_id", _int(self.remote_id, minimum=1))
@@ -129,6 +130,10 @@ class AddressSnapshot:
         if self.display_title is not None:
             object.__setattr__(
                 self, "display_title", _text(self.display_title, maximum=80)
+            )
+        if self.display_subtitle is not None:
+            object.__setattr__(
+                self, "display_subtitle", _text(self.display_subtitle, maximum=160)
             )
         if not isinstance(self.fields, tuple) or len(self.fields) > MAX_ADDRESS_FIELDS:
             _fail()
@@ -522,6 +527,7 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
     }
     for item in addresses:
         display_title: str | None = None
+        display_subtitle: str | None = None
         if live_shape:
             row = _object(
                 item,
@@ -539,7 +545,10 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
                 )
                 display_title = candidate_title or None
             if "subtitle" in row and row["subtitle"] is not None:
-                _text(row["subtitle"], maximum=250, allow_empty=True)
+                candidate_subtitle = _text(
+                    row["subtitle"], maximum=160, allow_empty=True
+                )
+                display_subtitle = candidate_subtitle or None
             if "faulty" in address and address["faulty"] is not None:
                 try:
                     _bool(address["faulty"])
@@ -620,6 +629,7 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
                 tag=tag,
                 fields=tuple(fields),
                 display_title=display_title,
+                display_subtitle=display_subtitle,
             )
         except ContractError:
             raise ContractError("saved_address_snapshot") from None

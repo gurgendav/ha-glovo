@@ -150,6 +150,9 @@ ORDERING_WEB_VERSION = "v1.2476.1"
 _DELIVERY_CONTEXT_KEYS = frozenset(
     {"countryCode", "cityCode", "latitude", "longitude"}
 )
+_WEB_DEVICE_URN = f"glv:device:{uuid.uuid4()}"
+_WEB_PERSEUS_ID = str(uuid.uuid4())
+_WEB_PERSEUS_TIMESTAMP = str(int(time.time() * 1000))
 DEFAULT_REFRESH_MARGIN_SEC = 60
 TrackingOrigin = Literal["ORDER_TRACKING", "ORDER_DETAILS"]
 TERMINAL_TRACKING_STEPS = frozenset({"DELIVERED", "CANCELED", "CANCELLED"})
@@ -469,7 +472,12 @@ def _delivery_headers(context: Mapping[str, str]) -> dict[str, str]:
         "Glovo-Client-Info": (
             f"web-customer-web-react/{ORDERING_WEB_VERSION} project:customer-web"
         ),
+        "Glovo-Device-Urn": _WEB_DEVICE_URN,
         "Glovo-Language-Code": "en",
+        "Glovo-Perseus-Client-Id": _WEB_PERSEUS_ID,
+        "Glovo-Perseus-Session-Id": _WEB_PERSEUS_ID,
+        "Glovo-Perseus-Session-Timestamp": _WEB_PERSEUS_TIMESTAMP,
+        "Glovo-Perseus-Consent": "essential_functional_marketing",
         "Glovo-Location-Country-Code": country,
         "Glovo-Location-City-Code": city,
         "Glovo-Delivery-Location-Latitude": str(lat),
