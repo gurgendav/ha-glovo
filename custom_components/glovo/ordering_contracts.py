@@ -111,6 +111,7 @@ class AddressSnapshot:
     fields: tuple[AddressField, ...] = field(repr=False)
     display_title: str | None = field(default=None, repr=False)
     display_subtitle: str | None = field(default=None, repr=False)
+    is_live_saved_address: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "remote_id", _int(self.remote_id, minimum=1))
@@ -135,6 +136,8 @@ class AddressSnapshot:
             object.__setattr__(
                 self, "display_subtitle", _text(self.display_subtitle, maximum=160)
             )
+        if not isinstance(self.is_live_saved_address, bool):
+            _fail()
         if not isinstance(self.fields, tuple) or len(self.fields) > MAX_ADDRESS_FIELDS:
             _fail()
         if not all(isinstance(item, AddressField) for item in self.fields):
@@ -630,6 +633,7 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
                 fields=tuple(fields),
                 display_title=display_title,
                 display_subtitle=display_subtitle,
+                is_live_saved_address=live_shape,
             )
         except ContractError:
             raise ContractError("saved_address_snapshot") from None

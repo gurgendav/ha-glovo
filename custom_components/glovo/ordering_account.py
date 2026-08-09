@@ -141,7 +141,7 @@ def _address_payload_fingerprint(payload: Any) -> str:
 def _safe_saved_address_alias(snapshot: AddressSnapshot) -> str | None:
     """Derive a non-exact alias from provider display text, then title."""
     address_line_source = (
-        snapshot.address_line if snapshot.display_title is not None else None
+        snapshot.address_line if snapshot.is_live_saved_address else None
     )
     field_sources = (
         tuple(
@@ -149,7 +149,7 @@ def _safe_saved_address_alias(snapshot: AddressSnapshot) -> str | None:
             for field in snapshot.fields
             if field.field_type in {"STREET_NAME", "BUILDING_NAME"}
         )
-        if snapshot.display_title is not None
+        if snapshot.is_live_saved_address
         else ()
     )
     for source in (
@@ -297,7 +297,7 @@ class AccountClient:
                     label = SavedAddressSummary(handle, f"{alias} ••••").masked_label
                 except ValueError:
                     alias = None
-            if not alias and snapshot.display_title is not None:
+            if not alias and snapshot.is_live_saved_address:
                 base = ordinal_bases[snapshot.kind]
                 ordinal = ordinal_counts.get(base, 0) + 1
                 ordinal_counts[base] = ordinal
