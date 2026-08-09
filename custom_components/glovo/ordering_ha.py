@@ -1,4 +1,4 @@
-"""Strict Home Assistant WebSocket adapter for ordering and recovery."""
+"""Strict admin-only Home Assistant WebSocket adapter for live ordering."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from .ordering_manager import (
     OrderingUser,
     StaleOrderingGeneration,
 )
-from .ordering_surface import Handler, PANEL_URL_PATH
+from .ordering_surface import Handler, PANEL_URL_PATH, PUBLIC_OPERATION_COMMANDS
 
 _LOGGER = logging.getLogger(__name__)
 _DATA_HANDLERS = "ordering_websocket_handlers"
@@ -36,9 +36,15 @@ _STATIC_URL = "/glovo_ordering/glovo-ordering-panel.js"
 
 
 def _strict_positive_int(value: object) -> int:
-    """Reject bool-as-int coercion at the Home Assistant routing boundary."""
+    """Reject bool-as-int coercion at the routing boundary."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise vol.Invalid("expected positive integer")
+    return value
+
+
+def _strict_nonnegative_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise vol.Invalid("expected non-negative integer")
     return value
 
 
@@ -49,73 +55,81 @@ _MANUAL_RESOLUTIONS = vol.In(
     {"found_succeeded", "found_failed_or_cancelled", "still_unknown"}
 )
 
-_COMMAND_SCHEMAS: dict[str, dict[Any, Any]] = {
-    "glovo/ordering/state": {vol.Required("type"): "glovo/ordering/state"},
-    "glovo/ordering/manual_checks": {
-        vol.Required("type"): "glovo/ordering/manual_checks"
+# Schema dicts intentionally enumerate every frozen request field.  HA's schema
+# decorator rejects extra fields before a request reaches the manager/facade.
+_OPERATION_FIELDS: dict[str, dict[Any, Any]] = {
+    "state": {vol.Required("generation"): _strict_positive_int},
+    "live/addresses": {vol.Required("generation"): _strict_positive_int},
+    "live/stores": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("storeSlug"): str,
     },
-    "glovo/ordering/manual_check": {
-        vol.Required("type"): "glovo/ordering/manual_check",
-        vol.Required("attemptRef"): str,
+    "live/store_menu": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("storeHandle"): str,
     },
-    "glovo/ordering/prepare_manual_resolution": {
-        vol.Required("type"): "glovo/ordering/prepare_manual_resolution",
-        vol.Required("attemptRef"): str,
-        vol.Required("expectedRecordRevision"): _strict_positive_int,
-        vol.Required("expectedState"): _MANUAL_STATES,
-        vol.Required("resolution"): _MANUAL_RESOLUTIONS,
+    "live/payment_methods": {vol.Required("generation"): _strict_positive_int},
+    "live/basket": {vol.Required("generation"): _strict_positive_int},
+    "live/basket_set": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("expectedRevision"): _strict_nonnegative_int,
+        vol.Required("storeHandle"): str,
+        vol.Required("products"): list,
     },
-    "glovo/ordering/resolve_manual_check": {
-        vol.Required("type"): "glovo/ordering/resolve_manual_check",
-        vol.Required("attemptRef"): str,
-        vol.Required("expectedRecordRevision"): _strict_positive_int,
-        vol.Required("expectedState"): _MANUAL_STATES,
-        vol.Required("resolution"): _MANUAL_RESOLUTIONS,
+    "live/basket_clear": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("expectedRevision"): _strict_nonnegative_int,
+    },
+    "live/basket_reconcile": {vol.Required("generation"): _strict_positive_int},
+    "live/create_quote": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("addressHandle"): str,
+        vol.Required("paymentHandle"): str,
+    },
+    "live/prepare_confirmation": {vol.Required("generation"): _strict_positive_int},
+    "live/execute_checkout": {
+        vol.Required("generation"): _strict_positive_int,
         vol.Required("challenge"): str,
-        vol.Required("acknowledged"): bool,
+        vol.Required("acknowledged"): vol.All(bool, vol.In([True])),
     },
-    "glovo/ordering/catalog": {
-        vol.Required("type"): "glovo/ordering/catalog",
-        vol.Required("generation"): int,
-    },
-    "glovo/ordering/basket": {
-        vol.Required("type"): "glovo/ordering/basket",
-        vol.Required("generation"): int,
-    },
-    "glovo/ordering/basket_add_fixture_item": {
-        vol.Required("type"): "glovo/ordering/basket_add_fixture_item",
-        vol.Required("generation"): int,
-        vol.Required("storeKey"): str,
-        vol.Required("productKey"): str,
-        vol.Required("variantKey"): str,
-        vol.Optional("modifierKeys", default=[]): [str],
-        vol.Required("quantity"): int,
-    },
-    "glovo/ordering/basket_clear": {
-        vol.Required("type"): "glovo/ordering/basket_clear",
-        vol.Required("generation"): int,
-    },
-    "glovo/ordering/fixture_quote": {
-        vol.Required("type"): "glovo/ordering/fixture_quote",
-        vol.Required("generation"): int,
-        vol.Required("addressKey"): str,
-        vol.Required("paymentKey"): str,
-    },
-    "glovo/ordering/prepare_mock_confirmation": {
-        vol.Required("type"): "glovo/ordering/prepare_mock_confirmation",
-        vol.Required("generation"): int,
-        vol.Required("fingerprint"): str,
-    },
-    "glovo/ordering/execute_mock_checkout": {
-        vol.Required("type"): "glovo/ordering/execute_mock_checkout",
-        vol.Required("generation"): int,
-        vol.Required("fingerprint"): str,
-        vol.Required("challenge"): str,
-    },
+    "live/checkout_status": {vol.Required("generation"): _strict_positive_int},
 }
+
+_COMMAND_SCHEMAS: dict[str, dict[Any, Any]] = {
+    command: {vol.Required("type"): command, **_OPERATION_FIELDS[operation]}
+    for operation, command in PUBLIC_OPERATION_COMMANDS.items()
+}
+_COMMAND_SCHEMAS.update(
+    {
+        "glovo/ordering/manual_checks": {
+            vol.Required("type"): "glovo/ordering/manual_checks"
+        },
+        "glovo/ordering/manual_check": {
+            vol.Required("type"): "glovo/ordering/manual_check",
+            vol.Required("attemptRef"): str,
+        },
+        "glovo/ordering/prepare_manual_resolution": {
+            vol.Required("type"): "glovo/ordering/prepare_manual_resolution",
+            vol.Required("attemptRef"): str,
+            vol.Required("expectedRecordRevision"): _strict_positive_int,
+            vol.Required("expectedState"): _MANUAL_STATES,
+            vol.Required("resolution"): _MANUAL_RESOLUTIONS,
+        },
+        "glovo/ordering/resolve_manual_check": {
+            vol.Required("type"): "glovo/ordering/resolve_manual_check",
+            vol.Required("attemptRef"): str,
+            vol.Required("expectedRecordRevision"): _strict_positive_int,
+            vol.Required("expectedState"): _MANUAL_STATES,
+            vol.Required("resolution"): _MANUAL_RESOLUTIONS,
+            vol.Required("challenge"): str,
+            vol.Required("acknowledged"): vol.All(bool, vol.In([True])),
+        },
+    }
+)
 
 
 def _error_code(error: Exception) -> tuple[str, str]:
+    """Return only stable, redacted errors; never surface provider text."""
     if isinstance(error, OrderingAdminRequired):
         return "admin_required", "Administrator access is required"
     if isinstance(error, OrderingManualCheckRequired):
@@ -131,12 +145,12 @@ def _error_code(error: Exception) -> tuple[str, str]:
     if isinstance(error, InvalidConfirmation):
         return "invalid_confirmation", "Confirmation is invalid or expired"
     if isinstance(error, OrderingDisabled):
-        return "ordering_disabled", "Ordering is disabled"
-    return "invalid_ordering_request", "Ordering request is invalid"
+        return "ordering_disabled", "Ordering is unavailable"
+    return "invalid_ordering_request", "Ordering request is unavailable or invalid"
 
 
 class HomeAssistantOrderingSurfaceAdapter:
-    """Translate tested registration semantics to Home Assistant APIs."""
+    """Translate tested surface semantics to supported Home Assistant APIs."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         self._hass = hass
@@ -189,6 +203,7 @@ class HomeAssistantOrderingSurfaceAdapter:
         handlers: dict[str, Handler] = domain_data[_DATA_HANDLERS]
         commands: set[str] = domain_data[_DATA_COMMANDS]
         if name in commands:
+            # Reloads replace exactly one callback for an existing command shell.
             handlers[name] = handler
             return
         schema = _COMMAND_SCHEMAS.get(name)
@@ -206,10 +221,11 @@ class HomeAssistantOrderingSurfaceAdapter:
             active = hass.data.get(DOMAIN, {}).get(_DATA_HANDLERS, {}).get(name)
             if active is None:
                 connection.send_error(
-                    message["id"], "ordering_disabled", "Ordering recovery is unavailable"
+                    message["id"], "ordering_disabled", "Ordering is unavailable"
                 )
                 return
             try:
+                # `connection.user`, not request content, supplies owner identity.
                 user = OrderingUser(
                     user_id=connection.user.id,
                     is_admin=connection.user.is_admin,
@@ -220,6 +236,14 @@ class HomeAssistantOrderingSurfaceAdapter:
                 _LOGGER.debug("Rejected Glovo ordering request: %s", type(err).__name__)
                 connection.send_error(message["id"], code, public_message)
                 return
+            except Exception:  # noqa: BLE001 - public error boundary must redact
+                _LOGGER.debug("Rejected Glovo ordering request")
+                connection.send_error(
+                    message["id"],
+                    "invalid_ordering_request",
+                    "Ordering request is unavailable or invalid",
+                )
+                return
             connection.send_result(message["id"], result)
 
         websocket_api.async_register_command(self._hass, async_command)
@@ -228,7 +252,7 @@ class HomeAssistantOrderingSurfaceAdapter:
 
     async def async_remove_handlers(self) -> None:
         # HA has no supported dynamic WebSocket unregister operation. Retained
-        # command shells contain no callable and return a stable disabled error.
+        # command shells contain no callable and consequently fail closed.
         handlers: Mapping[str, Handler] = self._hass.data.get(DOMAIN, {}).get(
             _DATA_HANDLERS, {}
         )

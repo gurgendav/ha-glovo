@@ -30,16 +30,21 @@
     "step": {
       "init": {
         "title": "אפשרויות Glovo",
-        "description": "השאירו את שדה האסימון ריק כדי לשמור על האסימון הנוכחי.",
+        "description": "Leave the refresh token empty to keep the current one. LIVE ORDERING IS ADMIN-ONLY. allow_ordering permits only live preparation and may change the server basket/template; allow_live_checkout separately permits one paid submission. The provider-selected saved card and the exact authoritative total/currency must be explicitly confirmed immediately before submit. Ambiguous outcomes require manual Glovo checking and have no retry. Re-authentication resets these gates.",
         "data": {
           "scan_interval": "מרווח עדכון (שניות)",
-          "refresh_token": "אסימון רענון חדש (אופציונלי)"
+          "refresh_token": "אסימון רענון חדש (אופציונלי)",
+          "allow_ordering": "Enable live ordering preparation (may change server basket/template)",
+          "ordering_acknowledged": "I understand preparation can change the server basket/template, checkout is separately gated, and ambiguous outcomes have no retry",
+          "allow_live_checkout": "Enable one live paid checkout submission"
         }
       }
     },
     "error": {
       "invalid_auth": "אסימון רענון לא תקין.",
-      "cannot_connect": "ההתחברות ל-Glovo נכשלה."
+      "cannot_connect": "ההתחברות ל-Glovo נכשלה.",
+      "ordering_ack_required": "Explicitly acknowledge the live-ordering and no-retry safety warning before enabling.",
+      "live_checkout_ack_required": "Explicitly acknowledge the separate live paid-checkout warning before enabling."
     }
   },
   "entity": {
@@ -68,9 +73,15 @@
           "canceled": "בוטלה"
         }
       },
-      "store_name": { "name": "חנות" },
-      "order_count": { "name": "הזמנות פעילות" },
-      "courier_name": { "name": "שם השליח" },
+      "store_name": {
+        "name": "חנות"
+      },
+      "order_count": {
+        "name": "הזמנות פעילות"
+      },
+      "courier_name": {
+        "name": "שם השליח"
+      },
       "courier_status": {
         "name": "סטטוס השליח",
         "state": {
@@ -87,19 +98,40 @@
           "ready": "מוכן"
         }
       },
-      "progress_percent": { "name": "התקדמות" },
-      "eta_min": { "name": "הגעה מינ׳" },
-      "eta_max": { "name": "הגעה מקס׳" },
-      "original_eta": { "name": "זמן הגעה מקורי" },
-      "poll_interval_sec": { "name": "מרווח תשאול מומלץ" }
+      "progress_percent": {
+        "name": "התקדמות"
+      },
+      "eta_min": {
+        "name": "הגעה מינ׳"
+      },
+      "eta_max": {
+        "name": "הגעה מקס׳"
+      },
+      "original_eta": {
+        "name": "זמן הגעה מקורי"
+      },
+      "poll_interval_sec": {
+        "name": "מרווח תשאול מומלץ"
+      }
     },
     "binary_sensor": {
-      "has_active_order": { "name": "הזמנה פעילה" },
-      "is_late": { "name": "מאחרת" },
-      "chat_available": { "name": "צ׳אט זמין" }
+      "has_active_order": {
+        "name": "הזמנה פעילה"
+      },
+      "is_late": {
+        "name": "מאחרת"
+      },
+      "chat_available": {
+        "name": "צ׳אט זמין"
+      }
     },
     "device_tracker": {
-      "courier": { "name": "מיקום השליח" }
+      "courier": {
+        "name": "מיקום השליח"
+      },
+      "store": {
+        "name": "Store location"
+      }
     }
   },
   "device_automation": {

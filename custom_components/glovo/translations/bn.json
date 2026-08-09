@@ -30,16 +30,21 @@
     "step": {
       "init": {
         "title": "Glovo বিকল্প",
-        "description": "বর্তমান টোকেন বজায় রাখতে টোকেন ক্ষেত্রটি খালি রাখুন।",
+        "description": "Leave the refresh token empty to keep the current one. LIVE ORDERING IS ADMIN-ONLY. allow_ordering permits only live preparation and may change the server basket/template; allow_live_checkout separately permits one paid submission. The provider-selected saved card and the exact authoritative total/currency must be explicitly confirmed immediately before submit. Ambiguous outcomes require manual Glovo checking and have no retry. Re-authentication resets these gates.",
         "data": {
           "scan_interval": "আপডেটের ব্যবধান (সেকেন্ড)",
-          "refresh_token": "নতুন রিফ্রেশ টোকেন (ঐচ্ছিক)"
+          "refresh_token": "নতুন রিফ্রেশ টোকেন (ঐচ্ছিক)",
+          "allow_ordering": "Enable live ordering preparation (may change server basket/template)",
+          "ordering_acknowledged": "I understand preparation can change the server basket/template, checkout is separately gated, and ambiguous outcomes have no retry",
+          "allow_live_checkout": "Enable one live paid checkout submission"
         }
       }
     },
     "error": {
       "invalid_auth": "অবৈধ রিফ্রেশ টোকেন।",
-      "cannot_connect": "Glovo-তে সংযোগ করা যায়নি।"
+      "cannot_connect": "Glovo-তে সংযোগ করা যায়নি।",
+      "ordering_ack_required": "Explicitly acknowledge the live-ordering and no-retry safety warning before enabling.",
+      "live_checkout_ack_required": "Explicitly acknowledge the separate live paid-checkout warning before enabling."
     }
   },
   "entity": {
@@ -68,9 +73,15 @@
           "canceled": "বাতিল করা হয়েছে"
         }
       },
-      "store_name": { "name": "দোকান" },
-      "order_count": { "name": "সক্রিয় অর্ডার" },
-      "courier_name": { "name": "কুরিয়ারের নাম" },
+      "store_name": {
+        "name": "দোকান"
+      },
+      "order_count": {
+        "name": "সক্রিয় অর্ডার"
+      },
+      "courier_name": {
+        "name": "কুরিয়ারের নাম"
+      },
       "courier_status": {
         "name": "কুরিয়ারের অবস্থা",
         "state": {
@@ -87,19 +98,40 @@
           "ready": "প্রস্তুত"
         }
       },
-      "progress_percent": { "name": "অগ্রগতি" },
-      "eta_min": { "name": "পৌঁছানো সর্বনিম্ন" },
-      "eta_max": { "name": "পৌঁছানো সর্বোচ্চ" },
-      "original_eta": { "name": "মূল পৌঁছানোর সময়" },
-      "poll_interval_sec": { "name": "প্রস্তাবিত পোলিং ব্যবধান" }
+      "progress_percent": {
+        "name": "অগ্রগতি"
+      },
+      "eta_min": {
+        "name": "পৌঁছানো সর্বনিম্ন"
+      },
+      "eta_max": {
+        "name": "পৌঁছানো সর্বোচ্চ"
+      },
+      "original_eta": {
+        "name": "মূল পৌঁছানোর সময়"
+      },
+      "poll_interval_sec": {
+        "name": "প্রস্তাবিত পোলিং ব্যবধান"
+      }
     },
     "binary_sensor": {
-      "has_active_order": { "name": "সক্রিয় অর্ডার" },
-      "is_late": { "name": "বিলম্বিত" },
-      "chat_available": { "name": "চ্যাট উপলব্ধ" }
+      "has_active_order": {
+        "name": "সক্রিয় অর্ডার"
+      },
+      "is_late": {
+        "name": "বিলম্বিত"
+      },
+      "chat_available": {
+        "name": "চ্যাট উপলব্ধ"
+      }
     },
     "device_tracker": {
-      "courier": { "name": "কুরিয়ারের অবস্থান" }
+      "courier": {
+        "name": "কুরিয়ারের অবস্থান"
+      },
+      "store": {
+        "name": "Store location"
+      }
     }
   },
   "device_automation": {

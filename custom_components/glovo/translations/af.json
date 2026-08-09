@@ -30,16 +30,21 @@
     "step": {
       "init": {
         "title": "Glovo-opsies",
-        "description": "Laat die tokenveld leeg om die huidige een te behou.",
+        "description": "Leave the refresh token empty to keep the current one. LIVE ORDERING IS ADMIN-ONLY. allow_ordering permits only live preparation and may change the server basket/template; allow_live_checkout separately permits one paid submission. The provider-selected saved card and the exact authoritative total/currency must be explicitly confirmed immediately before submit. Ambiguous outcomes require manual Glovo checking and have no retry. Re-authentication resets these gates.",
         "data": {
           "scan_interval": "Bywerkingsinterval (sekondes)",
-          "refresh_token": "Nuwe verfristoken (opsioneel)"
+          "refresh_token": "Nuwe verfristoken (opsioneel)",
+          "allow_ordering": "Enable live ordering preparation (may change server basket/template)",
+          "ordering_acknowledged": "I understand preparation can change the server basket/template, checkout is separately gated, and ambiguous outcomes have no retry",
+          "allow_live_checkout": "Enable one live paid checkout submission"
         }
       }
     },
     "error": {
       "invalid_auth": "Ongeldige verfristoken.",
-      "cannot_connect": "Kon nie aan Glovo koppel nie."
+      "cannot_connect": "Kon nie aan Glovo koppel nie.",
+      "ordering_ack_required": "Explicitly acknowledge the live-ordering and no-retry safety warning before enabling.",
+      "live_checkout_ack_required": "Explicitly acknowledge the separate live paid-checkout warning before enabling."
     }
   },
   "entity": {
@@ -68,9 +73,15 @@
           "canceled": "Gekanselleer"
         }
       },
-      "store_name": { "name": "Winkel" },
-      "order_count": { "name": "Aktiewe bestellings" },
-      "courier_name": { "name": "Koerier se naam" },
+      "store_name": {
+        "name": "Winkel"
+      },
+      "order_count": {
+        "name": "Aktiewe bestellings"
+      },
+      "courier_name": {
+        "name": "Koerier se naam"
+      },
       "courier_status": {
         "name": "Koerierstatus",
         "state": {
@@ -87,19 +98,40 @@
           "ready": "Gereed"
         }
       },
-      "progress_percent": { "name": "Vordering" },
-      "eta_min": { "name": "Aankoms min." },
-      "eta_max": { "name": "Aankoms maks." },
-      "original_eta": { "name": "Oorspronklike aankomstyd" },
-      "poll_interval_sec": { "name": "Aanbevole peilinterval" }
+      "progress_percent": {
+        "name": "Vordering"
+      },
+      "eta_min": {
+        "name": "Aankoms min."
+      },
+      "eta_max": {
+        "name": "Aankoms maks."
+      },
+      "original_eta": {
+        "name": "Oorspronklike aankomstyd"
+      },
+      "poll_interval_sec": {
+        "name": "Aanbevole peilinterval"
+      }
     },
     "binary_sensor": {
-      "has_active_order": { "name": "Aktiewe bestelling" },
-      "is_late": { "name": "Laat" },
-      "chat_available": { "name": "Klets beskikbaar" }
+      "has_active_order": {
+        "name": "Aktiewe bestelling"
+      },
+      "is_late": {
+        "name": "Laat"
+      },
+      "chat_available": {
+        "name": "Klets beskikbaar"
+      }
     },
     "device_tracker": {
-      "courier": { "name": "Koerier se ligging" }
+      "courier": {
+        "name": "Koerier se ligging"
+      },
+      "store": {
+        "name": "Store location"
+      }
     }
   },
   "device_automation": {

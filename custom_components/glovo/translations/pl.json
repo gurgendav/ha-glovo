@@ -30,16 +30,21 @@
     "step": {
       "init": {
         "title": "Opcje Glovo",
-        "description": "Pozostaw pole tokena puste, aby zachować bieżący.",
+        "description": "Leave the refresh token empty to keep the current one. LIVE ORDERING IS ADMIN-ONLY. allow_ordering permits only live preparation and may change the server basket/template; allow_live_checkout separately permits one paid submission. The provider-selected saved card and the exact authoritative total/currency must be explicitly confirmed immediately before submit. Ambiguous outcomes require manual Glovo checking and have no retry. Re-authentication resets these gates.",
         "data": {
           "scan_interval": "Interwał aktualizacji (sekundy)",
-          "refresh_token": "Nowy token odświeżania (opcjonalnie)"
+          "refresh_token": "Nowy token odświeżania (opcjonalnie)",
+          "allow_ordering": "Enable live ordering preparation (may change server basket/template)",
+          "ordering_acknowledged": "I understand preparation can change the server basket/template, checkout is separately gated, and ambiguous outcomes have no retry",
+          "allow_live_checkout": "Enable one live paid checkout submission"
         }
       }
     },
     "error": {
       "invalid_auth": "Nieprawidłowy token odświeżania.",
-      "cannot_connect": "Nie udało się połączyć z Glovo."
+      "cannot_connect": "Nie udało się połączyć z Glovo.",
+      "ordering_ack_required": "Explicitly acknowledge the live-ordering and no-retry safety warning before enabling.",
+      "live_checkout_ack_required": "Explicitly acknowledge the separate live paid-checkout warning before enabling."
     }
   },
   "entity": {
@@ -68,9 +73,15 @@
           "canceled": "Anulowane"
         }
       },
-      "store_name": { "name": "Sklep" },
-      "order_count": { "name": "Aktywne zamówienia" },
-      "courier_name": { "name": "Imię kuriera" },
+      "store_name": {
+        "name": "Sklep"
+      },
+      "order_count": {
+        "name": "Aktywne zamówienia"
+      },
+      "courier_name": {
+        "name": "Imię kuriera"
+      },
       "courier_status": {
         "name": "Status kuriera",
         "state": {
@@ -87,19 +98,40 @@
           "ready": "Gotowe"
         }
       },
-      "progress_percent": { "name": "Postęp" },
-      "eta_min": { "name": "Przyjazd min." },
-      "eta_max": { "name": "Przyjazd maks." },
-      "original_eta": { "name": "Pierwotny czas przyjazdu" },
-      "poll_interval_sec": { "name": "Zalecany interwał odpytywania" }
+      "progress_percent": {
+        "name": "Postęp"
+      },
+      "eta_min": {
+        "name": "Przyjazd min."
+      },
+      "eta_max": {
+        "name": "Przyjazd maks."
+      },
+      "original_eta": {
+        "name": "Pierwotny czas przyjazdu"
+      },
+      "poll_interval_sec": {
+        "name": "Zalecany interwał odpytywania"
+      }
     },
     "binary_sensor": {
-      "has_active_order": { "name": "Aktywne zamówienie" },
-      "is_late": { "name": "Opóźnione" },
-      "chat_available": { "name": "Czat dostępny" }
+      "has_active_order": {
+        "name": "Aktywne zamówienie"
+      },
+      "is_late": {
+        "name": "Opóźnione"
+      },
+      "chat_available": {
+        "name": "Czat dostępny"
+      }
     },
     "device_tracker": {
-      "courier": { "name": "Lokalizacja kuriera" }
+      "courier": {
+        "name": "Lokalizacja kuriera"
+      },
+      "store": {
+        "name": "Store location"
+      }
     }
   },
   "device_automation": {

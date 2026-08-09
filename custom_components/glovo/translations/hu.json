@@ -30,16 +30,21 @@
     "step": {
       "init": {
         "title": "Glovo beállítások",
-        "description": "Hagyd üresen a token mezőt a jelenlegi megtartásához.",
+        "description": "Leave the refresh token empty to keep the current one. LIVE ORDERING IS ADMIN-ONLY. allow_ordering permits only live preparation and may change the server basket/template; allow_live_checkout separately permits one paid submission. The provider-selected saved card and the exact authoritative total/currency must be explicitly confirmed immediately before submit. Ambiguous outcomes require manual Glovo checking and have no retry. Re-authentication resets these gates.",
         "data": {
           "scan_interval": "Frissítési időköz (másodperc)",
-          "refresh_token": "Új frissítési token (opcionális)"
+          "refresh_token": "Új frissítési token (opcionális)",
+          "allow_ordering": "Enable live ordering preparation (may change server basket/template)",
+          "ordering_acknowledged": "I understand preparation can change the server basket/template, checkout is separately gated, and ambiguous outcomes have no retry",
+          "allow_live_checkout": "Enable one live paid checkout submission"
         }
       }
     },
     "error": {
       "invalid_auth": "Érvénytelen frissítési token.",
-      "cannot_connect": "Nem sikerült csatlakozni a Glovóhoz."
+      "cannot_connect": "Nem sikerült csatlakozni a Glovóhoz.",
+      "ordering_ack_required": "Explicitly acknowledge the live-ordering and no-retry safety warning before enabling.",
+      "live_checkout_ack_required": "Explicitly acknowledge the separate live paid-checkout warning before enabling."
     }
   },
   "entity": {
@@ -68,9 +73,15 @@
           "canceled": "Megszakítva"
         }
       },
-      "store_name": { "name": "Üzlet" },
-      "order_count": { "name": "Aktív rendelések" },
-      "courier_name": { "name": "Futár neve" },
+      "store_name": {
+        "name": "Üzlet"
+      },
+      "order_count": {
+        "name": "Aktív rendelések"
+      },
+      "courier_name": {
+        "name": "Futár neve"
+      },
       "courier_status": {
         "name": "Futár állapota",
         "state": {
@@ -87,19 +98,40 @@
           "ready": "Kész"
         }
       },
-      "progress_percent": { "name": "Folyamat" },
-      "eta_min": { "name": "Érkezés min." },
-      "eta_max": { "name": "Érkezés max." },
-      "original_eta": { "name": "Eredeti érkezési idő" },
-      "poll_interval_sec": { "name": "Ajánlott lekérdezési időköz" }
+      "progress_percent": {
+        "name": "Folyamat"
+      },
+      "eta_min": {
+        "name": "Érkezés min."
+      },
+      "eta_max": {
+        "name": "Érkezés max."
+      },
+      "original_eta": {
+        "name": "Eredeti érkezési idő"
+      },
+      "poll_interval_sec": {
+        "name": "Ajánlott lekérdezési időköz"
+      }
     },
     "binary_sensor": {
-      "has_active_order": { "name": "Aktív rendelés" },
-      "is_late": { "name": "Késik" },
-      "chat_available": { "name": "Csevegés elérhető" }
+      "has_active_order": {
+        "name": "Aktív rendelés"
+      },
+      "is_late": {
+        "name": "Késik"
+      },
+      "chat_available": {
+        "name": "Csevegés elérhető"
+      }
     },
     "device_tracker": {
-      "courier": { "name": "Futár helye" }
+      "courier": {
+        "name": "Futár helye"
+      },
+      "store": {
+        "name": "Store location"
+      }
     }
   },
   "device_automation": {

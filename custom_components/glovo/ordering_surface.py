@@ -1,14 +1,44 @@
-"""Admin-only ordering and recovery panel registration semantics."""
+"""Admin-only live-ordering and recovery WebSocket surface semantics.
+
+The Home Assistant adapter authenticates the caller.  This module deliberately
+forwards only the frozen operation name and frozen request body to the manager;
+the authenticated user's id is the *only* owner input.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from .ordering_manager import OrderingManager, OrderingUser
 
 PANEL_URL_PATH = "glovo-ordering"
 Handler = Callable[[OrderingUser, Mapping[str, Any]], Awaitable[dict[str, Any]]]
+
+# These command names deliberately have no service/entity/event counterpart.
+# Keep them in lock-step with ordering_live_api.PUBLIC_OPERATIONS.
+PUBLIC_OPERATION_COMMANDS: dict[str, str] = {
+    "state": "glovo/ordering/state",
+    "live/addresses": "glovo/ordering/live/addresses",
+    "live/stores": "glovo/ordering/live/stores",
+    "live/store_menu": "glovo/ordering/live/store_menu",
+    "live/payment_methods": "glovo/ordering/live/payment_methods",
+    "live/basket": "glovo/ordering/live/basket",
+    "live/basket_set": "glovo/ordering/live/basket_set",
+    "live/basket_clear": "glovo/ordering/live/basket_clear",
+    "live/basket_reconcile": "glovo/ordering/live/basket_reconcile",
+    "live/create_quote": "glovo/ordering/live/create_quote",
+    "live/prepare_confirmation": "glovo/ordering/live/prepare_confirmation",
+    "live/execute_checkout": "glovo/ordering/live/execute_checkout",
+    "live/checkout_status": "glovo/ordering/live/checkout_status",
+}
+
+RECOVERY_COMMANDS: tuple[str, ...] = (
+    "glovo/ordering/manual_checks",
+    "glovo/ordering/manual_check",
+    "glovo/ordering/prepare_manual_resolution",
+    "glovo/ordering/resolve_manual_check",
+)
 
 
 class OrderingSurfaceAdapter(Protocol):
@@ -31,7 +61,12 @@ class OrderingSurfaceAdapter(Protocol):
 
 
 class OrderingSurface:
-    """Expose mutations only when enabled, but retain narrow recovery while blocked."""
+    """Register the one admin-only public surface, including blocked recovery.
+
+    Command shells remain registered across a HA unload because HA does not
+    support unregistering them.  The adapter clears their active callbacks, so a
+    stale shell fails closed rather than retaining a previous manager.
+    """
 
     def __init__(self, manager: OrderingManager, adapter: OrderingSurfaceAdapter) -> None:
         self._manager = manager
@@ -43,34 +78,25 @@ class OrderingSurface:
         return self._registered
 
     async def async_setup(self) -> None:
-        if self._registered or not (
-            self._manager.enabled or self._manager.recovery_required
-        ):
+        if self._registered:
             return
-        recovery_handlers: dict[str, Handler] = {
-            "glovo/ordering/state": self._state,
-            "glovo/ordering/manual_checks": self._manual_checks,
-            "glovo/ordering/manual_check": self._manual_check,
-            "glovo/ordering/prepare_manual_resolution": self._prepare_manual_resolution,
-            "glovo/ordering/resolve_manual_check": self._resolve_manual_check,
+        handlers: dict[str, Handler] = {
+            PUBLIC_OPERATION_COMMANDS[operation]: self._operation_handler(operation)
+            for operation in PUBLIC_OPERATION_COMMANDS
         }
-        normal_handlers: dict[str, Handler] = {}
-        if self._manager.enabled:
-            normal_handlers = {
-                "glovo/ordering/catalog": self._catalog,
-                "glovo/ordering/basket": self._basket,
-                "glovo/ordering/basket_add_fixture_item": self._basket_add,
-                "glovo/ordering/basket_clear": self._basket_clear,
-                "glovo/ordering/fixture_quote": self._quote,
-                "glovo/ordering/prepare_mock_confirmation": self._prepare,
-                "glovo/ordering/execute_mock_checkout": self._execute_mock,
+        handlers.update(
+            {
+                "glovo/ordering/manual_checks": self._manual_checks,
+                "glovo/ordering/manual_check": self._manual_check,
+                "glovo/ordering/prepare_manual_resolution": self._prepare_manual_resolution,
+                "glovo/ordering/resolve_manual_check": self._resolve_manual_check,
             }
+        )
         try:
-            # Required recovery commands are independent of the optional panel and
-            # are always installed first, including when ordering options are off.
-            for name, handler in recovery_handlers.items():
-                await self._adapter.async_register_handler(name, handler)
-            for name, handler in normal_handlers.items():
+            # Register the recovery controls and live-operation shells even with
+            # gates closed.  The manager returns a safe unavailable state for
+            # `state`, and rejects all inaccessible mutation operations.
+            for name, handler in handlers.items():
                 await self._adapter.async_register_handler(name, handler)
         except Exception:
             await self._adapter.async_remove_handlers()
@@ -79,17 +105,12 @@ class OrderingSurface:
         try:
             await self._adapter.async_register_panel(
                 url_path=PANEL_URL_PATH,
-                title=(
-                    "Glovo Ordering Recovery"
-                    if self._manager.recovery_required
-                    else "Glovo Mock Ordering"
-                ),
-                icon="mdi:cart-alert" if self._manager.recovery_required else "mdi:cart-outline",
+                title="Glovo Ordering",
+                icon="mdi:cart-outline",
                 require_admin=True,
             )
         except Exception:
-            # WebSocket recovery is the authority. A panel/static-path failure must
-            # never remove already-registered recovery handlers.
+            # The WebSocket surface (especially recovery) remains authoritative.
             await self._adapter.async_remove_panel()
 
     async def async_unload(self) -> None:
@@ -99,10 +120,27 @@ class OrderingSurface:
         await self._adapter.async_remove_panel()
         self._registered = False
 
-    async def _state(
-        self, user: OrderingUser, _message: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        return await self._manager.async_state(user)
+    def _operation_handler(self, operation: str) -> Handler:
+        async def handler(user: OrderingUser, message: Mapping[str, Any]) -> dict[str, Any]:
+            # Owner identity never comes from the request.  The manager is the
+            # sole owner-aware dispatcher supplied by the live ordering runtime.
+            request = {key: value for key, value in message.items() if key not in {"id", "type"}}
+            dispatcher = cast(
+                Callable[..., Awaitable[dict[str, Any]]],
+                getattr(self._manager, "async_dispatch", None),
+            )
+            if not callable(dispatcher):
+                # A partially upgraded runtime must fail closed rather than
+                # accidentally reviving the retired mock command set.
+                raise RuntimeError("live ordering dispatcher is unavailable")
+            result = await dispatcher(
+                owner_key=user.user_id,
+                operation=operation,
+                request=request,
+            )
+            return dict(result)
+
+        return handler
 
     async def _manual_checks(
         self, user: OrderingUser, _message: Mapping[str, Any]
@@ -137,61 +175,3 @@ class OrderingSurface:
             challenge=message["challenge"],
             acknowledged=message["acknowledged"],
         )
-
-    async def _catalog(
-        self, user: OrderingUser, message: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        return await self._manager.async_catalog(user, message["generation"])
-
-    async def _basket(
-        self, user: OrderingUser, message: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        return await self._manager.async_get_basket(user, message["generation"])
-
-    async def _basket_add(
-        self, user: OrderingUser, message: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        return await self._manager.async_add_item(
-            user,
-            message["generation"],
-            store_key=message["storeKey"],
-            product_key=message["productKey"],
-            variant_key=message["variantKey"],
-            modifier_keys=tuple(message.get("modifierKeys", ())),
-            quantity=message["quantity"],
-        )
-
-    async def _basket_clear(
-        self, user: OrderingUser, message: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        return await self._manager.async_clear_basket(user, message["generation"])
-
-    async def _quote(
-        self, user: OrderingUser, message: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        return await self._manager.async_quote(
-            user,
-            message["generation"],
-            address_key=message["addressKey"],
-            payment_key=message["paymentKey"],
-        )
-
-    async def _prepare(
-        self, user: OrderingUser, message: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        return await self._manager.async_prepare_mock_confirmation(
-            user,
-            message["generation"],
-            message["fingerprint"],
-        )
-
-    async def _execute_mock(
-        self, user: OrderingUser, message: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        result = await self._manager.async_execute_mock_checkout(
-            user,
-            message["generation"],
-            message["challenge"],
-            message["fingerprint"],
-        )
-        return dict(result)

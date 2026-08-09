@@ -30,16 +30,21 @@
     "step": {
       "init": {
         "title": "Glovon asetukset",
-        "description": "Jätä tunnuskenttä tyhjäksi säilyttääksesi nykyisen.",
+        "description": "Leave the refresh token empty to keep the current one. LIVE ORDERING IS ADMIN-ONLY. allow_ordering permits only live preparation and may change the server basket/template; allow_live_checkout separately permits one paid submission. The provider-selected saved card and the exact authoritative total/currency must be explicitly confirmed immediately before submit. Ambiguous outcomes require manual Glovo checking and have no retry. Re-authentication resets these gates.",
         "data": {
           "scan_interval": "Päivitysväli (sekuntia)",
-          "refresh_token": "Uusi päivitystunnus (valinnainen)"
+          "refresh_token": "Uusi päivitystunnus (valinnainen)",
+          "allow_ordering": "Enable live ordering preparation (may change server basket/template)",
+          "ordering_acknowledged": "I understand preparation can change the server basket/template, checkout is separately gated, and ambiguous outcomes have no retry",
+          "allow_live_checkout": "Enable one live paid checkout submission"
         }
       }
     },
     "error": {
       "invalid_auth": "Virheellinen päivitystunnus.",
-      "cannot_connect": "Yhteyttä Glovoon ei voitu muodostaa."
+      "cannot_connect": "Yhteyttä Glovoon ei voitu muodostaa.",
+      "ordering_ack_required": "Explicitly acknowledge the live-ordering and no-retry safety warning before enabling.",
+      "live_checkout_ack_required": "Explicitly acknowledge the separate live paid-checkout warning before enabling."
     }
   },
   "entity": {
@@ -68,9 +73,15 @@
           "canceled": "Peruutettu"
         }
       },
-      "store_name": { "name": "Myymälä" },
-      "order_count": { "name": "Aktiiviset tilaukset" },
-      "courier_name": { "name": "Lähetin nimi" },
+      "store_name": {
+        "name": "Myymälä"
+      },
+      "order_count": {
+        "name": "Aktiiviset tilaukset"
+      },
+      "courier_name": {
+        "name": "Lähetin nimi"
+      },
       "courier_status": {
         "name": "Lähetin tila",
         "state": {
@@ -87,19 +98,40 @@
           "ready": "Valmis"
         }
       },
-      "progress_percent": { "name": "Edistyminen" },
-      "eta_min": { "name": "Saapuminen min." },
-      "eta_max": { "name": "Saapuminen maks." },
-      "original_eta": { "name": "Alkuperäinen saapumisaika" },
-      "poll_interval_sec": { "name": "Suositeltu kyselyväli" }
+      "progress_percent": {
+        "name": "Edistyminen"
+      },
+      "eta_min": {
+        "name": "Saapuminen min."
+      },
+      "eta_max": {
+        "name": "Saapuminen maks."
+      },
+      "original_eta": {
+        "name": "Alkuperäinen saapumisaika"
+      },
+      "poll_interval_sec": {
+        "name": "Suositeltu kyselyväli"
+      }
     },
     "binary_sensor": {
-      "has_active_order": { "name": "Aktiivinen tilaus" },
-      "is_late": { "name": "Myöhässä" },
-      "chat_available": { "name": "Chat käytettävissä" }
+      "has_active_order": {
+        "name": "Aktiivinen tilaus"
+      },
+      "is_late": {
+        "name": "Myöhässä"
+      },
+      "chat_available": {
+        "name": "Chat käytettävissä"
+      }
     },
     "device_tracker": {
-      "courier": { "name": "Lähetin sijainti" }
+      "courier": {
+        "name": "Lähetin sijainti"
+      },
+      "store": {
+        "name": "Store location"
+      }
     }
   },
   "device_automation": {
