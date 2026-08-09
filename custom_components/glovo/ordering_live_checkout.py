@@ -28,6 +28,7 @@ _ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _DIGEST_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _SUBMIT_STATES: Final = frozenset({"SUBMITTED", "PENDING"})
 _STATUS_STATES: Final = frozenset({"SUBMITTED", "PENDING", "COMPLETED", "REJECTED"})
+_HANDLING_STRATEGY: Final = "DELIVERY"
 
 
 class FinalCheckoutContractError(ValueError):
@@ -196,8 +197,12 @@ class FinalCheckoutRequest:
                 and (quote.template_id is None or _integer(quote.template_id, minimum=1) == quote.template_id)
                 and _id(quote.basket_id) == quote.basket_id
                 and _id(quote.basket_version) == quote.basket_version
+                and _integer(quote.customer_id, minimum=1) == quote.customer_id
                 and _integer(quote.store_id, minimum=1) == quote.store_id
                 and _integer(quote.store_address_id, minimum=1) == quote.store_address_id
+                and _integer(quote.store_category_id, minimum=1) == quote.store_category_id
+                and _id(quote.city_code) == quote.city_code
+                and _id(quote.handling_strategy) == _HANDLING_STRATEGY
                 and _id(quote.owner_key) == quote.owner_key
                 and _integer(quote.generation) == quote.generation
                 and _id(quote.intent_key) == quote.intent_key
@@ -219,6 +224,9 @@ class FinalCheckoutRequest:
 
     def private_body(self) -> dict[str, Any]:
         """Exact fixture-only shape; amount is copied from quote authority only."""
+        # Recheck the immutable quote/fingerprint binding before every fixture body
+        # projection so a bypassed frozen instance cannot alter submitted authority.
+        self.__post_init__()
         quote = self.quote
         body = {
             "checkout": {
@@ -228,8 +236,12 @@ class FinalCheckoutRequest:
                 "basket": {
                     "id": quote.basket_id,
                     "version": quote.basket_version,
+                    "customerId": quote.customer_id,
                     "storeId": quote.store_id,
                     "storeAddressId": quote.store_address_id,
+                    "storeCategoryId": quote.store_category_id,
+                    "cityCode": quote.city_code,
+                    "handlingStrategy": quote.handling_strategy,
                     "products": [product.canonical_dict() for product in quote.exact_products],
                 },
                 "address": {"fingerprint": quote.address_fingerprint},

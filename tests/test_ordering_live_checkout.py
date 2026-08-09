@@ -63,7 +63,9 @@ def live() -> dict[str, ModuleType]:
                 sys.modules.pop(name, None)
 
 
-def quote(live: dict[str, ModuleType], *, received_at: float = 100.0) -> Any:
+def quote(
+    live: dict[str, ModuleType], *, received_at: float = 100.0, **overrides: Any
+) -> Any:
     remote = live["ordering_remote_basket"]
     quote_module = live["ordering_live_quote"]
     product = remote.RemoteBasketProduct(
@@ -76,30 +78,36 @@ def quote(live: dict[str, ModuleType], *, received_at: float = 100.0) -> Any:
         quantity_limit=10,
         customizations=(),
     )
-    return quote_module.AuthoritativeQuote(
-        checkout_session_id="checkout-session-fixture-1",
-        version_id=3,
-        template_id=9,
-        basket_id="basket-fixture-1",
-        basket_version="basket-version-fixture-1",
-        store_id=71,
-        store_address_id=81,
-        exact_products=(product,),
-        address_fingerprint="a" * 64,
-        payment_fingerprint="b" * 64,
-        capability_fingerprint="c" * 64,
-        owner_key="admin-fixture",
-        generation=7,
-        intent_key="intent-fixture-1",
-        total=live["ordering_models"].Money(560000, "AMD"),
-        price_lines=(quote_module.ProviderPriceLine("Total", "fixture", "TOTAL"),),
-        eta=None,
-        received_at=received_at,
-        store_display_name="Fixture Kitchen",
-        masked_address="Saved Home ••••",
-        masked_payment="Saved card •••• 4242",
-        name="Fixture checkout",
-    )
+    values = {
+        "checkout_session_id": "checkout-session-fixture-1",
+        "version_id": 3,
+        "template_id": 9,
+        "basket_id": "basket-fixture-1",
+        "basket_version": "basket-version-fixture-1",
+        "customer_id": 101,
+        "store_id": 71,
+        "store_address_id": 81,
+        "store_category_id": 201,
+        "city_code": "city-fixture-1",
+        "handling_strategy": "DELIVERY",
+        "exact_products": (product,),
+        "address_fingerprint": "a" * 64,
+        "payment_fingerprint": "b" * 64,
+        "capability_fingerprint": "c" * 64,
+        "owner_key": "admin-fixture",
+        "generation": 7,
+        "intent_key": "intent-fixture-1",
+        "total": live["ordering_models"].Money(560000, "AMD"),
+        "price_lines": (quote_module.ProviderPriceLine("Total", "fixture", "TOTAL"),),
+        "eta": None,
+        "received_at": received_at,
+        "store_display_name": "Fixture Kitchen",
+        "masked_address": "Saved Home ••••",
+        "masked_payment": "Saved card •••• 4242",
+        "name": "Fixture checkout",
+    }
+    values.update(overrides)
+    return quote_module.AuthoritativeQuote(**values)
 
 
 class FixtureTransport:
@@ -229,11 +237,95 @@ def test_final_checkout_request_is_private_exact_and_quote_bound(live: dict[str,
         "checkoutSessionId", "versionId", "templateId", "basket", "address", "payment", "total", "authority",
     }
     assert body["checkout"]["total"] == {"minor": 560000, "currency": "AMD"}
-    assert body["checkout"]["basket"]["products"][0]["quantity"] == 2
+    basket = body["checkout"]["basket"]
+    assert set(basket) == {
+        "id", "version", "customerId", "storeId", "storeAddressId",
+        "storeCategoryId", "cityCode", "handlingStrategy", "products",
+    }
+    assert {key: basket[key] for key in basket if key != "products"} == {
+        "id": "basket-fixture-1",
+        "version": "basket-version-fixture-1",
+        "customerId": 101,
+        "storeId": 71,
+        "storeAddressId": 81,
+        "storeCategoryId": 201,
+        "cityCode": "city-fixture-1",
+        "handlingStrategy": "DELIVERY",
+    }
+    assert basket["products"][0]["quantity"] == 2
     assert "560000" not in repr(request)
     for bad_now in (True, float("nan"), 145.0):
         with pytest.raises(checkout.FinalCheckoutContractError):
             checkout.FinalCheckoutRequest.from_quote(quote(live), now=bad_now)
+
+
+@pytest.mark.parametrize(
+    ("field", "changed_value", "body_key"),
+    [
+        ("customer_id", 102, "customerId"),
+        ("store_category_id", 202, "storeCategoryId"),
+        ("city_code", "city-fixture-2", "cityCode"),
+    ],
+)
+def test_final_checkout_binds_each_complete_quote_context_value(
+    live: dict[str, ModuleType], field: str, changed_value: Any, body_key: str
+) -> None:
+    checkout = live["ordering_live_checkout"]
+    baseline = quote(live)
+    changed = quote(live, **{field: changed_value})
+    request = checkout.FinalCheckoutRequest.from_quote(changed, now=100.0)
+
+    assert request.quote_fingerprint != baseline.fingerprint
+    assert request.private_body()["checkout"]["basket"][body_key] == changed_value
+
+
+@pytest.mark.parametrize(
+    ("field", "bypassed_value"),
+    [
+        ("customer_id", 102),
+        ("store_category_id", 202),
+        ("city_code", "city-fixture-2"),
+        ("handling_strategy", "PICKUP"),
+    ],
+)
+def test_final_checkout_rejects_bypassed_complete_quote_context(
+    live: dict[str, ModuleType], field: str, bypassed_value: Any
+) -> None:
+    checkout = live["ordering_live_checkout"]
+    request = checkout.FinalCheckoutRequest.from_quote(quote(live), now=100.0)
+
+    # A bypassed frozen quote cannot cause a body that disagrees with authority.
+    object.__setattr__(request.quote, field, bypassed_value)
+    with pytest.raises(checkout.FinalCheckoutContractError) as raised:
+        request.private_body()
+    assert raised.value.category == "mismatch"
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("customer_id", True),
+        ("customer_id", 0),
+        ("store_category_id", True),
+        ("store_category_id", 0),
+        ("city_code", True),
+        ("city_code", ""),
+        ("handling_strategy", True),
+        ("handling_strategy", ""),
+        ("handling_strategy", "PICKUP"),
+    ],
+)
+def test_final_checkout_rejects_invalid_complete_quote_context(
+    live: dict[str, ModuleType], field: str, invalid_value: Any
+) -> None:
+    checkout = live["ordering_live_checkout"]
+    invalid_quote = quote(live, **{field: invalid_value})
+
+    with pytest.raises(checkout.FinalCheckoutContractError) as raised:
+        checkout.FinalCheckoutRequest(
+            quote=invalid_quote, quote_fingerprint=invalid_quote.fingerprint
+        )
+    assert raised.value.category == "mismatch"
 
 
 @pytest.mark.parametrize(
