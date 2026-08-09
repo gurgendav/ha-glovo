@@ -116,6 +116,60 @@ releaseFlight();
 assert.deepEqual(await Promise.all([one, two]), ["done", "done"]);
 assert.equal(panel._singleFlights.size, 0);
 
+// Routine Home Assistant state updates must not replace focused form controls.
+// Simulate typing every character of a slug while HA publishes a fresh hass object
+// between keystrokes; the model must retain the full draft without a workspace render.
+panel._rendered = true;
+panel._hass = { callWS() {} };
+panel._updateEnvironment = () => {};
+let routineRenders = 0;
+panel._renderAll = () => { routineRenders += 1; };
+let typedSlug = "";
+for (const character of "kfc-yrv") {
+  typedSlug += character;
+  panel._onInput({ target: { id: "store-input", value: typedSlug, dataset: {} } });
+  panel.hass = { callWS() {}, states: { [`sensor.tick_${typedSlug.length}`]: {} } };
+}
+assert.equal(panel._model.context.storeInput, "kfc-yrv");
+assert.equal(routineRenders, 0, "routine hass updates must preserve focused input/caret");
+
+// Explicit lookup owns the current store/menu association. It clears stale handles
+// before the request and immediately loads the sole fresh exact result.
+panel._generation = 7;
+panel._model.context.addressHandle = "choice-current";
+panel._model.context.storeInput = "kfc-yrv";
+panel._model.context.stores = [{ storeHandle: "live-stale", label: "Stale" }];
+panel._model.context.store = panel._model.context.stores[0];
+panel._model.menu = { status: "ready", products: [{ productHandle: "stale-product" }], query: "", filter: "all", error: "" };
+panel._setLifecycle = () => {};
+panel._invalidateAuthority = () => {};
+panel._renderAll = () => {};
+const freshStore = { storeHandle: "live-fresh", label: "KFC" };
+panel._request = async (operation) => {
+  assert.equal(operation, "live/stores");
+  return { stores: [freshStore] };
+};
+let loadedStore = null;
+panel._loadStoreMenu = async (store) => { loadedStore = store; };
+await panel._lookupStore();
+assert.deepEqual(panel._model.context.stores, [freshStore]);
+assert.equal(loadedStore, freshStore);
+
+// A failed lookup must not leave an old selectable handle behind, and the explicit
+// retry action must acquire fresh store/menu authority rather than reuse that handle.
+panel._model.context.stores = [{ storeHandle: "live-stale", label: "Stale" }];
+panel._model.context.store = panel._model.context.stores[0];
+panel._request = async () => { throw new Error("synthetic provider read failure"); };
+await panel._lookupStore();
+assert.deepEqual(panel._model.context.stores, []);
+assert.equal(panel._model.context.store, null);
+let retryLookups = 0;
+panel._lookupStore = () => { retryLookups += 1; };
+panel._onClick({ target: { closest: () => ({ dataset: { action: "retry-menu" } }) } });
+assert.equal(retryLookups, 1);
+
+panel._rendered = false;
+panel._invalidateAuthority = Panel.prototype._invalidateAuthority.bind(panel);
 panel._model.overlay = { type: "customizer" };
 panel._model.quote = { challenge: "memory-only" };
 panel._model.draft.lines = [{ productHandle: "ephemeral", quantity: 1, options: [] }];

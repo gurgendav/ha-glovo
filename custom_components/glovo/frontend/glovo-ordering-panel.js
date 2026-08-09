@@ -31,7 +31,6 @@ class GlovoOrderingPanel extends HTMLElement {
     if (!this._rendered) this._renderShell();
     this._updateEnvironment();
     if (firstAssignment) this._bootstrap();
-    else this._renderAll();
   }
 
   disconnectedCallback() {
@@ -557,16 +556,30 @@ class GlovoOrderingPanel extends HTMLElement {
     if (!addressHandle) { this._setLifecycle("ready", "Select a saved address before looking up a store.", "warning"); return; }
     if (!storeSlug) { this._setLifecycle("ready", "Enter an explicit store slug or URL. Broad discovery is unsupported.", "warning"); return; }
     const token = this._beginLatestRead("stores"); const capturedGeneration = this._generation;
+    this._invalidateAuthority("");
+    this._model.context.stores = [];
+    this._model.context.store = null;
+    this._model.menu = { status: "idle", products: [], query: "", filter: "all", error: "" };
     this._setLifecycle("ready", "Looking up the explicit store…");
+    this._renderAll();
     try {
       const response = await this._request("live/stores", { ...this._withGeneration(), storeSlug, addressHandle });
       if (!this._isLatestRead("stores", token, capturedGeneration)) return;
-      this._invalidateAuthority(""); this._model.context.stores = Array.isArray(response?.stores) ? response.stores : [];
-      this._model.context.store = null; this._model.menu = { status: "idle", products: [], query: "", filter: "all", error: "" };
+      this._model.context.stores = Array.isArray(response?.stores) ? response.stores : [];
+      if (this._model.context.stores.length === 1) {
+        this._setLifecycle("ready", "Exact store found; loading its current menu…");
+        await this._loadStoreMenu(this._model.context.stores[0]);
+        return;
+      }
       this._setLifecycle("ready", this._model.context.stores.length ? "Select the exact store to load its menu." : "No matching store was returned.", this._model.context.stores.length ? "status" : "warning");
       this._renderAll();
     } catch (_error) {
-      if (this._isLatestRead("stores", token, capturedGeneration)) this._setLifecycle("ready", "The explicit store is unavailable. No provider mutation was attempted.", "error");
+      if (this._isLatestRead("stores", token, capturedGeneration)) {
+        this._model.menu.status = "error";
+        this._model.menu.error = "The explicit store lookup failed. Nothing was submitted.";
+        this._setLifecycle("ready", "The explicit store is unavailable. No provider mutation was attempted.", "error");
+        this._renderAll();
+      }
     }
   }
 
@@ -584,6 +597,7 @@ class GlovoOrderingPanel extends HTMLElement {
     try {
       const response = await this._request("live/store_menu", { ...this._withGeneration(), storeHandle: store.storeHandle, addressHandle: this._model.context.addressHandle });
       if (!this._isLatestRead("menu", token, capturedGeneration)) return;
+      if (response?.storeHandle !== store.storeHandle) throw new Error("stale menu association");
       this._model.menu.status = "ready"; this._model.menu.products = Array.isArray(response?.products) ? response.products : [];
       this._setLifecycle("ready", "Menu loaded. Add items to the local draft; nothing syncs until you choose Sync basket.");
       this._renderAll();
@@ -1170,7 +1184,7 @@ class GlovoOrderingPanel extends HTMLElement {
     if (action === "nav-view") { this._model.library.activeView = button.dataset.view; if (button.dataset.view === "packages" && this._model.library.status === "idle") this._loadLibrary(); this._renderAll(); }
     else if (action === "refresh-addresses") this._loadAddresses();
     else if (action === "lookup-store") this._lookupStore();
-    else if (action === "retry-menu") this._loadStoreMenu(this._model.context.store);
+    else if (action === "retry-menu") this._lookupStore();
     else if (action === "clear-search") { this._model.menu.query = ""; this._renderMenu(); this.shadowRoot.querySelector("#menu-search")?.focus(); }
     else if (action === "reset-results") { this._model.menu.query = ""; this._model.menu.filter = "all"; this._renderMenu(); }
     else if (action === "set-filter") { this._model.menu.filter = button.dataset.filter; this._renderMenu(); }
