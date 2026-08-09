@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -46,6 +47,21 @@ _ADDRESS_FIELDS: Final = frozenset(
 )
 
 
+_SCHEMA_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,39}$")
+
+
+def _schema_keys(value: object) -> str:
+    """Return only bounded static-looking field names, never payload values."""
+    if not isinstance(value, Mapping):
+        return "-"
+    approved = sorted(
+        key
+        for key in value
+        if isinstance(key, str) and _SCHEMA_KEY.fullmatch(key)
+    )[:32]
+    return ",".join(approved)
+
+
 def _address_payload_fingerprint(payload: Any) -> str:
     """Describe only fixed response structure; never values or unknown key names."""
     cursor = payload
@@ -75,7 +91,8 @@ def _address_payload_fingerprint(payload: Any) -> str:
         f"row_known={len(set(first).intersection(allowed_row)) if isinstance(first, Mapping) else -1} "
         f"row_metadata={len(set(first).intersection(row_metadata)) if isinstance(first, Mapping) else -1} "
         f"address_keys={len(candidate) if isinstance(candidate, Mapping) else -1} "
-        f"address_metadata={len(set(candidate).intersection(address_metadata)) if isinstance(candidate, Mapping) else -1}"
+        f"address_metadata={len(set(candidate).intersection(address_metadata)) if isinstance(candidate, Mapping) else -1} "
+        f"row_schema={_schema_keys(first)} address_schema={_schema_keys(candidate)}"
     )
 
 
