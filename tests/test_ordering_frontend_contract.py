@@ -19,6 +19,8 @@ def test_frontend_uses_every_frozen_operation_with_exact_public_request_keys() -
     )
     for operation in operations:
         assert f'"{operation}"' in source
+    assert 'this._request("state")' in source
+    assert 'this._request("state", this._withGeneration())' not in source
     assert "storeSlug" in source and "storeHandle" in source
     assert "expectedRevision" in source and "addressHandle" in source and "paymentHandle" in source
     assert "challenge, acknowledged: true" in source

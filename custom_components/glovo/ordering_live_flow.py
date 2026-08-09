@@ -107,7 +107,10 @@ class OrderingLiveFlow:
             if not self._loaded:
                 raise LiveFlowUnavailable("live ordering is unavailable")
             if operation == "state":
-                return self.public_state(generation)
+                # State is answered by OrderingManager so it can publish the
+                # durable current generation even while recovery blocks writes.
+                raise LiveFlowUnavailable("live ordering is unavailable")
+            assert generation is not None
             if not self._preparation_gate():
                 raise LiveFlowUnavailable("live ordering is unavailable")
             if self._invalidated_generation is not None and generation < self._invalidated_generation:

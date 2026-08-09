@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -21,7 +22,26 @@ def test_privacy_and_capability_scan_passes() -> None:
     assert "privacy and capability scan passed" in result.stdout
 
 
-def test_capability_scan_has_no_final_purchase_surface() -> None:
+def test_privacy_scanner_allows_public_checkout_operation_but_catches_private_refs() -> None:
+    script = ROOT / "scripts" / "scan_ordering_privacy.py"
+    spec = importlib.util.spec_from_file_location("ordering_privacy_scan", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    safe: list[str] = []
+    module.scan_frontend_private_references(
+        'this._request("live/checkout_status")', "panel.js", safe
+    )
+    assert safe == []
+    leaked: list[str] = []
+    module.scan_frontend_private_references(
+        'const checkoutRef = "private-checkout"; const providerId = "private-provider";',
+        "panel.js",
+        leaked,
+    )
+    assert leaked == ["panel.js: private checkout/provider reference"]
+
+
     result = run(sys.executable, "scripts/scan_ordering_privacy.py", "--capabilities-only")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "capability scan passed" in result.stdout

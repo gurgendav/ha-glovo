@@ -202,8 +202,11 @@ def test_ordering_is_default_off_unless_option_is_literal_true(
 ) -> None:
     manager, _, _, _ = run(make_manager(ordering, enabled=enabled, acknowledged=True))
     assert manager.enabled is False
+    state = run(manager.async_state(admin(ordering)))
+    assert state["enabled"] is False
+    assert state["generation"] == manager.generation
     with pytest.raises(ordering["ordering_manager"].OrderingDisabled):
-        run(manager.async_state(admin(ordering)))
+        run(manager.async_catalog(admin(ordering), manager.generation))
 
 
 @pytest.mark.parametrize("acknowledged", [pytest.param("omitted"), None, False])
@@ -716,31 +719,32 @@ class FakeSurfaceAdapter:
         self.handlers.clear()
 
 
-def test_panel_and_handlers_register_only_enabled_and_are_admin_only_semantic(
+def test_panel_and_handlers_register_enabled_live_surface_with_no_mock_commands(
     ordering: dict[str, ModuleType],
 ) -> None:
-    async def scenario(enabled: object) -> FakeSurfaceAdapter:
-        manager, _, _, _ = await make_manager(ordering, enabled=enabled, acknowledged=True)
+    async def scenario() -> FakeSurfaceAdapter:
+        manager, _, _, _ = await make_manager(ordering, enabled=True, acknowledged=True)
         adapter = FakeSurfaceAdapter()
         surface = ordering["ordering_surface"].OrderingSurface(manager, adapter)
         await surface.async_setup()
-        if manager.enabled:
-            assert adapter.panel_registration == {
-                "url_path": "glovo-ordering",
-                "title": "Glovo Mock Ordering",
-                "icon": "mdi:cart-outline",
-                "require_admin": True,
-            }
-            assert "glovo/ordering/execute_mock_checkout" in adapter.handlers
-            assert all("place_order" not in name for name in adapter.handlers)
-            await surface.async_unload()
-            assert adapter.unregistered is True
-            assert adapter.handlers == {}
+        assert adapter.panel_registration == {
+            "url_path": "glovo-ordering",
+            "title": "Glovo Ordering",
+            "icon": "mdi:cart-outline",
+            "require_admin": True,
+        }
+        expected = set(ordering["ordering_surface"].PUBLIC_OPERATION_COMMANDS.values()) | set(
+            ordering["ordering_surface"].RECOVERY_COMMANDS
+        )
+        assert set(adapter.handlers) == expected
+        assert all("mock" not in name for name in adapter.handlers)
+        assert all("place_order" not in name for name in adapter.handlers)
+        await surface.async_unload()
+        assert adapter.unregistered is True
+        assert adapter.handlers == {}
         return adapter
 
-    disabled = run(scenario(False))
-    assert disabled.panel_registration is None
-    run(scenario(True))
+    run(scenario())
 
 
 def test_both_literal_runtime_gates_are_required_for_every_handler(
@@ -752,8 +756,8 @@ def test_both_literal_runtime_gates_are_required_for_every_handler(
     }
     manager, _, _, _ = run(make_manager(ordering, enabled=True, acknowledged=True))
     manager._live_options = lambda: options
-    with pytest.raises(ordering["ordering_manager"].OrderingDisabled):
-        run(manager.async_state(admin(ordering)))
+    state = run(manager.async_state(admin(ordering)))
+    assert state["enabled"] is False
     options["ordering_acknowledged"] = True
     assert run(manager.async_state(admin(ordering)))["mockOnly"] is True
     options.pop("allow_ordering")

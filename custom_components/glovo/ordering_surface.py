@@ -8,7 +8,7 @@ the authenticated user's id is the *only* owner input.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from .ordering_manager import OrderingManager, OrderingUser
 
@@ -80,22 +80,27 @@ class OrderingSurface:
     async def async_setup(self) -> None:
         if self._registered:
             return
+        # `state` is deliberately a bootstrap operation: it is present in every
+        # registered surface and never passes through the mutation dispatcher.
+        # A blocked recovery runtime exposes only it plus recovery controls.  HA
+        # cannot unregister old command shells, so shells from a prior enabled
+        # runtime are left callback-free by async_unload and fail closed.
         handlers: dict[str, Handler] = {
-            PUBLIC_OPERATION_COMMANDS[operation]: self._operation_handler(operation)
-            for operation in PUBLIC_OPERATION_COMMANDS
+            PUBLIC_OPERATION_COMMANDS["state"]: self._state,
+            "glovo/ordering/manual_checks": self._manual_checks,
+            "glovo/ordering/manual_check": self._manual_check,
+            "glovo/ordering/prepare_manual_resolution": self._prepare_manual_resolution,
+            "glovo/ordering/resolve_manual_check": self._resolve_manual_check,
         }
-        handlers.update(
-            {
-                "glovo/ordering/manual_checks": self._manual_checks,
-                "glovo/ordering/manual_check": self._manual_check,
-                "glovo/ordering/prepare_manual_resolution": self._prepare_manual_resolution,
-                "glovo/ordering/resolve_manual_check": self._resolve_manual_check,
-            }
-        )
+        if self._manager.enabled:
+            handlers.update(
+                {
+                    command: self._operation_handler(operation)
+                    for operation, command in PUBLIC_OPERATION_COMMANDS.items()
+                    if operation != "state"
+                }
+            )
         try:
-            # Register the recovery controls and live-operation shells even with
-            # gates closed.  The manager returns a safe unavailable state for
-            # `state`, and rejects all inaccessible mutation operations.
             for name, handler in handlers.items():
                 await self._adapter.async_register_handler(name, handler)
         except Exception:
@@ -120,20 +125,18 @@ class OrderingSurface:
         await self._adapter.async_remove_panel()
         self._registered = False
 
+    async def _state(
+        self, user: OrderingUser, _message: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Return the authoritative generation without requiring prior state."""
+        return await self._manager.async_state(user)
+
     def _operation_handler(self, operation: str) -> Handler:
         async def handler(user: OrderingUser, message: Mapping[str, Any]) -> dict[str, Any]:
             # Owner identity never comes from the request.  The manager is the
             # sole owner-aware dispatcher supplied by the live ordering runtime.
             request = {key: value for key, value in message.items() if key not in {"id", "type"}}
-            dispatcher = cast(
-                Callable[..., Awaitable[dict[str, Any]]],
-                getattr(self._manager, "async_dispatch", None),
-            )
-            if not callable(dispatcher):
-                # A partially upgraded runtime must fail closed rather than
-                # accidentally reviving the retired mock command set.
-                raise RuntimeError("live ordering dispatcher is unavailable")
-            result = await dispatcher(
+            result = await self._manager.async_live_dispatch(
                 owner_key=user.user_id,
                 operation=operation,
                 request=request,

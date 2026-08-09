@@ -34,7 +34,8 @@ PUBLIC_OPERATIONS: Final = (
 )
 # These are schemas, not permissive examples: unknown keys are rejected exactly.
 OPERATION_REQUEST_FIELDS: Final = {
-    "state": frozenset({"generation"}),
+    # State is a bootstrap response that establishes the first generation.
+    "state": frozenset(),
     "live/addresses": frozenset({"generation"}),
     "live/stores": frozenset({"generation", "storeSlug"}),
     "live/store_menu": frozenset({"generation", "storeHandle"}),
@@ -92,13 +93,17 @@ def _revision(value: object) -> int:
     return value
 
 
-def validate_public_request(operation: object, request: object) -> tuple[str, dict[str, Any], int]:
+def validate_public_request(
+    operation: object, request: object
+) -> tuple[str, dict[str, Any], int | None]:
     if not isinstance(operation, str) or operation not in PUBLIC_OPERATIONS or not isinstance(request, Mapping):
         raise PublicContractError
     fields = OPERATION_REQUEST_FIELDS[operation]
     if set(request) != fields:
         raise PublicContractError
     copied = dict(request)
+    if operation == "state":
+        return operation, copied, None
     generation = _generation(copied["generation"])
     if operation == "live/execute_checkout" and (
         copied["acknowledged"] is not True or not isinstance(copied["challenge"], str) or not copied["challenge"] or len(copied["challenge"]) > 64
@@ -271,10 +276,17 @@ class LiveOrderingFacade:
     async def async_dispatch(self, *, owner: str, operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
         owner = self._owner(owner)
         operation, request, generation = validate_public_request(operation, request)
+        if operation == "state":
+            # The HA surface owns authoritative generation bootstrap; a direct
+            # facade caller gets no owner-bound basket projection before it has
+            # one, and cannot smuggle a generation into this request.
+            return {
+                "operations": list(PUBLIC_OPERATIONS),
+                "broadStoreDiscovery": "unsupported",
+                "basket": None,
+            }
+        assert generation is not None
         try:
-            if operation == "state":
-                state = self._basket.get(owner)
-                return {"operations": list(PUBLIC_OPERATIONS), "broadStoreDiscovery": "unsupported", "basket": None if state is None or state.generation != generation else self._basket_public(state)}
             if operation == "live/addresses":
                 return {"addresses": [item.public_dict() for item in await self._account.async_saved_addresses(owner_key=owner, generation=generation)]}
             if operation == "live/stores":

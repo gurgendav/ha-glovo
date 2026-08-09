@@ -2,7 +2,7 @@ class GlovoOrderingPanel extends HTMLElement {
   set hass(hass) {
     if (this._hass) return;
     this._hass = hass;
-    this._generation = 1;
+    this._generation = undefined;
     this._selections = [];
     this._render();
     this._load();
@@ -126,7 +126,7 @@ class GlovoOrderingPanel extends HTMLElement {
 
   async _load() {
     try {
-      const state = await this._request("state", this._withGeneration());
+      const state = await this._request("state");
       if (Number.isInteger(state.generation) && state.generation > 0 && state.generation !== this._generation) {
         this._generation = state.generation;
         this._invalidateAuthority("Ordering generation changed; local confirmation was discarded.");

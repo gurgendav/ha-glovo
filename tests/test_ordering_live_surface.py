@@ -73,15 +73,20 @@ class Adapter:
 
 
 class Manager:
-    enabled = False
     recovery_required = False
 
-    def __init__(self) -> None:
+    def __init__(self, *, enabled: bool = False) -> None:
+        self.enabled = enabled
         self.calls: list[dict[str, Any]] = []
+        self.state_calls: list[Any] = []
 
-    async def async_dispatch(self, **kwargs: Any) -> dict[str, Any]:
+    async def async_live_dispatch(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
         return {"safe": True}
+
+    async def async_state(self, user: Any) -> dict[str, Any]:
+        self.state_calls.append(user)
+        return {"generation": 9, "enabled": self.enabled}
 
     async def async_list_manual_checks(self, user: Any) -> dict[str, Any]:
         return {"attempts": []}
@@ -96,13 +101,14 @@ class Manager:
         return {"manualCheckRequired": True}
 
 
-def test_every_frozen_operation_is_registered_while_gated_off_and_reload_is_idempotent(
+def test_recovery_registers_only_bootstrap_and_recovery_while_gated_off(
     surface_module: ModuleType,
 ) -> None:
     manager, adapter = Manager(), Adapter()
     surface = surface_module.OrderingSurface(manager, adapter)
     run(surface.async_setup())
-    assert set(adapter.handlers) == set(surface_module.PUBLIC_OPERATION_COMMANDS.values()) | set(surface_module.RECOVERY_COMMANDS)
+    expected = {surface_module.PUBLIC_OPERATION_COMMANDS["state"]} | set(surface_module.RECOVERY_COMMANDS)
+    assert set(adapter.handlers) == expected
     assert adapter.panels == 1
     first = list(adapter.registrations)
     run(surface.async_setup())
@@ -111,10 +117,18 @@ def test_every_frozen_operation_is_registered_while_gated_off_and_reload_is_idem
     assert adapter.handlers == {} and adapter.removed == 1
 
 
+def test_enabled_surface_registers_all_frozen_operations(
+    surface_module: ModuleType,
+) -> None:
+    manager, adapter = Manager(enabled=True), Adapter()
+    run(surface_module.OrderingSurface(manager, adapter).async_setup())
+    assert set(adapter.handlers) == set(surface_module.PUBLIC_OPERATION_COMMANDS.values()) | set(surface_module.RECOVERY_COMMANDS)
+
+
 def test_owner_is_always_authenticated_user_and_never_a_spoofed_request_value(
     surface_module: ModuleType,
 ) -> None:
-    manager, adapter = Manager(), Adapter()
+    manager, adapter = Manager(enabled=True), Adapter()
     surface = surface_module.OrderingSurface(manager, adapter)
     run(surface.async_setup())
     user = surface_module.OrderingUser("authenticated-admin", True)

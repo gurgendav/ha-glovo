@@ -456,29 +456,26 @@ class OrderingManager:
             raise StaleOrderingGeneration("ordering generation is stale")
 
     async def async_state(self, user: OrderingUser) -> dict[str, Any]:
+        """Bootstrap public state without requiring a client-known generation.
+
+        This is intentionally separate from mutation guarding: administrators
+        must be able to see a durable manual/integrity block after consent is
+        closed, while every live operation still takes the exact current
+        generation through ``async_live_dispatch``.
+        """
         async with self._lock:
             self._admin_guard(user)
-            if self.recovery_required:
-                return {
-                    "enabled": False,
-                    "mockOnly": True,
-                    "liveOrderingAvailable": False,
-                    "manualCheckRequired": self.manual_check_required,
-                    "integrityFault": self.integrity_fault,
-                    "orderingBlocked": True,
-                    "liveCheckoutAvailable": False,
-                }
-            self._guard(user)
+            available = self.enabled
             return {
-                "enabled": True,
+                "enabled": available,
                 "generation": self.generation,
                 "mockOnly": True,
+                # Production does not construct a mutation facade.  Never make
+                # capability claims merely because consent has been granted.
                 "liveOrderingAvailable": False,
-                "manualCheckRequired": False,
-                "integrityFault": False,
-                "orderingBlocked": False,
-                # The legacy/mock manager cannot make a final live checkout
-                # available. A separately injected real adapter is required.
+                "manualCheckRequired": self.manual_check_required,
+                "integrityFault": self.integrity_fault,
+                "orderingBlocked": self.recovery_required,
                 "liveCheckoutAvailable": False,
             }
 
@@ -488,8 +485,17 @@ class OrderingManager:
         """One private G5 dispatch seam; it registers no HA public primitive."""
         if not isinstance(owner_key, str) or not owner_key:
             raise OrderingDisabled("live ordering is unavailable")
+        if operation == "state":
+            if request:
+                raise OrderingDisabled("live ordering is unavailable")
+            return await self.async_state(OrderingUser(owner_key, True))
+        if not isinstance(request, Mapping):
+            raise StaleOrderingGeneration("ordering generation is stale")
+        generation = request.get("generation")
         async with self._lock:
-            self._guard(OrderingUser(owner_key, True))
+            # Exact positive current generation is required before a live flow
+            # can invoke any preparatory mutation or final fixture seam.
+            self._guard(OrderingUser(owner_key, True), generation)
             dispatcher = self._live_dispatcher
             if dispatcher is None:
                 raise OrderingDisabled("live ordering is unavailable")

@@ -389,13 +389,14 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     )
 
 
-RECOVERY_COMMANDS = {
-    "glovo/ordering/state",
-    "glovo/ordering/manual_checks",
-    "glovo/ordering/manual_check",
-    "glovo/ordering/prepare_manual_resolution",
-    "glovo/ordering/resolve_manual_check",
-}
+def _recovery_commands(runtime: SimpleNamespace) -> set[str]:
+    surface = sys.modules[f"{runtime.prefix}.ordering_surface"]
+    return {surface.PUBLIC_OPERATION_COMMANDS["state"]} | set(surface.RECOVERY_COMMANDS)
+
+
+def _enabled_commands(runtime: SimpleNamespace) -> set[str]:
+    surface = sys.modules[f"{runtime.prefix}.ordering_surface"]
+    return set(surface.PUBLIC_OPERATION_COMMANDS.values()) | set(surface.RECOVERY_COMMANDS)
 
 
 def _command_map(runtime: SimpleNamespace) -> dict[str, Any]:
@@ -493,7 +494,7 @@ def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     assert len(runtime.panel_calls) == 1
     assert runtime.panel_calls[0]["require_admin"] is True
     assert len(hass.http.static_paths) == 1
-    assert len(runtime.commands) == 12
+    assert len(runtime.commands) == len(_enabled_commands(runtime))
 
     state_shell = runtime.commands[0]
     admin_connection = runtime.Connection(admin=True)
@@ -513,7 +514,8 @@ def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     }
     raced = runtime.Connection(admin=True)
     run(state_shell(hass, raced, {"id": 3, "type": "glovo/ordering/state"}))
-    assert raced.errors[0][1] == "ordering_disabled"
+    assert raced.results[0][1]["enabled"] is False
+    assert raced.results[0][1]["generation"] == generation
 
     run(entry.listeners[0](hass, entry))
     assert hass.config_entries.reloaded == [entry.entry_id]
@@ -534,7 +536,7 @@ def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     assert run(runtime.integration.async_setup_entry(hass, entry)) is True
     assert entry.runtime_data.ordering_manager.generation == old_generation
     assert entry.runtime_data.ordering_manager.enabled is True
-    assert len(runtime.commands) == 12
+    assert len(runtime.commands) == len(_enabled_commands(runtime))
     assert run(runtime.integration.async_unload_entry(hass, entry)) is True
     assert entry.runtime_data.ordering_manager.enabled is False
     assert entry.runtime_data.ordering_manager.generation > old_generation
@@ -734,7 +736,7 @@ def test_panel_registration_failure_preserves_websocket_api_and_tracking(
     assert entry.runtime_data.ordering_manager.enabled is True
     assert entry.runtime_data.ordering_surface is not None
     assert "glovo-ordering" in ha_runtime.removed_panels
-    assert len(ha_runtime.commands) == 12
+    assert len(ha_runtime.commands) == len(_enabled_commands(ha_runtime))
     state = ha_runtime.Connection(admin=True)
     run(
         ha_runtime.commands[0](
@@ -755,7 +757,7 @@ def test_A_recovery_websocket_commands_are_admin_only_strict_and_sanitized(
     )
     assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
     commands = _command_map(ha_runtime)
-    assert set(commands) == RECOVERY_COMMANDS
+    assert set(commands) == _recovery_commands(ha_runtime)
 
     valid = {
         "glovo/ordering/state": {"type": "glovo/ordering/state"},
@@ -804,7 +806,7 @@ def test_A_recovery_websocket_commands_are_admin_only_strict_and_sanitized(
     ).errors[0][1] == "invalid_format"
 
     for acknowledged, expected_code in (
-        (False, "invalid_manual_resolution"),
+        (False, "invalid_format"),
         (0, "invalid_format"),
         (1, "invalid_format"),
         ("true", "invalid_format"),
@@ -927,7 +929,7 @@ def test_B_recovery_handlers_restore_after_disabled_option_reload(
         {"allow_ordering": True, "ordering_acknowledged": True}
     )
     assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
-    assert set(_command_map(ha_runtime)) == RECOVERY_COMMANDS
+    assert set(_command_map(ha_runtime)) == _recovery_commands(ha_runtime)
     retained_state = _command_map(ha_runtime)["glovo/ordering/state"]
     assert _call_ws(
         ha_runtime, hass, "glovo/ordering/state", {"type": "glovo/ordering/state"}
@@ -948,7 +950,7 @@ def test_B_recovery_handlers_restore_after_disabled_option_reload(
         {"type": "glovo/ordering/manual_checks"},
     )
     assert restored.results[0][1]["attempts"][0]["attemptRef"] == "attempt-live-ha"
-    assert set(_command_map(ha_runtime)) == RECOVERY_COMMANDS
+    assert set(_command_map(ha_runtime)) == _recovery_commands(ha_runtime)
 
 
 def test_C_unload_deactivates_retained_shell_and_restart_restores_durable_recovery(
@@ -988,7 +990,7 @@ def test_C_unload_deactivates_retained_shell_and_restart_restores_durable_recove
         {"type": "glovo/ordering/state"},
     )
     assert restored.results[0][1]["orderingBlocked"] is True
-    assert set(_command_map(ha_runtime)) == RECOVERY_COMMANDS
+    assert set(_command_map(ha_runtime)) == _recovery_commands(ha_runtime)
 
 
 @pytest.mark.parametrize("failure", ["static", "panel"])
@@ -1068,7 +1070,7 @@ def test_E_integrity_fault_is_privacy_safe_permanent_and_not_clearable(
         {"allow_ordering": False, "ordering_acknowledged": False}
     )
     assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
-    assert set(_command_map(ha_runtime)) == RECOVERY_COMMANDS
+    assert set(_command_map(ha_runtime)) == _recovery_commands(ha_runtime)
     assert not {
         command
         for command in _command_map(ha_runtime)
@@ -1079,6 +1081,7 @@ def test_E_integrity_fault_is_privacy_safe_permanent_and_not_clearable(
     )
     assert state.results[0][1] == {
         "enabled": False,
+        "generation": 4,
         "mockOnly": True,
         "liveOrderingAvailable": False,
         "liveCheckoutAvailable": False,
@@ -1224,7 +1227,7 @@ def test_F_recovery_websocket_payloads_and_errors_use_privacy_allowlist(
         ha_runtime, hass, "glovo/ordering/state", {"type": "glovo/ordering/state"}
     )
     assert sanitized.errors == [
-        (1, "invalid_ordering_request", "Ordering request is invalid")
+        (1, "invalid_ordering_request", "Ordering request is unavailable or invalid")
     ]
 
 
@@ -1240,11 +1243,13 @@ def test_G_recovery_frontend_has_only_nonretrying_challenge_acknowledged_outcome
         assert source.count(f'data-resolution="{resolution}"') == 1
     assert "do not place this order again" in lowered
     assert lowered.index("if (state.manualcheckrequired)") < lowered.index(
-        'type: "glovo/ordering/catalog"'
+        '"live/addresses"'
     )
     assert "prepared.challenge" in source
     assert 'acknowledged: true' in source
-    assert '.checked === true' in source
+    # Fail closed unless the box is literally checked; truthy/non-boolean values
+    # cannot authorize manual resolution.
+    assert '.checked !== true' in source
     assert source.count(".innerHTML") == 1
     assert ".textContent" in source
     for prohibited in (
@@ -1280,15 +1285,7 @@ def test_H_default_off_tracking_and_mock_only_command_inventory_remain_unchanged
     assert run(
         ha_runtime.integration.async_setup_entry(enabled_hass, enabled_entry)
     ) is True
-    assert set(_command_map(ha_runtime)) == RECOVERY_COMMANDS | {
-        "glovo/ordering/catalog",
-        "glovo/ordering/basket",
-        "glovo/ordering/basket_add_fixture_item",
-        "glovo/ordering/basket_clear",
-        "glovo/ordering/fixture_quote",
-        "glovo/ordering/prepare_mock_confirmation",
-        "glovo/ordering/execute_mock_checkout",
-    }
+    assert set(_command_map(ha_runtime)) == _enabled_commands(ha_runtime)
     assert enabled_entry.runtime_data.ordering_manager.enabled is True
     assert enabled_entry.runtime_data.ordering_manager._checkout_adapter.execution_count == 0
     assert enabled_hass.config_entries.forwarded

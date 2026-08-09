@@ -50,6 +50,12 @@ SENSITIVE_KEYS = frozenset(
         "cvc",
         "checkout_id",
         "checkoutid",
+        "checkout_ref",
+        "checkoutref",
+        "checkout_session",
+        "checkoutsession",
+        "provider_id",
+        "providerid",
     }
 )
 CAPABILITY_DENYLIST: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -61,6 +67,11 @@ CAPABILITY_DENYLIST: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("automation final-purchase seam", re.compile(r"(?is)(?:device_automation|automation).{0,160}(?:checkout|purchase|place_order)")),
     ("MQTT command seam", re.compile(r"(?i)mqtt(?:\\.|_).*(?:purchase|checkout|place_order)")),
     ("intent purchase seam", re.compile(r"(?i)(?:intent|conversation)(?:\\.|_).*(?:purchase|checkout|place_order)")),
+)
+# Public operation names such as ``live/checkout_status`` are intentionally not
+# private references.  Scan only identifier-shaped checkout/provider handles.
+PRIVATE_REFERENCE_PATTERN = re.compile(
+    r"(?i)\b(?:checkout(?:[_-]?(?:id|ref|session(?:[_-]?id)?))|provider[_-]?id)\b"
 )
 
 
@@ -95,8 +106,14 @@ def inspect_value(value: Any, location: str, findings: list[str]) -> None:
         for name, pattern in VALUE_DENYLIST:
             if pattern.search(value):
                 findings.append(f"{location}: {name}")
-        if "checkout" in value.lower() and "fixture" not in value.lower() and not value.lower().startswith("masked"):
-            findings.append(f"{location}: non-fixture checkout reference")
+
+
+def scan_frontend_private_references(
+    text: str, location: str, findings: list[str]
+) -> None:
+    """Reject leaked provider/checkout handles without flagging public routes."""
+    if PRIVATE_REFERENCE_PATTERN.search(text):
+        findings.append(f"{location}: private checkout/provider reference")
 
 
 def scan_public_values(findings: list[str]) -> None:
@@ -110,6 +127,8 @@ def scan_public_values(findings: list[str]) -> None:
                 findings.append(f"{relative}: invalid public JSON ({error.msg})")
         else:
             inspect_value(text, relative, findings)
+            if path.suffix == ".js":
+                scan_frontend_private_references(text, relative, findings)
 
 
 def scan_logger_literals(findings: list[str]) -> None:

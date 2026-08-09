@@ -58,7 +58,10 @@ _MANUAL_RESOLUTIONS = vol.In(
 # Schema dicts intentionally enumerate every frozen request field.  HA's schema
 # decorator rejects extra fields before a request reaches the manager/facade.
 _OPERATION_FIELDS: dict[str, dict[Any, Any]] = {
-    "state": {vol.Required("generation"): _strict_positive_int},
+    # Bootstrap has no client-known generation: it returns the durable current
+    # generation used by every later live operation.  Its empty schema also
+    # rejects a stale/guessed/extra generation rather than silently accepting it.
+    "state": {},
     "live/addresses": {vol.Required("generation"): _strict_positive_int},
     "live/stores": {
         vol.Required("generation"): _strict_positive_int,
