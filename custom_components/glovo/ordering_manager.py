@@ -172,6 +172,7 @@ class OrderingManager:
         self._security_fault = self._durable_state.integrity_fault
         self._manual_check = self._durable_state.manual_check_required
         self._initialized = False
+        self._legacy_repair_status = "not-attempted"
 
     @property
     def enabled(self) -> bool:
@@ -194,6 +195,11 @@ class OrderingManager:
     @property
     def integrity_fault(self) -> bool:
         return self._security_fault or self._durable_state.integrity_fault
+
+    @property
+    def legacy_repair_status(self) -> str:
+        """Return one privacy-safe operator diagnostic for migration recovery."""
+        return self._legacy_repair_status
 
     @property
     def manual_check_required(self) -> bool:
@@ -383,34 +389,50 @@ class OrderingManager:
             and state.integrity_fault
         )
         if not (mixed_first_boot or already_latched_boot):
+            self._legacy_repair_status = "source-not-eligible"
+            return False
+        if not state.loaded or state.storage_fault:
+            self._legacy_repair_status = "state-unavailable"
             return False
         if (
-            not state.loaded
-            or state.storage_fault
-            or state.manual_check_required
+            state.manual_check_required
             or state.manual_binding is not None
             or state.preparation_binding is not None
-            or not self._all_consequential_gates_literal_false()
-            or not self._preparation_authority_is_pristine()
-            or not self.journal.loaded
-            or self.journal.corrupt
-            or self.journal.unresolved_manual_checks
         ):
+            self._legacy_repair_status = "state-binding-present"
+            return False
+        if not self._all_consequential_gates_literal_false():
+            self._legacy_repair_status = "gate-not-closed"
+            return False
+        if not self._preparation_authority_is_pristine():
+            self._legacy_repair_status = "preparation-not-pristine"
+            return False
+        if not self.journal.loaded:
+            self._legacy_repair_status = "journal-unavailable"
+            return False
+        if self.journal.corrupt:
+            self._legacy_repair_status = "journal-corrupt"
+            return False
+        if self.journal.unresolved_manual_checks:
+            self._legacy_repair_status = "journal-manual-check"
             return False
         try:
             if not await self.journal.async_repair_legacy_mock_no_remote_effect():
+                self._legacy_repair_status = "legacy-proof-mismatch"
                 return False
             expected_generation = state.generation
             await state._async_repair_legacy_mock_integrity(  # noqa: SLF001
                 expected_generation=expected_generation
             )
         except (JournalFault, OrderingStateFault):
+            self._legacy_repair_status = "repair-persistence-fault"
             await self._async_force_integrity_fault()
             return False
         self._security_fault = False
         self._manual_check = False
         self._enabled = False
         self._invalidate_all_ephemeral()
+        self._legacy_repair_status = "repaired"
         return True
 
     async def _async_latch_manual_check(

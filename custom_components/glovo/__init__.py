@@ -103,6 +103,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         preparation_authority=preparation_authority,
     )
     await ordering_manager.async_initialize()
+    if ordering_manager.integrity_fault:
+        _LOGGER.warning(
+            "Glovo ordering remains safely blocked after legacy migration check: %s",
+            ordering_manager.legacy_repair_status,
+        )
     mutation_ready = (
         ordering_manager.enabled
         and preparation_authority.loaded
