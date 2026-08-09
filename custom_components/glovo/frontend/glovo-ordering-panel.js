@@ -170,9 +170,11 @@ class GlovoOrderingPanel extends HTMLElement {
 
   async _lookupStore() {
     const storeSlug = this._storeSlug();
+    const addressHandle = this.querySelector("#address").value;
+    if (!addressHandle) { this._setStatus("Select a saved address before looking up a store."); return; }
     if (!storeSlug) { this._setStatus("Enter an explicit store slug or URL. Broad discovery is unsupported."); return; }
     try {
-      const response = await this._request("live/stores", { ...this._withGeneration(), storeSlug });
+      const response = await this._request("live/stores", { ...this._withGeneration(), storeSlug, addressHandle });
       const select = this.querySelector("#store"); select.replaceChildren(new Option("Select explicit store", ""));
       (response.stores || []).forEach((item) => select.add(new Option(item.label, item.storeHandle)));
       this._setStatus("Select the explicit store to load its menu.");
@@ -186,7 +188,8 @@ class GlovoOrderingPanel extends HTMLElement {
     this.querySelector("#save-basket").disabled = true;
     if (!storeHandle) return;
     try {
-      const menu = await this._request("live/store_menu", { ...this._withGeneration(), storeHandle });
+      const addressHandle = this.querySelector("#address").value;
+      const menu = await this._request("live/store_menu", { ...this._withGeneration(), storeHandle, addressHandle });
       this._storeHandle = storeHandle; this._menu = menu;
       const host = this.querySelector("#menu"); host.replaceChildren();
       (menu.products || []).forEach((product) => host.append(this._productControl(product)));

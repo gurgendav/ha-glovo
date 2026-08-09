@@ -68,10 +68,12 @@ _OPERATION_FIELDS: dict[str, dict[Any, Any]] = {
     "live/stores": {
         vol.Required("generation"): _strict_positive_int,
         vol.Required("storeSlug"): str,
+        vol.Required("addressHandle"): str,
     },
     "live/store_menu": {
         vol.Required("generation"): _strict_positive_int,
         vol.Required("storeHandle"): str,
+        vol.Required("addressHandle"): str,
     },
     "live/payment_methods": {vol.Required("generation"): _strict_positive_int},
     "live/basket": {vol.Required("generation"): _strict_positive_int},

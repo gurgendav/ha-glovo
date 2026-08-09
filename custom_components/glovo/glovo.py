@@ -139,12 +139,17 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Callable
 from typing import Any, Literal
 
 API_URL = "https://api.glovoapp.com"
+ORDERING_WEB_VERSION = "v1.2476.1"
+_DELIVERY_CONTEXT_KEYS = frozenset(
+    {"countryCode", "cityCode", "latitude", "longitude"}
+)
 DEFAULT_REFRESH_MARGIN_SEC = 60
 TrackingOrigin = Literal["ORDER_TRACKING", "ORDER_DETAILS"]
 TERMINAL_TRACKING_STEPS = frozenset({"DELIVERED", "CANCELED", "CANCELLED"})
@@ -377,6 +382,7 @@ def _request_json(
     *,
     access_token: str | None = None,
     body: dict[str, Any] | None = None,
+    extra_headers: Mapping[str, str] | None = None,
 ) -> Any:
     headers = {
         "Accept": "application/json",
@@ -384,6 +390,8 @@ def _request_json(
     }
     if access_token:
         headers["Authorization"] = access_token
+    if extra_headers:
+        headers.update(extra_headers)
 
     data = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -420,6 +428,80 @@ def single_attempt_authed_get(
     if query:
         url = f"{url}?{urllib.parse.urlencode(query)}"
     return _request_json("GET", url, access_token=access_token)
+
+
+def _delivery_headers(context: Mapping[str, str]) -> dict[str, str]:
+    """Build the closed Glovo web location header set from private context."""
+    if not isinstance(context, Mapping) or set(context) != _DELIVERY_CONTEXT_KEYS:
+        raise RuntimeError("Invalid delivery context")
+    country = context["countryCode"]
+    city = context["cityCode"]
+    latitude = context["latitude"]
+    longitude = context["longitude"]
+    if (
+        not isinstance(country, str)
+        or not re.fullmatch(r"[A-Z]{2}", country)
+        or not isinstance(city, str)
+        or not re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{1,19}", city)
+    ):
+        raise RuntimeError("Invalid delivery context")
+    try:
+        lat = float(latitude)
+        lon = float(longitude)
+    except (TypeError, ValueError):
+        raise RuntimeError("Invalid delivery context") from None
+    if (
+        not math.isfinite(lat)
+        or not math.isfinite(lon)
+        or not -90 <= lat <= 90
+        or not -180 <= lon <= 180
+    ):
+        raise RuntimeError("Invalid delivery context")
+    now_millis = str(int(time.time() * 1000))
+    return {
+        "Accept": "application/json, text/plain, */*",
+        "Glovo-Api-Version": "14",
+        "Glovo-App-Context": "web",
+        "Glovo-App-Development-State": "prod",
+        "Glovo-App-Platform": "web",
+        "Glovo-App-Type": "customer",
+        "Glovo-App-Version": ORDERING_WEB_VERSION,
+        "Glovo-Client-Info": (
+            f"web-customer-web-react/{ORDERING_WEB_VERSION} project:customer-web"
+        ),
+        "Glovo-Language-Code": "en",
+        "Glovo-Location-Country-Code": country,
+        "Glovo-Location-City-Code": city,
+        "Glovo-Delivery-Location-Latitude": str(lat),
+        "Glovo-Delivery-Location-Longitude": str(lon),
+        "Glovo-Delivery-Location-Timestamp": now_millis,
+        "Glovo-Delivery-Location-Accuracy": "0",
+        "Glovo-Request-Id": str(uuid.uuid4()),
+        "Glovo-Request-TTL": "7500",
+    }
+
+
+def single_attempt_authed_location_get(
+    method: str,
+    access_token: str,
+    path: str,
+    query: dict[str, str],
+    delivery_context: dict[str, str],
+) -> Any:
+    """Perform one authenticated GET with validated private delivery headers."""
+    if method != "GET":
+        raise RuntimeError("Only GET is available through this request seam")
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise RuntimeError("Invalid API path")
+    url = f"{API_URL}{path}"
+    if query:
+        url = f"{url}?{urllib.parse.urlencode(query)}"
+    return _request_json(
+        "GET",
+        url,
+        access_token=access_token,
+        extra_headers=_delivery_headers(delivery_context),
+    )
 
 
 # Must exactly match api_session._PHASE_MUTATION_ALLOWLIST. This standalone

@@ -6,8 +6,14 @@ import re
 from collections.abc import Mapping
 from typing import Any, Final
 
-from .api_session import ApiSessionError
-from .ordering_contracts import CatalogMenu, LiveStore, parse_menu, parse_store
+from .api_session import ApiSessionError, DeliveryLocation
+from .ordering_contracts import (
+    AddressSnapshot,
+    CatalogMenu,
+    LiveStore,
+    parse_menu,
+    parse_store,
+)
 
 _SLUG_RE: Final = re.compile(r"^[a-z0-9][a-z0-9-]{0,99}$")
 _LANGUAGE_RE: Final = re.compile(r"^[a-z]{2}(?:-[A-Z]{2})?$")
@@ -25,15 +31,28 @@ class LiveCatalogClient:
     def __init__(self, session: Any) -> None:
         self._session = session
 
-    async def async_store(self, store_slug: str) -> LiveStore:
-        if not isinstance(store_slug, str) or not _SLUG_RE.fullmatch(store_slug):
+    async def async_store(
+        self, store_slug: str, delivery_address: AddressSnapshot
+    ) -> LiveStore:
+        if (
+            not isinstance(store_slug, str)
+            or not _SLUG_RE.fullmatch(store_slug)
+            or not isinstance(delivery_address, AddressSnapshot)
+        ):
             raise ApiSessionError(
                 category="invalid_request", endpoint_family="catalog"
             )
+        location = DeliveryLocation(
+            country_code=delivery_address.country_code,
+            city_code=delivery_address.city_code,
+            latitude=delivery_address.latitude,
+            longitude=delivery_address.longitude,
+        )
         payload = await self._session.async_get(
             "catalog",
             f"/v3/stores/{store_slug}",
             {"includeClosed": "true", "includeDisabled": "false"},
+            delivery_location=location,
         )
         return parse_store(payload)
 
@@ -76,14 +95,23 @@ class LiveCatalogClient:
     async def async_menu(
         self,
         store: LiveStore,
+        delivery_address: AddressSnapshot,
         *,
         translation: str | None = None,
         approved_query: Mapping[str, str] | None = None,
     ) -> CatalogMenu:
-        if not isinstance(store, LiveStore):
+        if not isinstance(store, LiveStore) or not isinstance(
+            delivery_address, AddressSnapshot
+        ):
             raise ApiSessionError(
                 category="invalid_request", endpoint_family="catalog"
             )
+        location = DeliveryLocation(
+            country_code=delivery_address.country_code,
+            city_code=delivery_address.city_code,
+            latitude=delivery_address.latitude,
+            longitude=delivery_address.longitude,
+        )
         query = self._menu_query(translation, approved_query)
         preferred = (
             f"/v4/stores/{store.store_id}/addresses/{store.address_id}/content/main"
@@ -92,11 +120,15 @@ class LiveCatalogClient:
             f"/v3/stores/{store.store_id}/addresses/{store.address_id}/node/store_menu"
         )
         try:
-            payload = await self._session.async_get("catalog", preferred, query)
+            payload = await self._session.async_get(
+                "catalog", preferred, query, delivery_location=location
+            )
             self._raise_classified_outcome(payload)
         except ApiSessionError as err:
             if err.category not in {"not_found", "unsupported"}:
                 raise
-            payload = await self._session.async_get("catalog", legacy, query)
+            payload = await self._session.async_get(
+                "catalog", legacy, query, delivery_location=location
+            )
             self._raise_classified_outcome(payload)
         return parse_menu(payload, expected_store_address_id=store.address_id)

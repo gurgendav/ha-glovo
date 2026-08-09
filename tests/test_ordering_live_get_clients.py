@@ -80,6 +80,7 @@ class FixtureTransport:
     def __init__(self, responses: dict[str, Any]) -> None:
         self.responses = responses
         self.calls: list[tuple[str, str, dict[str, str]]] = []
+        self.location_contexts: list[dict[str, str]] = []
 
     def __call__(
         self, method: str, access_token: str, path: str, query: dict[str, str]
@@ -91,6 +92,17 @@ class FixtureTransport:
         if isinstance(response, BaseException):
             raise response
         return copy.deepcopy(response)
+
+    def location_get(
+        self,
+        method: str,
+        access_token: str,
+        path: str,
+        query: dict[str, str],
+        context: dict[str, str],
+    ) -> Any:
+        self.location_contexts.append(copy.deepcopy(context))
+        return self(method, access_token, path, query)
 
 
 class SessionHarness:
@@ -105,6 +117,7 @@ class SessionHarness:
             persist_token=self.persist,
             ensure_token=self.ensure,
             transport=self.transport,
+            location_transport=self.transport.location_get,
         )
         self.session = session
 
@@ -481,6 +494,28 @@ def test_address_handles_are_random_owner_generation_ttl_bound_and_revalidated(
         client.resolve_address(current.selection_key, owner_key="admin-a", generation=9)
 
 
+def test_live_address_uses_provider_title_but_never_subtitle_or_physical_title(
+    live: dict[str, ModuleType],
+) -> None:
+    path = "/customer_profile/api/v1/address_book/me/addresses"
+    payload = live_address_payload()
+    payload["data"]["addresses"][0]["title"] = "Parents Home"
+    payload["data"]["addresses"][0]["subtitle"] = "Private subtitle"
+    harness = SessionHarness(live, {path: payload})
+    client = live["ordering_account"].AccountClient(harness.session)
+    public = run(client.async_saved_addresses(owner_key="admin-a", generation=2))[0]
+    assert public.public_dict()["label"] == "Parents Home ••••"
+    assert "subtitle" not in json.dumps(public.public_dict()).lower()
+
+    unsafe = live_address_payload()
+    unsafe["data"]["addresses"][0]["title"] = "70 Example Street"
+    harness.transport.responses[path] = unsafe
+    fallback = run(
+        client.async_saved_addresses(owner_key="admin-a", generation=2)
+    )[0]
+    assert fallback.public_dict()["label"] == "Saved home ••••"
+
+
 def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, ModuleType]) -> None:
     contracts = live["ordering_contracts"]
     assert contracts.build_payment_query(amount_minor=1250, currency="AMD") == {
@@ -619,6 +654,112 @@ def test_menu_parser_direct_products_options_promotions_and_fail_closed_cases(
             contracts.parse_menu(payload, expected_store_address_id=81)
 
 
+def test_location_transport_builds_only_closed_glovo_web_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "glovo_location_transport_under_test", GLOVO_ROOT / "glovo.py"
+    )
+    assert spec is not None and spec.loader is not None
+    glovo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(glovo)
+    sent: dict[str, Any] = {}
+
+    def request(method: str, url: str, **kwargs: Any) -> dict[str, bool]:
+        sent.update({"method": method, "url": url, **kwargs})
+        return {"ok": True}
+
+    monkeypatch.setattr(glovo, "_request_json", request)
+    context = {
+        "countryCode": "AM",
+        "cityCode": "YRV",
+        "latitude": "40.177",
+        "longitude": "44.513",
+    }
+    assert glovo.single_attempt_authed_location_get(
+        "GET",
+        "access-private",
+        "/v3/stores/fixture-kitchen",
+        {"includeClosed": "true", "includeDisabled": "false"},
+        context,
+    ) == {"ok": True}
+    assert sent["method"] == "GET"
+    assert sent["url"].startswith(
+        "https://api.glovoapp.com/v3/stores/fixture-kitchen?"
+    )
+    assert sent["access_token"] == "access-private"
+    headers = sent["extra_headers"]
+    assert set(headers) == {
+        "Accept",
+        "Glovo-Api-Version",
+        "Glovo-App-Context",
+        "Glovo-App-Development-State",
+        "Glovo-App-Platform",
+        "Glovo-App-Type",
+        "Glovo-App-Version",
+        "Glovo-Client-Info",
+        "Glovo-Language-Code",
+        "Glovo-Location-Country-Code",
+        "Glovo-Location-City-Code",
+        "Glovo-Delivery-Location-Latitude",
+        "Glovo-Delivery-Location-Longitude",
+        "Glovo-Delivery-Location-Timestamp",
+        "Glovo-Delivery-Location-Accuracy",
+        "Glovo-Request-Id",
+        "Glovo-Request-TTL",
+    }
+    assert headers["Glovo-Location-Country-Code"] == "AM"
+    assert headers["Glovo-Location-City-Code"] == "YRV"
+    malformed = dict(context)
+    malformed["Authorization"] = "forbidden"
+    with pytest.raises(RuntimeError, match="Invalid delivery context"):
+        glovo.single_attempt_authed_location_get(
+            "GET", "access-private", "/v3/stores/x", {}, malformed
+        )
+
+
+def test_session_location_context_is_private_catalog_only_and_not_retried(
+    live: dict[str, ModuleType],
+) -> None:
+    session_module = live["api_session"]
+    location = session_module.DeliveryLocation("AM", "YRV", 40.177, 44.513)
+    assert "40.177" not in repr(location)
+    calls: list[tuple[Any, ...]] = []
+
+    def get(*args: Any) -> Any:
+        calls.append(args)
+        return {"ok": True}
+
+    session = session_module.SerializedApiSession(
+        token_source=lambda: '{"access_token":"access-ok","refresh_token":"r","expires_at":2000000000}',
+        persist_token=lambda value: None,
+        ensure_token=lambda value: ("access-ok", value),
+        transport=get,
+        location_transport=get,
+    )
+    assert run(
+        session.async_get(
+            "catalog",
+            "/v3/stores/fixture-kitchen",
+            delivery_location=location,
+        )
+    ) == {"ok": True}
+    assert len(calls) == 1 and len(calls[0]) == 5
+    with pytest.raises(session_module.ApiSessionError):
+        run(
+            session.async_get(
+                "account", "/v3/me", delivery_location=location
+            )
+        )
+    for values in (
+        ("am", "YRV", 40.0, 44.0),
+        ("AM", "YRV", float("nan"), 44.0),
+        ("AM", "YRV", 40.0, 181.0),
+    ):
+        with pytest.raises(session_module.ApiSessionError):
+            session_module.DeliveryLocation(*values)
+
+
 def test_catalog_client_uses_preferred_get_and_narrow_legacy_fallback(live: dict[str, ModuleType]) -> None:
     api_error = live["api_session"].ApiSessionError
     preferred = "/v4/stores/71/addresses/81/content/main"
@@ -629,32 +770,45 @@ def test_catalog_client_uses_preferred_get_and_narrow_legacy_fallback(live: dict
         {store_path: store_payload(), preferred: menu_payload(), legacy_path: menu_payload()},
     )
     client = live["ordering_live_catalog"].LiveCatalogClient(harness.session)
-    store = run(client.async_store("fixture-kitchen"))
-    menu = run(client.async_menu(store))
+    delivery_address = live["ordering_contracts"].parse_saved_addresses(
+        address_payload()
+    )[0]
+    store = run(client.async_store("fixture-kitchen", delivery_address))
+    menu = run(client.async_menu(store, delivery_address))
     assert menu.products[0].product_id == "product-1"
     assert [call[1] for call in harness.transport.calls] == [store_path, preferred]
     assert harness.transport.calls[0][2] == {"includeClosed": "true", "includeDisabled": "false"}
+    expected_location = {
+        "countryCode": "AM",
+        "cityCode": "YRV",
+        "latitude": "40.177",
+        "longitude": "44.513",
+    }
+    assert harness.transport.location_contexts == [
+        expected_location,
+        expected_location,
+    ]
 
     for category, fallback_expected in (("not_found", True), ("unsupported", True), ("auth", False), ("transport", False), ("schema", False)):
         harness.transport.calls.clear()
         harness.transport.responses[preferred] = api_error(category=category, status=404, endpoint_family="catalog")
         if fallback_expected:
-            assert run(client.async_menu(store)).products
+            assert run(client.async_menu(store, delivery_address)).products
             assert [call[1] for call in harness.transport.calls] == [preferred, legacy_path]
         else:
             with pytest.raises(api_error):
-                run(client.async_menu(store))
+                run(client.async_menu(store, delivery_address))
             assert [call[1] for call in harness.transport.calls] == [preferred]
 
     harness.transport.calls.clear()
     harness.transport.responses[preferred] = {"error": {"code": "UNSUPPORTED_ENDPOINT"}}
-    assert run(client.async_menu(store)).products
+    assert run(client.async_menu(store, delivery_address)).products
     assert [call[1] for call in harness.transport.calls] == [preferred, legacy_path]
 
     harness.transport.calls.clear()
     harness.transport.responses[preferred] = {"error": {"code": "UNKNOWN", "detail": "raw"}}
     with pytest.raises(live["ordering_contracts"].ContractError):
-        run(client.async_menu(store))
+        run(client.async_menu(store, delivery_address))
     assert [call[1] for call in harness.transport.calls] == [preferred]
 
 

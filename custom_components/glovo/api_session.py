@@ -8,6 +8,7 @@ import json
 import math
 import re
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
 from typing import Any, Final
@@ -47,6 +48,8 @@ _MAX_QUERY_ITEMS: Final = 12
 _MAX_QUERY_LENGTH: Final = 1_000
 _MAX_MUTATION_BYTES: Final = 256_000
 _MAX_MUTATION_DEPTH: Final = 12
+_COUNTRY_CODE_RE: Final = re.compile(r"^[A-Z]{2}$")
+_CITY_CODE_RE: Final = re.compile(r"^[A-Z0-9][A-Z0-9_-]{1,19}$")
 
 # Keep these literal contracts in lockstep with ``glovo.py``. The transport
 # seam accepts an explicit purpose, whereas the standalone helper uses the
@@ -137,6 +140,49 @@ class MutationDispatchUncertain(ApiSessionError):
         )
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class DeliveryLocation:
+    """Private validated delivery context for location-bound catalog reads."""
+
+    country_code: str = field(repr=False)
+    city_code: str = field(repr=False)
+    latitude: float = field(repr=False)
+    longitude: float = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.country_code, str)
+            or not _COUNTRY_CODE_RE.fullmatch(self.country_code)
+            or not isinstance(self.city_code, str)
+            or not _CITY_CODE_RE.fullmatch(self.city_code)
+        ):
+            raise ApiSessionError(category="invalid_request", endpoint_family="catalog")
+        for value, minimum, maximum in (
+            (self.latitude, -90.0, 90.0),
+            (self.longitude, -180.0, 180.0),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or not minimum <= float(value) <= maximum
+            ):
+                raise ApiSessionError(
+                    category="invalid_request", endpoint_family="catalog"
+                )
+        object.__setattr__(self, "latitude", float(self.latitude))
+        object.__setattr__(self, "longitude", float(self.longitude))
+
+    def transport_context(self) -> dict[str, str]:
+        """Return a closed private transport shape, never a public projection."""
+        return {
+            "countryCode": self.country_code,
+            "cityCode": self.city_code,
+            "latitude": str(self.latitude),
+            "longitude": str(self.longitude),
+        }
+
+
 class SerializedApiSession:
     """Own one lock for token refresh, persistence, reads, and approved writes."""
 
@@ -147,6 +193,10 @@ class SerializedApiSession:
         persist_token: Callable[[str], Any],
         ensure_token: Callable[[str], Any],
         transport: Callable[[str, str, str, dict[str, str]], Any],
+        location_transport: Callable[
+            [str, str, str, dict[str, str], dict[str, str]], Any
+        ]
+        | None = None,
         mutation_transport: Callable[
             [str, str, str, dict[str, str], dict[str, Any] | None], Any
         ]
@@ -157,6 +207,7 @@ class SerializedApiSession:
         self._persist_token = persist_token
         self._ensure_token = ensure_token
         self._transport = transport
+        self._location_transport = location_transport
         self._mutation_transport = mutation_transport
         self._executor = executor
         self._lock = asyncio.Lock()
@@ -323,12 +374,22 @@ class SerializedApiSession:
         endpoint_family: str,
         path: str,
         query: Mapping[str, str] | None = None,
+        *,
+        delivery_location: DeliveryLocation | None = None,
     ) -> Any:
         """Perform one allowlisted GET; never retry or replay the request."""
         if (
             endpoint_family not in _ALLOWED_FAMILIES
             or not self._valid_path(endpoint_family, path)
             or not self._valid_query(query or {})
+            or (
+                delivery_location is not None
+                and (
+                    endpoint_family != "catalog"
+                    or not isinstance(delivery_location, DeliveryLocation)
+                    or self._location_transport is None
+                )
+            )
         ):
             raise ApiSessionError(
                 category="invalid_request", endpoint_family=endpoint_family
@@ -338,12 +399,22 @@ class SerializedApiSession:
                 raise ApiSessionError(category="auth", endpoint_family=endpoint_family)
             access_token = await self._async_authorize(endpoint_family)
             try:
+                if delivery_location is None:
+                    return await self._invoke(
+                        self._transport,
+                        "GET",
+                        access_token,
+                        path,
+                        dict(query or {}),
+                    )
+                assert self._location_transport is not None
                 return await self._invoke(
-                    self._transport,
+                    self._location_transport,
                     "GET",
                     access_token,
                     path,
                     dict(query or {}),
+                    delivery_location.transport_context(),
                 )
             except asyncio.CancelledError:
                 raise

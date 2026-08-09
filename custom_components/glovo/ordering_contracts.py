@@ -109,6 +109,7 @@ class AddressSnapshot:
     kind: str = field(repr=False)
     tag: str | None = field(repr=False)
     fields: tuple[AddressField, ...] = field(repr=False)
+    display_title: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "remote_id", _int(self.remote_id, minimum=1))
@@ -125,6 +126,10 @@ class AddressSnapshot:
         object.__setattr__(self, "kind", kind)
         if self.tag is not None:
             object.__setattr__(self, "tag", _text(self.tag, maximum=80))
+        if self.display_title is not None:
+            object.__setattr__(
+                self, "display_title", _text(self.display_title, maximum=80)
+            )
         if not isinstance(self.fields, tuple) or len(self.fields) > MAX_ADDRESS_FIELDS:
             _fail()
         if not all(isinstance(item, AddressField) for item in self.fields):
@@ -516,6 +521,7 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
         "originalLongitude",
     }
     for item in addresses:
+        display_title: str | None = None
         if live_shape:
             row = _object(
                 item,
@@ -527,9 +533,13 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
                 required=required,
                 allowed=live_address_fields,
             )
-            for label in ("title", "subtitle"):
-                if label in row and row[label] is not None:
-                    _text(row[label], maximum=250, allow_empty=True)
+            if "title" in row and row["title"] is not None:
+                candidate_title = _text(
+                    row["title"], maximum=80, allow_empty=True
+                )
+                display_title = candidate_title or None
+            if "subtitle" in row and row["subtitle"] is not None:
+                _text(row["subtitle"], maximum=250, allow_empty=True)
             if "faulty" in address and address["faulty"] is not None:
                 try:
                     _bool(address["faulty"])
@@ -609,6 +619,7 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
                 kind=kind,
                 tag=tag,
                 fields=tuple(fields),
+                display_title=display_title,
             )
         except ContractError:
             raise ContractError("saved_address_snapshot") from None

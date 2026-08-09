@@ -184,12 +184,26 @@ class LiveSelectionRegistry:
             raise LiveSelectionError
         return bound.value
 
-    def issue_store(self, store: LiveStore, *, owner: str, generation: int) -> dict[str, Any]:
+    def issue_store(
+        self,
+        store: LiveStore,
+        *,
+        owner: str,
+        generation: int,
+        address_handle: str | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(store, LiveStore):
             raise LiveSelectionError
         owner = _owner(owner)
         generation = _generation(generation)
-        handle = self._bind(owner=owner, generation=generation, value=store)
+        if address_handle is not None:
+            address_handle = _handle(address_handle)
+        handle = self._bind(
+            owner=owner,
+            generation=generation,
+            value=store,
+            parent=address_handle,
+        )
         # Fees are display-only catalog facts; they are not payment authority.
         return {
             "storeHandle": handle,
@@ -278,8 +292,23 @@ class LiveSelectionRegistry:
         product = self._resolve(handle, owner=owner, generation=generation, expected=CatalogProduct, parent=store_handle)
         return product.price.currency
 
-    def resolve_store(self, handle: str, *, owner: str, generation: int) -> LiveStore:
-        return self._resolve(handle, owner=owner, generation=generation, expected=LiveStore)
+    def resolve_store(
+        self,
+        handle: str,
+        *,
+        owner: str,
+        generation: int,
+        address_handle: str | None = None,
+    ) -> LiveStore:
+        if address_handle is not None:
+            address_handle = _handle(address_handle)
+        return self._resolve(
+            handle,
+            owner=owner,
+            generation=generation,
+            expected=LiveStore,
+            parent=address_handle,
+        )
 
     def purge(self) -> None:
         now = self._now()

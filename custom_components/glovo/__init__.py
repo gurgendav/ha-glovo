@@ -129,6 +129,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         persist_token=persist_token,
         ensure_token=glovo.ensure_access_token,
         transport=glovo.single_attempt_authed_get,
+        location_transport=glovo.single_attempt_authed_location_get,
         mutation_transport=(
             glovo.single_attempt_authed_phase_mutation if mutation_ready else None
         ),

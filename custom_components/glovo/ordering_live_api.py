@@ -38,8 +38,8 @@ OPERATION_REQUEST_FIELDS: Final = {
     # State is a bootstrap response that establishes the first generation.
     "state": frozenset(),
     "live/addresses": frozenset({"generation"}),
-    "live/stores": frozenset({"generation", "storeSlug"}),
-    "live/store_menu": frozenset({"generation", "storeHandle"}),
+    "live/stores": frozenset({"generation", "storeSlug", "addressHandle"}),
+    "live/store_menu": frozenset({"generation", "storeHandle", "addressHandle"}),
     "live/payment_methods": frozenset({"generation"}),
     "live/basket": frozenset({"generation"}),
     "live/basket_set": frozenset({"generation", "expectedRevision", "storeHandle", "products"}),
@@ -326,15 +326,38 @@ class LiveOrderingFacade:
                 return {"addresses": [item.public_dict() for item in await self._account.async_saved_addresses(owner_key=owner, generation=generation)]}
             if operation == "live/stores":
                 slug = request["storeSlug"]
+                address_handle = _handle(request["addressHandle"])
                 if not isinstance(slug, str):
                     raise PublicContractError
+                delivery_address = self._account.resolve_address(
+                    address_handle, owner_key=owner, generation=generation
+                )
                 # No address-wide discovery endpoint has been proven; only explicit lookup exists.
-                store = await self._catalog.async_store(slug)
-                return {"stores": [self._selections.issue_store(store, owner=owner, generation=generation)], "broadStoreDiscovery": "unsupported"}
+                store = await self._catalog.async_store(slug, delivery_address)
+                return {
+                    "stores": [
+                        self._selections.issue_store(
+                            store,
+                            owner=owner,
+                            generation=generation,
+                            address_handle=address_handle,
+                        )
+                    ],
+                    "broadStoreDiscovery": "unsupported",
+                }
             if operation == "live/store_menu":
                 handle = _handle(request["storeHandle"])
-                store = self._selections.resolve_store(handle, owner=owner, generation=generation)
-                menu = await self._catalog.async_menu(store)
+                address_handle = _handle(request["addressHandle"])
+                delivery_address = self._account.resolve_address(
+                    address_handle, owner_key=owner, generation=generation
+                )
+                store = self._selections.resolve_store(
+                    handle,
+                    owner=owner,
+                    generation=generation,
+                    address_handle=address_handle,
+                )
+                menu = await self._catalog.async_menu(store, delivery_address)
                 return self._selections.issue_menu(handle, menu, owner=owner, generation=generation)
             if operation == "live/basket":
                 return self._basket_public(self._state(owner, generation))

@@ -222,7 +222,16 @@ class AccountClient:
             self._addresses[handle] = _Selection(
                 owner, current_generation, expires_at, snapshot
             )
-            result.append(SavedAddressSummary(handle, labels[snapshot.kind]))
+            label = labels[snapshot.kind]
+            alias = snapshot.display_title
+            if alias:
+                try:
+                    label = SavedAddressSummary(handle, f"{alias} ••••").masked_label
+                except ValueError:
+                    # A provider title that looks physical or otherwise unsafe is
+                    # never exposed; retain the deliberately generic fallback.
+                    pass
+            result.append(SavedAddressSummary(handle, label))
         self._purge()
         return tuple(result)
 

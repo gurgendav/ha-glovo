@@ -277,6 +277,11 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     glovo_api.build_token_json = lambda token: f"token-json:{token}"
     glovo_api.ensure_access_token = lambda token: ("access-fixture", token)
     glovo_api.single_attempt_authed_get = lambda method, access, path, query: {}
+    setattr(
+        glovo_api,
+        "single_attempt_authed_location_get",
+        lambda method, access, path, query, context: {},
+    )
     glovo_api.single_attempt_authed_phase_mutation = (
         lambda method, access, path, query, body: {}
     )
@@ -713,6 +718,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         {"allow_ordering": True, "ordering_acknowledged": True}
     )
     ledger: list[tuple[str, str, dict[str, str], Any]] = []
+    location_contexts: list[dict[str, str]] = []
     read_responses = {
         "/customer_profile/api/v1/address_book/me/addresses": [
             address_payload(), address_payload()
@@ -729,6 +735,16 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         assert method == "GET" and access == "access-fixture"
         ledger.append((method, path, copy.deepcopy(query), None))
         return copy.deepcopy(read_responses[path].pop(0))
+
+    def location_get(
+        method: str,
+        access: str,
+        path: str,
+        query: dict[str, str],
+        context: dict[str, str],
+    ) -> Any:
+        location_contexts.append(copy.deepcopy(context))
+        return get(method, access, path, query)
 
     def mutate(
         method: str, access: str, path: str, query: dict[str, str], body: Any
@@ -748,6 +764,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         return response
 
     glovo_api.single_attempt_authed_get = get
+    setattr(glovo_api, "single_attempt_authed_location_get", location_get)
     glovo_api.single_attempt_authed_phase_mutation = mutate
     assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
     state = _call_ws(
@@ -768,6 +785,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
             "type": "glovo/ordering/live/stores",
             "generation": generation,
             "storeSlug": "fixture-kitchen",
+            "addressHandle": addresses[0]["key"],
         },
     ).results[0][1]["stores"]
     menu = _call_ws(
@@ -778,6 +796,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
             "type": "glovo/ordering/live/store_menu",
             "generation": generation,
             "storeHandle": stores[0]["storeHandle"],
+            "addressHandle": addresses[0]["key"],
         },
     ).results[0][1]
     product = menu["products"][0]
@@ -857,6 +876,13 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         ("GET", "/customer_profile/api/v1/address_book/me/addresses"),
         ("GET", "/v4/payment_methods"),
     ]
+    expected_location = {
+        "countryCode": "AM",
+        "cityCode": "YRV",
+        "latitude": "40.177",
+        "longitude": "44.513",
+    }
+    assert location_contexts == [expected_location, expected_location]
     assert ledger[4][2] == {} and ledger[6][2] == {}
     runtime = entry.runtime_data
     assert runtime.ordering_runtime.live_checkout_available is False
