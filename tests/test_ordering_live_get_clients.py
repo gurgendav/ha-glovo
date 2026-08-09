@@ -160,6 +160,8 @@ def live_address_payload() -> dict[str, Any]:
             "originalLongitude": address["longitude"],
         }
     )
+    for field_data in address["fields"]:
+        field_data["externalId"] = field_data["type"].lower()
     return {
         "data": {
             "addresses": [
@@ -316,12 +318,22 @@ def test_saved_addresses_accept_exact_live_shape_and_reject_schema_drift(
     ] = "40.177"
     wrong_faulty_marker = copy.deepcopy(current)
     wrong_faulty_marker["data"]["addresses"][0]["address"]["faulty"] = "false"
+    missing_external_id = copy.deepcopy(current)
+    del missing_external_id["data"]["addresses"][0]["address"]["fields"][0][
+        "externalId"
+    ]
+    malformed_external_id = copy.deepcopy(current)
+    malformed_external_id["data"]["addresses"][0]["address"]["fields"][0][
+        "externalId"
+    ] = "not allowed / id"
     for malformed in (
         unknown_row,
         unknown_address,
         mixed_envelope,
         wrong_original_coordinate,
         wrong_faulty_marker,
+        missing_external_id,
+        malformed_external_id,
     ):
         with pytest.raises(contracts.ContractError):
             contracts.parse_saved_addresses(malformed)
