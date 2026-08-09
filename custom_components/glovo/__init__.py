@@ -11,7 +11,9 @@ from homeassistant.core import HomeAssistant
 from . import glovo
 from .api_session import SerializedApiSession
 from .const import (
+    CONF_ALLOW_LIVE_CHECKOUT,
     CONF_ALLOW_ORDERING,
+    CONF_LIVE_CHECKOUT_ACKNOWLEDGED,
     CONF_ORDERING_ACKNOWLEDGED,
     CONF_TOKEN,
     PLATFORMS,
@@ -20,6 +22,11 @@ from .coordinator import GlovoConfigEntry, GlovoDataUpdateCoordinator
 from .ordering_adapter import MockCheckoutAdapter
 from .ordering_catalog import SyntheticCatalogProvider
 from .ordering_journal import AttemptJournal, HomeAssistantJournalStorage
+from .ordering_prep_authority import (
+    HomeAssistantPreparationStorage,
+    PreparationMutationAuthority,
+)
+from .ordering_runtime import OrderingRuntime
 from .ordering_manager import OrderingManager
 from .ordering_account import AccountClient
 from .ordering_live_catalog import LiveCatalogClient
@@ -31,7 +38,7 @@ from .ordering_state import (
 
 _LOGGER = logging.getLogger(__name__)
 CONFIG_ENTRY_VERSION = 1
-CONFIG_ENTRY_MINOR_VERSION = 2
+CONFIG_ENTRY_MINOR_VERSION = 3
 
 
 def _ordering_options(entry: GlovoConfigEntry) -> dict[str, object]:
@@ -40,6 +47,10 @@ def _ordering_options(entry: GlovoConfigEntry) -> dict[str, object]:
         CONF_ALLOW_ORDERING: entry.options.get(CONF_ALLOW_ORDERING, False),
         CONF_ORDERING_ACKNOWLEDGED: entry.options.get(
             CONF_ORDERING_ACKNOWLEDGED, False
+        ),
+        CONF_ALLOW_LIVE_CHECKOUT: entry.options.get(CONF_ALLOW_LIVE_CHECKOUT, False),
+        CONF_LIVE_CHECKOUT_ACKNOWLEDGED: entry.options.get(
+            CONF_LIVE_CHECKOUT_ACKNOWLEDGED, False
         ),
     }
 
@@ -64,6 +75,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
     ordering_manager = OrderingManager(
         allow_ordering=options[CONF_ALLOW_ORDERING],
         ordering_acknowledged=options[CONF_ORDERING_ACKNOWLEDGED],
+        allow_live_checkout=options[CONF_ALLOW_LIVE_CHECKOUT],
+        live_checkout_acknowledged=options[CONF_LIVE_CHECKOUT_ACKNOWLEDGED],
         live_options=lambda: entry.options,
         catalog=SyntheticCatalogProvider(clock=time.time),
         journal=journal,
@@ -72,6 +85,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         durable_state=durable_state,
     )
     await ordering_manager.async_initialize()
+    preparation_authority = PreparationMutationAuthority(
+        HomeAssistantPreparationStorage(hass, entry.entry_id),
+        clock=time.time,
+        durable_state=durable_state,
+    )
+    ordering_runtime = OrderingRuntime(
+        manager=ordering_manager,
+        preparation_authority=preparation_authority,
+        live_options=lambda: entry.options,
+    )
+    try:
+        await ordering_runtime.async_initialize()
+    except Exception:  # noqa: BLE001 - keep tracking, fail all optional mutation paths
+        _LOGGER.exception("Glovo live preparation authority is unavailable; ordering disabled")
 
     async def persist_token(token_json: str) -> None:
         hass.config_entries.async_update_entry(
@@ -122,6 +149,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
     # entity id, provenance check, and trust identity. Ordering is account-scoped
     # auxiliary runtime state and is never exposed as entity state.
     coordinator.ordering_manager = ordering_manager
+    coordinator.ordering_runtime = ordering_runtime
     coordinator.ordering_surface = ordering_surface
     coordinator.api_session = api_session
     # Config-entry update listeners run for both options and internal data. Keep
@@ -138,6 +166,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
 async def _async_shutdown_ordering(entry: GlovoConfigEntry) -> None:
     coordinator = entry.runtime_data
     manager: OrderingManager | None = getattr(coordinator, "ordering_manager", None)
+    runtime: OrderingRuntime | None = getattr(coordinator, "ordering_runtime", None)
     surface: Any = getattr(coordinator, "ordering_surface", None)
     account_client: Any = getattr(coordinator, "_account_client", None)
     api_session: Any = getattr(coordinator, "api_session", None)
@@ -145,7 +174,9 @@ async def _async_shutdown_ordering(entry: GlovoConfigEntry) -> None:
         account_client.invalidate()
     if api_session is not None:
         api_session.invalidate()
-    if manager is not None:
+    if runtime is not None:
+        await runtime.async_shutdown()
+    elif manager is not None:
         await manager.async_set_enabled(False)
     if surface is not None:
         # HA retains WebSocket command shells. Every unload/reload boundary must
@@ -166,17 +197,14 @@ async def _async_update_listener(hass: HomeAssistant, entry: GlovoConfigEntry) -
     if dict(entry.options) == coordinator.loaded_options:
         return
 
-    options = _ordering_options(entry)
-    if not (
-        options[CONF_ALLOW_ORDERING] is True
-        and options[CONF_ORDERING_ACKNOWLEDGED] is True
-    ):
-        await _async_shutdown_ordering(entry)
+    # Any user-visible ordering option change invalidates handles/challenges
+    # before reload, including a change while both preparation gates remain on.
+    await _async_shutdown_ordering(entry)
     await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: Any) -> bool:
-    """Force a fresh ordering opt-in for every entry predating minor version two."""
+    """Force a fresh preparation and spending opt-in on every migration."""
     if entry.version != CONFIG_ENTRY_VERSION:
         return False
     options = dict(entry.options)
@@ -188,20 +216,38 @@ async def async_migrate_entry(hass: HomeAssistant, entry: Any) -> bool:
     )
     gates_present_and_boolean = all(
         key in options and isinstance(options[key], bool)
-        for key in (CONF_ALLOW_ORDERING, CONF_ORDERING_ACKNOWLEDGED)
+        for key in (
+            CONF_ALLOW_ORDERING,
+            CONF_ORDERING_ACKNOWLEDGED,
+            CONF_ALLOW_LIVE_CHECKOUT,
+            CONF_LIVE_CHECKOUT_ACKNOWLEDGED,
+        )
     )
     if migrating_to_opt_in or not gates_present_and_boolean:
         allow_ordering = False
         acknowledged = False
+        allow_live_checkout = False
+        live_checkout_acknowledged = False
     else:
         allow_ordering = options[CONF_ALLOW_ORDERING] is True
         acknowledged = (
             allow_ordering and options[CONF_ORDERING_ACKNOWLEDGED] is True
         )
+        allow_live_checkout = (
+            allow_ordering
+            and acknowledged
+            and options[CONF_ALLOW_LIVE_CHECKOUT] is True
+        )
+        live_checkout_acknowledged = (
+            allow_live_checkout
+            and options[CONF_LIVE_CHECKOUT_ACKNOWLEDGED] is True
+        )
     normalized = {
         **options,
         CONF_ALLOW_ORDERING: allow_ordering,
         CONF_ORDERING_ACKNOWLEDGED: acknowledged,
+        CONF_ALLOW_LIVE_CHECKOUT: allow_live_checkout,
+        CONF_LIVE_CHECKOUT_ACKNOWLEDGED: live_checkout_acknowledged,
     }
     if normalized != options or migrating_to_opt_in:
         hass.config_entries.async_update_entry(

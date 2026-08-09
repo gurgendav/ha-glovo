@@ -240,6 +240,8 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     const.DOMAIN = "glovo"
     const.CONF_ALLOW_ORDERING = "allow_ordering"
     const.CONF_ORDERING_ACKNOWLEDGED = "ordering_acknowledged"
+    const.CONF_ALLOW_LIVE_CHECKOUT = "allow_live_checkout"
+    const.CONF_LIVE_CHECKOUT_ACKNOWLEDGED = "live_checkout_acknowledged"
     const.CONF_REFRESH_TOKEN = "refresh_token"
     const.CONF_SCAN_INTERVAL = "scan_interval"
     const.CONF_TOKEN = "token"
@@ -287,6 +289,8 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         "ordering_catalog",
         "ordering_journal",
         "ordering_state",
+        "ordering_prep_authority",
+        "ordering_runtime",
         "ordering_adapter",
         "ordering_manager",
         "ordering_surface",
@@ -631,7 +635,9 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         assert run(ha_runtime.integration.async_migrate_entry(hass, entry)) is True
         assert entry.options["allow_ordering"] is False
         assert entry.options["ordering_acknowledged"] is False
-        assert entry.minor_version == 2
+        assert entry.options["allow_live_checkout"] is False
+        assert entry.options["live_checkout_acknowledged"] is False
+        assert entry.minor_version == 3
 
         assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
         assert entry.runtime_data.refreshed is True
@@ -655,6 +661,8 @@ def test_reauth_refresh_resets_both_ordering_options_false(
     assert result["data"]["token"] == "token-json:new-refresh"
     assert result["options"]["allow_ordering"] is False
     assert result["options"]["ordering_acknowledged"] is False
+    assert result["options"]["allow_live_checkout"] is False
+    assert result["options"]["live_checkout_acknowledged"] is False
 
 
 def test_options_flow_requires_acknowledgement_behaviorally(
@@ -677,18 +685,35 @@ def test_options_flow_requires_acknowledgement_behaviorally(
     )
     assert rejected["type"] == "form"
     assert rejected["errors"]["base"] == "ordering_ack_required"
+    rejected = run(
+        flow.async_step_init(
+            {
+                "scan_interval": 15,
+                "allow_ordering": True,
+                "ordering_acknowledged": True,
+                "allow_live_checkout": True,
+                "live_checkout_acknowledged": False,
+            }
+        )
+    )
+    assert rejected["type"] == "form"
+    assert rejected["errors"]["base"] == "live_checkout_ack_required"
     accepted = run(
         flow.async_step_init(
             {
                 "scan_interval": 15,
                 "allow_ordering": True,
                 "ordering_acknowledged": True,
+                "allow_live_checkout": True,
+                "live_checkout_acknowledged": True,
             }
         )
     )
     assert accepted["type"] == "create_entry"
     assert accepted["data"]["allow_ordering"] is True
     assert accepted["data"]["ordering_acknowledged"] is True
+    assert accepted["data"]["allow_live_checkout"] is True
+    assert accepted["data"]["live_checkout_acknowledged"] is True
 
 
 def test_panel_registration_failure_preserves_websocket_api_and_tracking(
@@ -1056,6 +1081,7 @@ def test_E_integrity_fault_is_privacy_safe_permanent_and_not_clearable(
         "enabled": False,
         "mockOnly": True,
         "liveOrderingAvailable": False,
+        "liveCheckoutAvailable": False,
         "manualCheckRequired": False,
         "integrityFault": True,
         "orderingBlocked": True,

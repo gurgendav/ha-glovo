@@ -128,6 +128,8 @@ class OrderingManager:
         *,
         allow_ordering: object,
         ordering_acknowledged: object = False,
+        allow_live_checkout: object = False,
+        live_checkout_acknowledged: object = False,
         live_options: Callable[[], Mapping[str, object]] | None = None,
         catalog: SyntheticCatalogProvider,
         journal: AttemptJournal,
@@ -137,17 +139,23 @@ class OrderingManager:
         attempt_source: Callable[[], str] | None = None,
         durable_state: DurableOrderingState | None = None,
         execution_mode: str = MOCK_MODE,
+        live_dispatcher: Callable[[str, str, Mapping[str, Any]], Any] | None = None,
     ) -> None:
         if execution_mode not in {MOCK_MODE, "live"}:
             raise ValueError("unsupported execution mode")
         self._configured_allow = allow_ordering
         self._configured_ack = ordering_acknowledged
+        self._configured_allow_checkout = allow_live_checkout
+        self._configured_checkout_ack = live_checkout_acknowledged
         self._live_options = live_options
         self._enabled = allow_ordering is True and ordering_acknowledged is True
         self._catalog = catalog
         self.journal = journal
         self._checkout_adapter = checkout_adapter
         self._execution_mode = execution_mode
+        # An injected flow is the only live-operation dependency seam. The
+        # mock adapter remains isolated from this capability.
+        self._live_dispatcher = live_dispatcher
         self._clock = clock
         self._challenge_source = challenge_source or (lambda: secrets.token_urlsafe(32))
         self._attempt_source = attempt_source or (lambda: secrets.token_hex(16))
@@ -209,6 +217,20 @@ class OrderingManager:
                 allow = options.get("allow_ordering", False)
                 acknowledged = options.get("ordering_acknowledged", False)
             return allow is True and acknowledged is True
+        except Exception:
+            return False
+
+    def _checkout_gate(self) -> bool:
+        """Evaluate distinct live-spending consent at the consequential boundary."""
+        try:
+            if self._live_options is None:
+                allow = self._configured_allow_checkout
+                acknowledged = self._configured_checkout_ack
+            else:
+                options = self._live_options()
+                allow = options.get("allow_live_checkout", False)
+                acknowledged = options.get("live_checkout_acknowledged", False)
+            return self._live_gate() and allow is True and acknowledged is True
         except Exception:
             return False
 
@@ -444,6 +466,7 @@ class OrderingManager:
                     "manualCheckRequired": self.manual_check_required,
                     "integrityFault": self.integrity_fault,
                     "orderingBlocked": True,
+                    "liveCheckoutAvailable": False,
                 }
             self._guard(user)
             return {
@@ -454,7 +477,26 @@ class OrderingManager:
                 "manualCheckRequired": False,
                 "integrityFault": False,
                 "orderingBlocked": False,
+                # The legacy/mock manager cannot make a final live checkout
+                # available. A separately injected real adapter is required.
+                "liveCheckoutAvailable": False,
             }
+
+    async def async_live_dispatch(
+        self, owner_key: str, operation: str, request: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """One private G5 dispatch seam; it registers no HA public primitive."""
+        if not isinstance(owner_key, str) or not owner_key:
+            raise OrderingDisabled("live ordering is unavailable")
+        async with self._lock:
+            self._guard(OrderingUser(owner_key, True))
+            dispatcher = self._live_dispatcher
+            if dispatcher is None:
+                raise OrderingDisabled("live ordering is unavailable")
+        result = await dispatcher(owner_key, operation, request)
+        if not isinstance(result, dict):
+            raise OrderingSecurityFault("live ordering dispatcher returned invalid state")
+        return result
 
     def _bound_manual_record(self) -> Any:
         """Return only the record named by the durable manual binding."""

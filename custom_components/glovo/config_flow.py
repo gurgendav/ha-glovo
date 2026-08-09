@@ -18,7 +18,9 @@ from homeassistant.helpers import selector
 
 from . import glovo
 from .const import (
+    CONF_ALLOW_LIVE_CHECKOUT,
     CONF_ALLOW_ORDERING,
+    CONF_LIVE_CHECKOUT_ACKNOWLEDGED,
     CONF_ORDERING_ACKNOWLEDGED,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
@@ -69,7 +71,7 @@ class GlovoConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the Glovo config flow."""
 
     VERSION = 1
-    MINOR_VERSION = 2
+    MINOR_VERSION = 3
 
     @staticmethod
     @callback
@@ -101,6 +103,8 @@ class GlovoConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
                         CONF_ALLOW_ORDERING: False,
                         CONF_ORDERING_ACKNOWLEDGED: False,
+                        CONF_ALLOW_LIVE_CHECKOUT: False,
+                        CONF_LIVE_CHECKOUT_ACKNOWLEDGED: False,
                     },
                 )
 
@@ -143,6 +147,8 @@ class GlovoConfigFlow(ConfigFlow, domain=DOMAIN):
                         **entry.options,
                         CONF_ALLOW_ORDERING: False,
                         CONF_ORDERING_ACKNOWLEDGED: False,
+                        CONF_ALLOW_LIVE_CHECKOUT: False,
+                        CONF_LIVE_CHECKOUT_ACKNOWLEDGED: False,
                     },
                 )
 
@@ -173,12 +179,28 @@ class GlovoOptionsFlow(OptionsFlow):
             current_allow_ordering
             and self.config_entry.options.get(CONF_ORDERING_ACKNOWLEDGED, False) is True
         )
+        current_allow_checkout = (
+            current_allow_ordering
+            and self.config_entry.options.get(CONF_ALLOW_LIVE_CHECKOUT, False) is True
+        )
+        current_checkout_acknowledged = (
+            current_allow_checkout
+            and self.config_entry.options.get(CONF_LIVE_CHECKOUT_ACKNOWLEDGED, False) is True
+        )
 
         if user_input is not None:
             allow_ordering = user_input.get(CONF_ALLOW_ORDERING, False) is True
             acknowledged = user_input.get(CONF_ORDERING_ACKNOWLEDGED, False) is True
             if allow_ordering and not acknowledged:
                 errors["base"] = "ordering_ack_required"
+            allow_checkout = user_input.get(CONF_ALLOW_LIVE_CHECKOUT, False) is True
+            checkout_acknowledged = (
+                user_input.get(CONF_LIVE_CHECKOUT_ACKNOWLEDGED, False) is True
+            )
+            if allow_checkout and (not allow_ordering or not acknowledged):
+                errors["base"] = "ordering_required_for_checkout"
+            elif allow_checkout and not checkout_acknowledged:
+                errors["base"] = "live_checkout_ack_required"
 
             refresh_token = (user_input.get(CONF_REFRESH_TOKEN) or "").strip()
             if refresh_token and not errors:
@@ -198,6 +220,15 @@ class GlovoOptionsFlow(OptionsFlow):
                         CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
                         CONF_ALLOW_ORDERING: allow_ordering,
                         CONF_ORDERING_ACKNOWLEDGED: allow_ordering and acknowledged,
+                        CONF_ALLOW_LIVE_CHECKOUT: (
+                            allow_ordering and acknowledged and allow_checkout
+                        ),
+                        CONF_LIVE_CHECKOUT_ACKNOWLEDGED: (
+                            allow_ordering
+                            and acknowledged
+                            and allow_checkout
+                            and checkout_acknowledged
+                        ),
                     }
                 )
 
@@ -214,6 +245,13 @@ class GlovoOptionsFlow(OptionsFlow):
                     ): selector.BooleanSelector(),
                     vol.Required(
                         CONF_ORDERING_ACKNOWLEDGED, default=current_acknowledged
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_ALLOW_LIVE_CHECKOUT, default=current_allow_checkout
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_LIVE_CHECKOUT_ACKNOWLEDGED,
+                        default=current_checkout_acknowledged,
                     ): selector.BooleanSelector(),
                 }
             ),

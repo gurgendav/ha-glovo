@@ -6,6 +6,10 @@ paths, request bodies, fingerprints, or raw errors.
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final
@@ -121,6 +125,8 @@ class LiveOrderingFacade:
         baskets: RemoteBasketClient,
         quotes: QuoteTemplateClient,
         confirmations: AuthoritativeConfirmationManager,
+        preparation_authority: Any | None = None,
+        preparation_attempt_source: Any | None = None,
     ) -> None:
         self._account = account
         self._catalog = catalog
@@ -128,6 +134,13 @@ class LiveOrderingFacade:
         self._baskets = baskets
         self._quotes = quotes
         self._confirmations = confirmations
+        # Deliberately opaque to keep this frozen facade importable without
+        # enabling any transport. Mutations are denied unless an authority was
+        # explicitly loaded and injected by OrderingLiveFlow/runtime.
+        self._preparation_authority = preparation_authority
+        self._preparation_attempt_source = preparation_attempt_source or (
+            lambda: f"prep-{secrets.token_hex(16)}"
+        )
         self._basket: dict[str, _BasketState] = {}
         self._quote: dict[str, _QuoteState] = {}
 
@@ -148,6 +161,112 @@ class LiveOrderingFacade:
             "itemCount": sum(item.quantity for item in state.snapshot.products),
             "currency": state.currency,
         }
+
+    @staticmethod
+    def _expectation_hash(operation: str, value: object) -> str:
+        """Hash a canonical private expectation without retaining provider data."""
+        try:
+            candidate: Any = value
+            if hasattr(candidate, "create_body"):
+                candidate = candidate.create_body()
+            elif hasattr(candidate, "canonical_dict"):
+                candidate = candidate.canonical_dict()
+            encoded = json.dumps(
+                {"operation": operation, "expected": candidate},
+                default=lambda item: item.__class__.__name__,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        except (TypeError, ValueError, OverflowError):
+            raise PublicContractError from None
+        return hashlib.sha256(encoded).hexdigest()
+
+    async def _async_preparation_mutation(
+        self,
+        *,
+        operation: str,
+        generation: int,
+        purpose_name: str,
+        expected_category: str,
+        expected: object,
+        invoke: Any,
+    ) -> Any:
+        """Persist intent/DISPATCHING before exactly one private adapter call."""
+        authority = self._preparation_authority
+        if authority is None or not getattr(authority, "loaded", False) or getattr(authority, "unresolved", ()):
+            raise PublicContractError
+        try:
+            from .ordering_prep_authority import PreparationPurpose
+
+            expectation_hash = self._expectation_hash(operation, expected)
+            attempt_id = self._preparation_attempt_source()
+            if not isinstance(attempt_id, str) or not attempt_id.startswith("prep-"):
+                raise PublicContractError
+            attempt = await authority.async_acquire(
+                attempt_id=attempt_id,
+                generation=generation,
+                purpose=PreparationPurpose(purpose_name),
+                expectation_hash=expectation_hash,
+                expected_category=expected_category,
+            )
+        except PublicContractError:
+            raise
+        except Exception:
+            raise PublicContractError from None
+        try:
+            # The sole mutation syntax. Do not add retry/fallback/refresh here.
+            result = await invoke()
+        except Exception as err:
+            ambiguous = "Ambiguous" in type(err).__name__ or isinstance(err, asyncio.CancelledError)
+            try:
+                if ambiguous:
+                    await authority.async_record_outcome(
+                        attempt_id=attempt.attempt_id,
+                        expected_revision=attempt.record_revision,
+                        outcome_category="ambiguous",
+                    )
+                else:
+                    evidence = hashlib.sha256(
+                        f"{purpose_name}:{type(err).__name__}".encode()
+                    ).hexdigest()
+                    await authority.async_record_outcome(
+                        attempt_id=attempt.attempt_id,
+                        expected_revision=attempt.record_revision,
+                        outcome_category="provider_failure",
+                        provider_evidence_hash=evidence,
+                    )
+            except Exception:
+                # Authority failure is fail closed; it must never make another call.
+                pass
+            raise PublicContractError from None
+        try:
+            evidence = hashlib.sha256(repr(result).encode()).hexdigest()
+            await authority.async_record_outcome(
+                attempt_id=attempt.attempt_id,
+                expected_revision=attempt.record_revision,
+                outcome_category="provider_success",
+                provider_evidence_hash=evidence,
+            )
+        except Exception:
+            raise PublicContractError from None
+        return result
+
+    def async_consume_final_quote(
+        self, *, owner: str, generation: int, challenge: str
+    ) -> AuthoritativeQuote:
+        """Consume an exact current confirmation for an injected final seam only."""
+        owner = self._owner(owner)
+        state = self._quote.get(owner)
+        if state is None or state.generation != generation or not isinstance(challenge, str):
+            raise PublicContractError
+        try:
+            quote = self._confirmations.consume(
+                owner_key=owner, challenge=challenge, current=state.quote
+            )
+        except (InvalidQuoteConfirmation, ValueError):
+            raise PublicContractError from None
+        self._quote.pop(owner, None)
+        return quote
 
     async def async_dispatch(self, *, owner: str, operation: str, request: Mapping[str, Any]) -> dict[str, Any]:
         owner = self._owner(owner)
@@ -182,7 +301,18 @@ class LiveOrderingFacade:
                 customer: CustomerIdentity = await self._account.async_customer()
                 choices = parse_selected_products(request["products"])
                 intent = self._selections.compile_intent(owner=owner, generation=generation, customer_id=customer.customer_id, store_handle=store_handle, selections=choices)
-                snapshot = await (self._baskets.async_create(intent) if existing is None else self._baskets.async_replace(existing.snapshot, intent.products))
+                snapshot = await self._async_preparation_mutation(
+                    operation="live/basket_set",
+                    generation=generation,
+                    purpose_name=("basket_create" if existing is None else "basket_replace"),
+                    expected_category="expected_present",
+                    expected=intent,
+                    invoke=(
+                        (lambda: self._baskets.async_create(intent))
+                        if existing is None
+                        else (lambda: self._baskets.async_replace(existing.snapshot, intent.products))
+                    ),
+                )
                 state = _BasketState(generation, expected + 1, store_handle, self._selections.product_currency(choices[0].product_handle, owner=owner, generation=generation, store_handle=store_handle), snapshot)
                 self._basket[owner] = state
                 self._quote.pop(owner, None)
@@ -192,7 +322,16 @@ class LiveOrderingFacade:
                 state = self._state(owner, generation)
                 if state.revision != _revision(request["expectedRevision"]):
                     raise PublicContractError
-                await self._baskets.async_delete(state.snapshot, explicit_user_intent=True)
+                await self._async_preparation_mutation(
+                    operation="live/basket_clear",
+                    generation=generation,
+                    purpose_name="basket_delete",
+                    expected_category="expected_absent",
+                    expected=state.snapshot,
+                    invoke=lambda: self._baskets.async_delete(
+                        state.snapshot, explicit_user_intent=True
+                    ),
+                )
                 self._basket.pop(owner, None)
                 self._quote.pop(owner, None)
                 self._confirmations.invalidate(owner)
@@ -220,7 +359,14 @@ class LiveOrderingFacade:
                 # A replacement attempt removes previous authority before dispatch.
                 self._confirmations.invalidate(owner)
                 self._quote.pop(owner, None)
-                quote = await self._quotes.async_create(quote_request)
+                quote = await self._async_preparation_mutation(
+                    operation="live/create_quote",
+                    generation=generation,
+                    purpose_name="quote_template_create",
+                    expected_category="expected_template",
+                    expected=quote_request,
+                    invoke=lambda: self._quotes.async_create(quote_request),
+                )
                 if not await self._account.async_revalidate_address(address_handle, owner_key=owner, generation=generation):
                     raise PublicContractError
                 if not await self._account.async_revalidate_payment(payment_handle, owner_key=owner, generation=generation, amount_minor=quote.total.amount_minor, currency=quote.total.currency, checkout_session=quote.checkout_session_id, store_address_id=quote.store_address_id):

@@ -39,6 +39,10 @@ CONF_TOKEN = "token"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_ALLOW_ORDERING = "allow_ordering"
 CONF_ORDERING_ACKNOWLEDGED = "ordering_acknowledged"
+# Preparation consent never authorizes spending. Checkout requires these newer,
+# independent literal gates and is reset by reauthentication/migration.
+CONF_ALLOW_LIVE_CHECKOUT = "allow_live_checkout"
+CONF_LIVE_CHECKOUT_ACKNOWLEDGED = "live_checkout_acknowledged"
 
 DEFAULT_SCAN_INTERVAL = 15
 MIN_SCAN_INTERVAL = 5
