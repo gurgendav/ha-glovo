@@ -18,7 +18,7 @@ MAX_ADDRESSES: Final = 64
 MAX_ADDRESS_FIELDS: Final = 24
 MAX_PAYMENT_METHODS: Final = 32
 MAX_BODY_ELEMENTS: Final = 200
-MAX_PRODUCTS: Final = 100
+MAX_CATALOG_PRODUCTS: Final = 200
 MAX_OPTION_GROUPS: Final = 24
 MAX_OPTIONS_PER_GROUP: Final = 64
 MAX_STRING: Final = 500
@@ -1168,7 +1168,7 @@ def _parse_legacy_menu(payload: Any, *, expected_store_address_id: int) -> Catal
         product_ids.add(product.product_id)
         external_ids.add(product.external_id)
         products.append(product)
-        if len(products) > MAX_PRODUCTS:
+        if len(products) > MAX_CATALOG_PRODUCTS:
             _fail()
     return CatalogMenu(layout, store_address_id, tuple(products))
 
@@ -1379,7 +1379,7 @@ def _parse_current_menu(payload: Any, *, expected_store_address_id: int) -> Cata
                 _fail()
             products_by_id[product.product_id] = product
             external_ids[product.external_id] = product.product_id
-            if len(products_by_id) > MAX_PRODUCTS:
+            if len(products_by_id) > MAX_CATALOG_PRODUCTS:
                 _fail()
     return CatalogMenu(layout, expected, tuple(products_by_id.values()))
 

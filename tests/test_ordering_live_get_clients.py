@@ -457,6 +457,25 @@ def test_current_menu_clamps_observed_provider_unlimited_option_sentinel(
         contracts.parse_menu(payload, expected_store_address_id=81)
 
 
+def test_current_menu_catalog_bound_is_independent_from_basket_bound(
+    live: dict[str, ModuleType],
+) -> None:
+    contracts = live["ordering_contracts"]
+    payload = current_menu_payload()
+    original = payload["data"]["body"][0]["data"]["elements"][0]
+    products = []
+    for index in range(101):
+        product = copy.deepcopy(original)
+        product["data"]["id"] = 1_000 + index
+        product["data"]["externalId"] = f"external-{index}"
+        product["data"]["storeProductId"] = f"store-product-{index}"
+        products.append(product)
+    payload["data"]["body"][0]["data"]["elements"] = products
+    assert len(
+        contracts.parse_menu(payload, expected_store_address_id=81).products
+    ) == 101
+
+
 def test_me_customer_id_is_response_derived_positive_strict_int(live: dict[str, ModuleType]) -> None:
     parser = live["ordering_contracts"].parse_customer
     assert parser({"id": 42}).customer_id == 42
