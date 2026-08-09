@@ -383,12 +383,14 @@ class SerializedApiSession:
             or not self._valid_path(endpoint_family, path)
             or not self._valid_query(query or {})
             or (
-                delivery_location is not None
+                endpoint_family == "catalog"
                 and (
-                    endpoint_family != "catalog"
-                    or not isinstance(delivery_location, DeliveryLocation)
+                    not isinstance(delivery_location, DeliveryLocation)
                     or self._location_transport is None
                 )
+            )
+            or (
+                endpoint_family != "catalog" and delivery_location is not None
             )
         ):
             raise ApiSessionError(

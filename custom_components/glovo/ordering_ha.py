@@ -81,6 +81,7 @@ _OPERATION_FIELDS: dict[str, dict[Any, Any]] = {
         vol.Required("generation"): _strict_positive_int,
         vol.Required("expectedRevision"): _strict_nonnegative_int,
         vol.Required("storeHandle"): str,
+        vol.Required("addressHandle"): str,
         vol.Required("products"): list,
     },
     "live/basket_clear": {

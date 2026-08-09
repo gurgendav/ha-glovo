@@ -745,6 +745,10 @@ def test_session_location_context_is_private_catalog_only_and_not_retried(
         )
     ) == {"ok": True}
     assert len(calls) == 1 and len(calls[0]) == 5
+    calls.clear()
+    with pytest.raises(session_module.ApiSessionError):
+        run(session.async_get("catalog", "/v3/stores/fixture-kitchen"))
+    assert calls == []
     with pytest.raises(session_module.ApiSessionError):
         run(
             session.async_get(
@@ -788,6 +792,14 @@ def test_catalog_client_uses_preferred_get_and_narrow_legacy_fallback(live: dict
         expected_location,
         expected_location,
     ]
+
+    city_mismatch = store_payload()
+    city_mismatch["cityCode"] = "TBS"
+    harness.transport.responses[store_path] = city_mismatch
+    with pytest.raises(api_error) as mismatch:
+        run(client.async_store("fixture-kitchen", delivery_address))
+    assert mismatch.value.category == "schema"
+    harness.transport.responses[store_path] = store_payload()
 
     for category, fallback_expected in (("not_found", True), ("unsupported", True), ("auth", False), ("transport", False), ("schema", False)):
         harness.transport.calls.clear()

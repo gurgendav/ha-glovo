@@ -54,7 +54,10 @@ class LiveCatalogClient:
             {"includeClosed": "true", "includeDisabled": "false"},
             delivery_location=location,
         )
-        return parse_store(payload)
+        store = parse_store(payload)
+        if store.city_code != delivery_address.city_code:
+            raise ApiSessionError(category="schema", endpoint_family="catalog")
+        return store
 
     @staticmethod
     def _menu_query(

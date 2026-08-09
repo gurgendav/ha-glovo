@@ -809,6 +809,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
             "generation": generation,
             "expectedRevision": 0,
             "storeHandle": stores[0]["storeHandle"],
+            "addressHandle": addresses[0]["key"],
             "products": [
                 {
                     "productHandle": product["productHandle"],

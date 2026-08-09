@@ -88,7 +88,10 @@ class GlovoOrderingPanel extends HTMLElement {
         </div>
       </ha-card>`;
     this.querySelector("#load-addresses").addEventListener("click", () => this._loadAddresses());
-    this.querySelector("#address").addEventListener("change", () => this._invalidateAuthority());
+    this.querySelector("#address").addEventListener("change", () => {
+      this._invalidateAuthority();
+      this._resetCatalog();
+    });
     this.querySelector("#lookup-store").addEventListener("click", () => this._lookupStore());
     this.querySelector("#store").addEventListener("change", () => this._selectStore());
     this.querySelector("#save-basket").addEventListener("click", () => this._saveBasket());
@@ -120,6 +123,18 @@ class GlovoOrderingPanel extends HTMLElement {
     const submit = this.querySelector("#submit-checkout");
     if (submit) submit.disabled = true;
     if (reason && this._hass) this._setStatus(reason);
+  }
+
+  _resetCatalog() {
+    this._storeHandle = undefined;
+    this._menu = undefined;
+    this._selections = [];
+    const store = this.querySelector("#store");
+    if (store) store.replaceChildren(new Option("Select explicit store", ""));
+    const menu = this.querySelector("#menu");
+    if (menu) menu.replaceChildren();
+    const save = this.querySelector("#save-basket");
+    if (save) save.disabled = true;
   }
 
   _withGeneration() { return { generation: this._generation }; }
@@ -221,9 +236,10 @@ class GlovoOrderingPanel extends HTMLElement {
 
   async _saveBasket() {
     const products = this._basketProducts();
-    if (!products.length || !this._storeHandle) { this._setStatus("Choose at least one menu item."); return; }
+    const addressHandle = this.querySelector("#address").value;
+    if (!products.length || !this._storeHandle || !addressHandle) { this._setStatus("Choose a saved address and at least one menu item."); return; }
     try {
-      const basket = await this._request("live/basket_set", { ...this._withGeneration(), expectedRevision: this._basketRevision || 0, storeHandle: this._storeHandle, products });
+      const basket = await this._request("live/basket_set", { ...this._withGeneration(), expectedRevision: this._basketRevision || 0, storeHandle: this._storeHandle, addressHandle, products });
       this._basketRevision = basket.revision; this._renderBasket(basket); this._invalidateAuthority();
       this.querySelector("#clear-basket").disabled = false; this.querySelector("#refresh-basket").disabled = false; this.querySelector("#reconcile-basket").disabled = false; this.querySelector("#load-payments").disabled = false;
       this._setStatus("Basket saved. Refresh the provider-selected saved card.");

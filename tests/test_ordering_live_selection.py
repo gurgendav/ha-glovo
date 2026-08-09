@@ -62,11 +62,20 @@ def test_handles_are_owner_generation_ttl_bound_and_provider_ids_never_projected
     clock = Clock()
     registry = live["ordering_live_selection"].LiveSelectionRegistry(clock=clock, handle_source=iter(("store-local", "product-local", "group-local", "option-local", "option-local-2")).__next__)
     store, menu = fixtures(live["ordering_contracts"])
-    public_store = registry.issue_store(store, owner="owner-a", generation=1)
+    public_store = registry.issue_store(
+        store, owner="owner-a", generation=1, address_handle="address-a"
+    )
     public_menu = registry.issue_menu(public_store["storeHandle"], menu, owner="owner-a", generation=1)
     encoded = repr((public_store, public_menu))
     for private in ("product-provider", "product-external", "group-provider", "group-external", "option-provider", "option-external", "store-product-private"):
         assert private not in encoded
+    with pytest.raises(live["ordering_live_selection"].LiveSelectionError):
+        registry.resolve_store(
+            public_store["storeHandle"],
+            owner="owner-a",
+            generation=1,
+            address_handle="address-b",
+        )
     with pytest.raises(live["ordering_live_selection"].LiveSelectionError):
         registry.resolve_store(public_store["storeHandle"], owner="owner-b", generation=1)
     with pytest.raises(live["ordering_live_selection"].LiveSelectionError):

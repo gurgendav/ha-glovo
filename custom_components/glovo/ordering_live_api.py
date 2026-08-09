@@ -42,7 +42,7 @@ OPERATION_REQUEST_FIELDS: Final = {
     "live/store_menu": frozenset({"generation", "storeHandle", "addressHandle"}),
     "live/payment_methods": frozenset({"generation"}),
     "live/basket": frozenset({"generation"}),
-    "live/basket_set": frozenset({"generation", "expectedRevision", "storeHandle", "products"}),
+    "live/basket_set": frozenset({"generation", "expectedRevision", "storeHandle", "addressHandle", "products"}),
     "live/basket_clear": frozenset({"generation", "expectedRevision"}),
     "live/basket_reconcile": frozenset({"generation"}),
     "live/create_quote": frozenset({"generation", "addressHandle", "paymentHandle"}),
@@ -67,6 +67,7 @@ class _BasketState:
     currency: str
     snapshot: RemoteBasketSnapshot
     store: Any = field(repr=False)
+    address_fingerprint: str = field(repr=False)
 
 
 @dataclass(slots=True, repr=False)
@@ -367,7 +368,22 @@ class LiveOrderingFacade:
                 if existing is not None and (existing.generation != generation or existing.revision != expected):
                     raise PublicContractError
                 store_handle = _handle(request["storeHandle"])
-                store = self._selections.resolve_store(store_handle, owner=owner, generation=generation)
+                address_handle = _handle(request["addressHandle"])
+                delivery_address = self._account.resolve_address(
+                    address_handle, owner_key=owner, generation=generation
+                )
+                address_fingerprint = delivery_address.canonical_fingerprint
+                if existing is not None and (
+                    existing.store_handle != store_handle
+                    or existing.address_fingerprint != address_fingerprint
+                ):
+                    raise PublicContractError
+                store = self._selections.resolve_store(
+                    store_handle,
+                    owner=owner,
+                    generation=generation,
+                    address_handle=address_handle,
+                )
                 customer: CustomerIdentity = await self._account.async_customer()
                 choices = parse_selected_products(request["products"])
                 intent = self._selections.compile_intent(owner=owner, generation=generation, customer_id=customer.customer_id, store_handle=store_handle, selections=choices)
@@ -390,7 +406,13 @@ class LiveOrderingFacade:
                     ),
                 )
                 state = _BasketState(
-                    generation, expected + 1, store_handle, currency, snapshot, store
+                    generation=generation,
+                    revision=expected + 1,
+                    store_handle=store_handle,
+                    currency=currency,
+                    snapshot=snapshot,
+                    store=store,
+                    address_fingerprint=address_fingerprint,
                 )
                 self._basket[owner] = state
                 self._quote.pop(owner, None)
@@ -429,6 +451,8 @@ class LiveOrderingFacade:
                 address_handle = _handle(request["addressHandle"])
                 payment_handle = _handle(request["paymentHandle"])
                 address = self._account.resolve_address(address_handle, owner_key=owner, generation=generation)
+                if address.canonical_fingerprint != state.address_fingerprint:
+                    raise PublicContractError
                 payment = self._account.resolve_payment(payment_handle, owner_key=owner, generation=generation)
                 if payment.selected is not True:
                     raise PublicContractError
