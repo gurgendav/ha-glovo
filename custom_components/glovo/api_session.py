@@ -48,6 +48,32 @@ _MAX_QUERY_LENGTH: Final = 1_000
 _MAX_MUTATION_BYTES: Final = 256_000
 _MAX_MUTATION_DEPTH: Final = 12
 
+# Keep these literal contracts in lockstep with ``glovo.py``. The transport
+# seam accepts an explicit purpose, whereas the standalone helper uses the
+# string value solely to make drift detectable in offline tests.
+_PHASE_MUTATION_ALLOWLIST: Final[tuple[tuple[str, str, str], ...]] = (
+    ("create_basket", "POST", r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets$"),
+    (
+        "replace_basket_products",
+        "PUT",
+        r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/products$",
+    ),
+    (
+        "change_basket_quantity",
+        "PATCH",
+        r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/products/quantity$",
+    ),
+    (
+        "delete_basket",
+        "DELETE",
+        r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    ),
+    ("create_quote_template", "POST", r"^/v3/checkouts/order/1/template$"),
+)
+_MUTATION_QUERY_CONTRACT: Final[dict[str, frozenset[str]]] = {
+    purpose: frozenset() for purpose, _, _ in _PHASE_MUTATION_ALLOWLIST
+}
+
 
 class MutationPurpose(str, Enum):
     """Closed set of non-checkout write purposes approved for this phase."""
@@ -60,40 +86,12 @@ class MutationPurpose(str, Enum):
 
 
 _MUTATION_ROUTES: Final[dict[MutationPurpose, tuple[str, re.Pattern[str], str]]] = {
-    MutationPurpose.CREATE_BASKET: (
-        "POST",
-        re.compile(r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets$"),
-        "basket",
-    ),
-    MutationPurpose.REPLACE_BASKET_PRODUCTS: (
-        "PUT",
-        re.compile(
-            r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/"
-            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/products$"
-        ),
-        "basket",
-    ),
-    MutationPurpose.CHANGE_BASKET_QUANTITY: (
-        "PATCH",
-        re.compile(
-            r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/"
-            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/products/quantity$"
-        ),
-        "basket",
-    ),
-    MutationPurpose.DELETE_BASKET: (
-        "DELETE",
-        re.compile(
-            r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/"
-            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
-        ),
-        "basket",
-    ),
-    MutationPurpose.CREATE_QUOTE_TEMPLATE: (
-        "POST",
-        re.compile(r"^/v3/checkouts/order/1/template$"),
-        "quote",
-    ),
+    MutationPurpose(purpose): (
+        method,
+        re.compile(pattern),
+        "quote" if purpose == MutationPurpose.CREATE_QUOTE_TEMPLATE.value else "basket",
+    )
+    for purpose, method, pattern in _PHASE_MUTATION_ALLOWLIST
 }
 
 
@@ -177,7 +175,23 @@ class SerializedApiSession:
         if self._executor is None:
             result = function(*args)
         else:
-            result = await self._executor(partial(function, *args))
+            # ``async_add_executor_job``/``run_in_executor`` cannot stop a
+            # synchronous socket call after its coroutine waiter is cancelled.
+            # Shield and retain its real Future, then keep this lock owner alive
+            # until that thread finishes. Otherwise a second write could start
+            # while the cancelled first write is still on the wire.
+            pending = asyncio.ensure_future(self._executor(partial(function, *args)))
+            try:
+                result = await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(pending)
+                except BaseException:
+                    # The first caller has no trustworthy outcome regardless of
+                    # the executor result. The enclosing mutation converts the
+                    # cancellation to an ambiguity after authority is retained.
+                    pass
+                raise
         if inspect.isawaitable(result):
             return await result
         return result
@@ -355,7 +369,13 @@ class SerializedApiSession:
             or method != route[0]
             or not isinstance(path, str)
             or route[1].fullmatch(path) is None
-            or not self._valid_query(query or {})
+            or (
+                query is not None
+                and (
+                    not isinstance(query, Mapping)
+                    or set(query) != _MUTATION_QUERY_CONTRACT[purpose.value]
+                )
+            )
             or not self._valid_body(body)
             or self._mutation_transport is None
         ):

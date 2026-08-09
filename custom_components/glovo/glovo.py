@@ -422,30 +422,30 @@ def single_attempt_authed_get(
     return _request_json("GET", url, access_token=access_token)
 
 
-_PHASE_MUTATION_ROUTES = (
-    ("POST", re.compile(r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets$")),
+# Must exactly match api_session._PHASE_MUTATION_ALLOWLIST. This standalone
+# helper has no purpose argument, so retaining it here makes parity auditable.
+_PHASE_MUTATION_ALLOWLIST = (
+    ("create_basket", "POST", r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets$"),
     (
+        "replace_basket_products",
         "PUT",
-        re.compile(
-            r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/"
-            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/products$"
-        ),
+        r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/products$",
     ),
     (
+        "change_basket_quantity",
         "PATCH",
-        re.compile(
-            r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/"
-            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/products/quantity$"
-        ),
+        r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/products/quantity$",
     ),
     (
+        "delete_basket",
         "DELETE",
-        re.compile(
-            r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/"
-            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
-        ),
+        r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
     ),
-    ("POST", re.compile(r"^/v3/checkouts/order/1/template$")),
+    ("create_quote_template", "POST", r"^/v3/checkouts/order/1/template$"),
+)
+_PHASE_MUTATION_ROUTES = tuple(
+    (purpose, method, re.compile(pattern))
+    for purpose, method, pattern in _PHASE_MUTATION_ALLOWLIST
 )
 
 
@@ -457,9 +457,11 @@ def single_attempt_authed_phase_mutation(
     body: dict[str, Any] | None,
 ) -> Any:
     """Perform one approved basket/template call with no refresh or replay."""
+    if query != {}:
+        raise RuntimeError("Mutation query parameters are not approved")
     if not any(
         method == approved_method and pattern.fullmatch(path)
-        for approved_method, pattern in _PHASE_MUTATION_ROUTES
+        for _, approved_method, pattern in _PHASE_MUTATION_ROUTES
     ):
         raise RuntimeError("Mutation route is not approved")
     url = f"{API_URL}{path}"
