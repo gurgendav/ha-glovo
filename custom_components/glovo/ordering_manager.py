@@ -141,6 +141,7 @@ class OrderingManager:
         execution_mode: str = MOCK_MODE,
         live_dispatcher: Callable[[str, str, Mapping[str, Any]], Any] | None = None,
         live_availability: Callable[[], bool] | None = None,
+        preparation_authority: Any | None = None,
     ) -> None:
         if execution_mode not in {MOCK_MODE, "live"}:
             raise ValueError("unsupported execution mode")
@@ -158,6 +159,7 @@ class OrderingManager:
         # mock adapter remains isolated from this capability.
         self._live_dispatcher = live_dispatcher
         self._live_availability = live_availability
+        self._preparation_authority = preparation_authority
         self._clock = clock
         self._challenge_source = challenge_source or (lambda: secrets.token_urlsafe(32))
         self._attempt_source = attempt_source or (lambda: secrets.token_hex(16))
@@ -253,6 +255,48 @@ class OrderingManager:
         except Exception:
             return False
 
+    def _all_consequential_gates_literal_false(self) -> bool:
+        """Require explicit closure of preparation and final-checkout consent."""
+        try:
+            if self._live_options is None:
+                values = (
+                    self._configured_allow,
+                    self._configured_ack,
+                    self._configured_allow_checkout,
+                    self._configured_checkout_ack,
+                )
+            else:
+                options = self._live_options()
+                keys = (
+                    "allow_ordering",
+                    "ordering_acknowledged",
+                    "allow_live_checkout",
+                    "live_checkout_acknowledged",
+                )
+                if not isinstance(options, Mapping) or any(
+                    key not in options for key in keys
+                ):
+                    return False
+                values = tuple(options[key] for key in keys)
+            return all(value is False for value in values)
+        except Exception:
+            return False
+
+    def _preparation_authority_is_pristine(self) -> bool:
+        """Old mock lineage predates preparation, so any record is disqualifying."""
+        authority = self._preparation_authority
+        if authority is None:
+            return False
+        try:
+            return (
+                authority.loaded is True
+                and authority.integrity_fault is False
+                and not authority.unresolved
+                and not authority.records
+            )
+        except Exception:
+            return False
+
     def _now(self) -> float:
         value = self._clock()
         if (
@@ -327,6 +371,49 @@ class OrderingManager:
     async def _async_latch_safety_fault(self) -> None:
         await self._async_force_integrity_fault()
 
+    async def _async_repair_inert_legacy_mock_migration(self) -> bool:
+        """Repair only the exact no-remote-effect mixed-v1/v2 defect."""
+        state = self._durable_state
+        mixed_first_boot = (
+            state.load_source == "v2" and self.journal.load_source == "v1"
+        )
+        already_latched_boot = (
+            state.load_source == "v2"
+            and self.journal.load_source == "v2"
+            and state.integrity_fault
+        )
+        if not (mixed_first_boot or already_latched_boot):
+            return False
+        if (
+            not state.loaded
+            or state.storage_fault
+            or state.manual_check_required
+            or state.manual_binding is not None
+            or state.preparation_binding is not None
+            or not self._all_consequential_gates_literal_false()
+            or not self._preparation_authority_is_pristine()
+            or not self.journal.loaded
+            or self.journal.corrupt
+            or self.journal.integrity_fault
+            or self.journal.unresolved_manual_checks
+        ):
+            return False
+        try:
+            if not await self.journal.async_proves_legacy_mock_no_remote_effect():
+                return False
+            expected_generation = state.generation
+            await state._async_repair_legacy_mock_integrity(  # noqa: SLF001
+                expected_generation=expected_generation
+            )
+        except (JournalFault, OrderingStateFault):
+            await self._async_force_integrity_fault()
+            return False
+        self._security_fault = False
+        self._manual_check = False
+        self._enabled = False
+        self._invalidate_all_ephemeral()
+        return True
+
     async def _async_latch_manual_check(
         self, *, attempt_id: str, record_revision: int
     ) -> None:
@@ -359,8 +446,9 @@ class OrderingManager:
             except JournalFault:
                 await self._async_latch_safety_fault()
 
+            repaired_legacy_mock = await self._async_repair_inert_legacy_mock_migration()
             sources = {self._durable_state.load_source, self.journal.load_source}
-            if "v1" in sources and len(sources) != 1:
+            if "v1" in sources and len(sources) != 1 and not repaired_legacy_mock:
                 await self._async_latch_safety_fault()
             if self.journal.integrity_fault:
                 await self._async_latch_safety_fault()

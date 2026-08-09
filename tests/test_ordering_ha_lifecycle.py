@@ -489,6 +489,63 @@ def _seed_integrity_fault(runtime: SimpleNamespace) -> None:
     }
 
 
+def test_deployed_legacy_mock_mixed_and_latched_states_repair_without_network(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    legacy = {"version": 1, "records": []}
+    ha_runtime.Store.values["glovo.ordering_journal.entry-one"] = legacy
+    ha_runtime.Store.values["glovo.ordering_safety_v2.entry-one"] = {
+        "version": 2,
+        "generation": 70,
+        "manual_check_required": False,
+        "integrity_fault": False,
+    }
+    options = {
+        "allow_ordering": False,
+        "ordering_acknowledged": False,
+        "allow_live_checkout": False,
+        "live_checkout_acknowledged": False,
+    }
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(options)
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    manager_module = sys.modules[f"{ha_runtime.prefix}.ordering_manager"]
+    user = manager_module.OrderingUser("admin-repair", True)
+    assert run(entry.runtime_data.ordering_manager.async_state(user)) == {
+        "enabled": False,
+        "generation": 71,
+        "mockOnly": True,
+        "liveOrderingAvailable": False,
+        "manualCheckRequired": False,
+        "integrityFault": False,
+        "orderingBlocked": False,
+        "liveCheckoutAvailable": False,
+    }
+    assert entry.runtime_data.ordering_surface is None
+    assert ha_runtime.panel_calls == []
+    assert ha_runtime.Store.values["glovo.ordering_journal.entry-one"] == legacy
+
+    # Exact next boot after 9925411 persisted the conservative integrity latch.
+    ha_runtime.Store.values["glovo.ordering_safety_v2.entry-one"] = {
+        "version": 2,
+        "generation": 71,
+        "manual_check_required": False,
+        "integrity_fault": True,
+    }
+    restarted_hass = ha_runtime.FakeHass()
+    restarted_entry = ha_runtime.FakeEntry(options)
+    assert run(
+        ha_runtime.integration.async_setup_entry(restarted_hass, restarted_entry)
+    ) is True
+    repaired = run(restarted_entry.runtime_data.ordering_manager.async_state(user))
+    assert repaired["generation"] == 72
+    assert repaired["integrityFault"] is False
+    assert repaired["manualCheckRequired"] is False
+    assert repaired["enabled"] is False
+    assert repaired["liveOrderingAvailable"] is False
+    assert repaired["liveCheckoutAvailable"] is False
+
+
 def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     ha_runtime: SimpleNamespace,
 ) -> None:

@@ -735,6 +735,58 @@ class AttemptJournal:
                 self._records = []
                 raise
 
+    async def async_proves_legacy_mock_no_remote_effect(self) -> bool:
+        """Re-read v1 and prove the loaded v2 journal is its exact mock-only image."""
+        async with self._lock:
+            if not self.loaded or self.corrupt or self.integrity_fault:
+                return False
+            legacy_loader = getattr(self._storage, "async_load_legacy", None)
+            if legacy_loader is None:
+                return False
+            try:
+                raw = await legacy_loader()
+            except Exception as err:
+                raise JournalStorageFault("legacy journal evidence could not be read") from err
+            if raw is None:
+                return False
+            if (
+                not isinstance(raw, Mapping)
+                or frozenset(raw) != {"version", "records"}
+                or raw["version"] != LEGACY_JOURNAL_VERSION
+                or not isinstance(raw["records"], list)
+                or len(raw["records"]) > MAX_JOURNAL_RECORDS
+            ):
+                raise JournalCorrupt("legacy journal evidence schema mismatch")
+            records = [_migrate_v1_record(item) for item in raw["records"]]
+            if len({item.attempt_id for item in records}) != len(records):
+                raise JournalCorrupt("legacy journal evidence keys are not unique")
+
+            def exact_mock_terminal(record: AttemptRecord) -> bool:
+                if record.state is JournalState.LEGACY_MOCK_NO_REMOTE_EFFECT:
+                    return (
+                        record.execution_mode == "mock"
+                        and record.resolution == "legacy_mock_no_remote_effect"
+                        and record.evidence_source == "legacy_migration"
+                    )
+                if record.state is JournalState.CONFIRMED_SUCCEEDED:
+                    return (
+                        record.execution_mode == "mock"
+                        and record.resolution == "synthetic_success"
+                        and record.evidence_source == "mock_adapter"
+                    )
+                if record.state is JournalState.CONFIRMED_FAILED:
+                    return (
+                        record.execution_mode == "mock"
+                        and record.resolution == "synthetic_failure"
+                        and record.evidence_source == "mock_adapter"
+                    )
+                return False
+
+            return (
+                all(exact_mock_terminal(record) for record in records)
+                and records == self._records
+            )
+
     @staticmethod
     def _bounded(records: list[AttemptRecord]) -> list[AttemptRecord]:
         if len(records) <= MAX_JOURNAL_RECORDS:

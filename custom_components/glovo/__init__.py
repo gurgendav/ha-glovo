@@ -100,6 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         checkout_adapter=None,
         clock=time.time,
         durable_state=durable_state,
+        preparation_authority=preparation_authority,
     )
     await ordering_manager.async_initialize()
     mutation_ready = (

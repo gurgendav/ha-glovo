@@ -12,7 +12,7 @@ import sys
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -923,6 +923,296 @@ def _legacy_record(state: str, attempt_id: str) -> dict[str, Any]:
         "quote_fingerprint": "b" * 64,
         "outcome": None,
     }
+
+
+def _all_ordering_gates_closed() -> dict[str, object]:
+    return {
+        "allow_ordering": False,
+        "ordering_acknowledged": False,
+        "allow_live_checkout": False,
+        "live_checkout_acknowledged": False,
+    }
+
+
+def _clean_preparation_authority(**overrides: Any) -> SimpleNamespace:
+    values = {
+        "loaded": True,
+        "integrity_fault": False,
+        "unresolved": (),
+        "records": (),
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+async def _build_legacy_repair_manager(
+    ordering: dict[str, ModuleType],
+    *,
+    state_storage: Any,
+    journal_storage: Any,
+    options: dict[str, object] | None = None,
+    preparation_authority: Any | None = None,
+) -> Any:
+    clock = Clock()
+    durable = ordering["ordering_state"].DurableOrderingState(state_storage)
+    await durable.async_load()
+    journal = ordering["ordering_journal"].AttemptJournal(
+        journal_storage, clock=clock
+    )
+    current_options = options or _all_ordering_gates_closed()
+    manager = ordering["ordering_manager"].OrderingManager(
+        allow_ordering=current_options["allow_ordering"],
+        ordering_acknowledged=current_options["ordering_acknowledged"],
+        allow_live_checkout=current_options["allow_live_checkout"],
+        live_checkout_acknowledged=current_options[
+            "live_checkout_acknowledged"
+        ],
+        live_options=lambda: current_options,
+        catalog=ordering["ordering_catalog"].SyntheticCatalogProvider(clock=clock),
+        journal=journal,
+        checkout_adapter=ordering["ordering_adapter"].MockCheckoutAdapter(),
+        clock=clock,
+        durable_state=durable,
+        preparation_authority=(
+            preparation_authority or _clean_preparation_authority()
+        ),
+    )
+    await manager.async_initialize()
+    return manager
+
+
+async def _migrated_legacy_journal_storage(
+    ordering: dict[str, ModuleType], records: list[dict[str, Any]]
+) -> Any:
+    storage = ordering["ordering_journal"].MemoryJournalStorage(
+        legacy_data={"version": 1, "records": records}
+    )
+    journal = ordering["ordering_journal"].AttemptJournal(storage, clock=Clock())
+    await journal.async_load()
+    return storage
+
+
+class FailLegacyRepairRead(DelegatingStorage):
+    def __init__(self, base: Any) -> None:
+        super().__init__(base)
+        self.loads = 0
+
+    async def async_load(self) -> Any:
+        self.loads += 1
+        if self.loads >= 2:
+            raise OSError("injected legacy repair re-read failure")
+        return await super().async_load()
+
+
+class FailLegacyRepairSave(DelegatingStorage):
+    async def async_save(self, data: dict[str, Any]) -> None:
+        if data.get("integrity_fault") is False and data.get("generation") == 72:
+            raise OSError("injected legacy repair save failure")
+        await super().async_save(data)
+
+
+def test_legacy_mock_mixed_source_and_already_latched_boots_repair_once(
+    ordering: dict[str, ModuleType],
+) -> None:
+    async def scenario() -> None:
+        journal_module = ordering["ordering_journal"]
+        state_module = ordering["ordering_state"]
+        legacy = {
+            "version": 1,
+            "records": [
+                _legacy_record("DISPATCHING", "attempt-old-mock-dispatch")
+            ],
+        }
+
+        first_journal = journal_module.MemoryJournalStorage(legacy_data=legacy)
+        first_state = state_module.MemoryOrderingStateStorage(
+            _state(None, generation=70)
+        )
+        first = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=first_state,
+            journal_storage=first_journal,
+        )
+        assert first.generation == 71
+        assert first.integrity_fault is False
+        assert first.manual_check_required is False
+        assert first.enabled is False
+        assert first.journal.records[0].state.value == (
+            "LEGACY_MOCK_NO_REMOTE_EFFECT"
+        )
+        assert first_state.data == {
+            "version": 2,
+            "generation": 71,
+            "manual_check_required": False,
+            "integrity_fault": False,
+        }
+        assert first_journal.legacy_data == legacy
+
+        # Reproduce the durable result of 9925411: migration completed, then the
+        # mixed-source check permanently latched the otherwise inert account.
+        latched_journal = await _migrated_legacy_journal_storage(
+            ordering, legacy["records"]
+        )
+        latched_state = state_module.MemoryOrderingStateStorage(
+            _state(None, generation=71, integrity=True)
+        )
+        repaired = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=latched_state,
+            journal_storage=latched_journal,
+        )
+        assert repaired.generation == 72
+        assert repaired.integrity_fault is False
+        assert repaired.manual_check_required is False
+        assert repaired.enabled is False
+        assert latched_state.data["integrity_fault"] is False
+
+        # Retained legacy evidence is not a recurring bump after the defect is gone.
+        restarted = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=latched_state,
+            journal_storage=latched_journal,
+        )
+        assert restarted.generation == 72
+        assert restarted.integrity_fault is False
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "gate",
+    [
+        "allow_ordering",
+        "ordering_acknowledged",
+        "allow_live_checkout",
+        "live_checkout_acknowledged",
+    ],
+)
+def test_legacy_mock_repair_requires_every_gate_literal_false(
+    ordering: dict[str, ModuleType], gate: str
+) -> None:
+    async def scenario() -> None:
+        journal_storage = await _migrated_legacy_journal_storage(ordering, [])
+        state_storage = ordering["ordering_state"].MemoryOrderingStateStorage(
+            _state(None, generation=71, integrity=True)
+        )
+        options = _all_ordering_gates_closed()
+        options[gate] = True
+        manager = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=state_storage,
+            journal_storage=journal_storage,
+            options=options,
+        )
+        assert manager.integrity_fault is True
+        assert manager.enabled is False
+        assert state_storage.data["generation"] == 71
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "authority",
+    [
+        _clean_preparation_authority(loaded=False),
+        _clean_preparation_authority(integrity_fault=True),
+        _clean_preparation_authority(unresolved=(object(),)),
+        _clean_preparation_authority(records=(object(),)),
+    ],
+    ids=["not-loaded", "integrity", "unresolved", "record-present"],
+)
+def test_legacy_mock_repair_requires_pristine_preparation_authority(
+    ordering: dict[str, ModuleType], authority: Any
+) -> None:
+    async def scenario() -> None:
+        journal_storage = await _migrated_legacy_journal_storage(ordering, [])
+        state_storage = ordering["ordering_state"].MemoryOrderingStateStorage(
+            _state(None, generation=71, integrity=True)
+        )
+        manager = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=state_storage,
+            journal_storage=journal_storage,
+            preparation_authority=authority,
+        )
+        assert manager.integrity_fault is True
+        assert manager.enabled is False
+        assert state_storage.data["generation"] == 71
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["live-record", "manual-binding", "preparation-binding", "journal-integrity"],
+)
+def test_legacy_mock_repair_rejects_any_live_or_bound_ambiguity(
+    ordering: dict[str, ModuleType], case: str
+) -> None:
+    async def scenario() -> None:
+        legacy_records = (
+            [_legacy_record("SECURITY_FAULT", "attempt-old-fault")]
+            if case == "journal-integrity"
+            else []
+        )
+        journal_storage = await _migrated_legacy_journal_storage(
+            ordering, legacy_records
+        )
+        state_raw = _state(None, generation=71, integrity=True)
+        if case == "live-record":
+            journal_storage.data["records"] = [
+                _record("CONFIRMED_FAILED", attempt_id="attempt-live-terminal")
+            ]
+        elif case == "manual-binding":
+            manual = _record(attempt_id="attempt-live-bound")
+            state_raw = _state(manual, generation=71, integrity=True)
+        elif case == "preparation-binding":
+            state_raw["preparation_binding"] = {
+                "attempt_id": "prep-old-bound",
+                "record_revision": 2,
+                "generation": 71,
+                "purpose": "basket_create",
+                "expectation_hash": "d" * 64,
+            }
+        state_storage = ordering["ordering_state"].MemoryOrderingStateStorage(
+            state_raw
+        )
+        manager = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=state_storage,
+            journal_storage=journal_storage,
+        )
+        assert manager.integrity_fault is True
+        assert manager.enabled is False
+        assert state_storage.data["integrity_fault"] is True
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["read", "save"])
+def test_legacy_mock_repair_storage_failure_stays_permanently_blocked(
+    ordering: dict[str, ModuleType], failure: str
+) -> None:
+    async def scenario() -> None:
+        journal_storage = await _migrated_legacy_journal_storage(ordering, [])
+        base = ordering["ordering_state"].MemoryOrderingStateStorage(
+            _state(None, generation=71, integrity=True)
+        )
+        state_storage: Any = (
+            FailLegacyRepairRead(base)
+            if failure == "read"
+            else FailLegacyRepairSave(base)
+        )
+        manager = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=state_storage,
+            journal_storage=journal_storage,
+        )
+        assert manager.integrity_fault is True
+        assert manager.enabled is False
+        assert base.data["integrity_fault"] is True
+
+    asyncio.run(scenario())
 
 
 def test_E_core_migration_restart_storage_keys_and_zero_replay(

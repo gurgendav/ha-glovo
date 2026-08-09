@@ -401,6 +401,42 @@ class DurableOrderingState:
     async def async_latch_fault(self) -> int:
         return await self.async_bump(latch_fault=True)
 
+    async def _async_repair_legacy_mock_integrity(
+        self, *, expected_generation: int
+    ) -> int:
+        """Atomically bump one exact inert v1-journal migration out of integrity."""
+        async with self._lock:
+            if not self.loaded or self.storage_fault:
+                raise OrderingStateFault("ordering safety state is not writable")
+            try:
+                durable = await self._async_read_v2()
+            except OrderingStateFault:
+                self.storage_fault = True
+                raise
+            except Exception as err:
+                self.storage_fault = True
+                raise OrderingStateFault("ordering safety state could not be re-read") from err
+            if (
+                isinstance(expected_generation, bool)
+                or not isinstance(expected_generation, int)
+                or durable != self._snapshot
+                or durable.generation != expected_generation
+                or durable.manual_check_required
+                or durable.manual_binding is not None
+                or durable.preparation_binding is not None
+            ):
+                self.storage_fault = True
+                raise OrderingStateFault("legacy mock repair authority changed")
+            candidate = OrderingStateSnapshot(
+                generation=expected_generation + 1,
+                manual_check_required=False,
+                integrity_fault=False,
+                manual_binding=None,
+                preparation_binding=None,
+            )
+            await self._async_save_candidate(candidate)
+            return candidate.generation
+
     async def async_latch_manual_check(
         self, *, attempt_id: str, record_revision: int
     ) -> int:
