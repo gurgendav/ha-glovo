@@ -1254,12 +1254,10 @@ def _parse_current_option_groups(
                     selected=_bool(option["selected"]),
                 )
             )
-        # The current Glovo web catalog uses 1000 as an exact "all options"
-        # sentinel. Accept only that observed bounded provider range, then clamp
-        # authority to the strictly parsed options actually present.
+        # Glovo uses bounded values above the concrete option count as an "all
+        # options" sentinel. Bound the provider value, then clamp authority to
+        # the strictly parsed options actually present (at most 64).
         provider_maximum = _int(group["max"], maximum=1000)
-        if provider_maximum > MAX_OPTIONS_PER_GROUP and provider_maximum != 1000:
-            _fail("schema")
         maximum = min(provider_maximum, len(options))
         result.append(
             CatalogOptionGroup(

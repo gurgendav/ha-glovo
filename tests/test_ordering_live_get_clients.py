@@ -449,8 +449,8 @@ def test_current_menu_clamps_observed_provider_unlimited_option_sentinel(
     assert menu.products[0].option_groups[0].maximum == len(group["attributes"])
 
     group["max"] = 65
-    with pytest.raises(contracts.ContractError):
-        contracts.parse_menu(payload, expected_store_address_id=81)
+    menu = contracts.parse_menu(payload, expected_store_address_id=81)
+    assert menu.products[0].option_groups[0].maximum == len(group["attributes"])
 
     group["max"] = 1001
     with pytest.raises(contracts.ContractError):
