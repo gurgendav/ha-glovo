@@ -1007,45 +1007,27 @@ def test_reauth_refresh_resets_both_ordering_options_false(
     assert result["options"]["live_checkout_acknowledged"] is False
 
 
-def test_options_flow_requires_acknowledgement_behaviorally(
+def test_options_flow_has_one_default_off_preparation_switch(
     ha_runtime: SimpleNamespace,
 ) -> None:
     entry = ha_runtime.FakeEntry(
-        {"scan_interval": 15, "allow_ordering": False, "ordering_acknowledged": False}
+        {
+            "scan_interval": 15,
+            "allow_ordering": False,
+            "ordering_acknowledged": False,
+            "allow_live_checkout": True,
+            "live_checkout_acknowledged": True,
+        }
     )
     flow = ha_runtime.flow.GlovoOptionsFlow()
     flow.hass = ha_runtime.FakeHass()
     flow.config_entry = entry
-    rejected = run(
-        flow.async_step_init(
-            {
-                "scan_interval": 15,
-                "allow_ordering": True,
-                "ordering_acknowledged": False,
-            }
-        )
-    )
-    assert rejected["type"] == "form"
-    assert rejected["errors"]["base"] == "ordering_ack_required"
-    rejected = run(
-        flow.async_step_init(
-            {
-                "scan_interval": 15,
-                "allow_ordering": True,
-                "ordering_acknowledged": True,
-                "allow_live_checkout": True,
-                "live_checkout_acknowledged": False,
-            }
-        )
-    )
-    assert rejected["type"] == "form"
-    assert rejected["errors"]["base"] == "live_checkout_ack_required"
     accepted = run(
         flow.async_step_init(
             {
                 "scan_interval": 15,
                 "allow_ordering": True,
-                "ordering_acknowledged": True,
+                # Stale/forged removed fields can never enable paid checkout.
                 "allow_live_checkout": True,
                 "live_checkout_acknowledged": True,
             }
@@ -1054,8 +1036,8 @@ def test_options_flow_requires_acknowledgement_behaviorally(
     assert accepted["type"] == "create_entry"
     assert accepted["data"]["allow_ordering"] is True
     assert accepted["data"]["ordering_acknowledged"] is True
-    assert accepted["data"]["allow_live_checkout"] is True
-    assert accepted["data"]["live_checkout_acknowledged"] is True
+    assert accepted["data"]["allow_live_checkout"] is False
+    assert accepted["data"]["live_checkout_acknowledged"] is False
 
 
 def test_panel_registration_failure_preserves_websocket_api_and_tracking(

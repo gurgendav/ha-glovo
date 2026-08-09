@@ -7,12 +7,13 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 from .ordering_models import ISO_4217_EXPONENTS
 
 MAX_RESPONSE_BYTES: Final = 512_000
-MAX_DEPTH: Final = 12
+MAX_DEPTH: Final = 18
 MAX_ADDRESSES: Final = 64
 MAX_ADDRESS_FIELDS: Final = 24
 MAX_PAYMENT_METHODS: Final = 32
@@ -224,13 +225,13 @@ class LiveStore:
     category_id: int = field(repr=False)
     category: str
     prime_available: bool
-    image_id: str = field(repr=False)
+    image_id: str | None = field(repr=False)
     view_type: str
     schedule: tuple[StoreSchedule, ...]
     scheduling_enabled: bool
     next_opening: str | None
-    delivery_fee: ExactMoney
-    service_fee: ExactMoney
+    delivery_fee: ExactMoney | None
+    service_fee: ExactMoney | None
     items_type: str
 
 
@@ -761,7 +762,7 @@ def _money(value: Any) -> ExactMoney:
     return ExactMoney(amount, currency)
 
 
-def parse_store(payload: Any) -> LiveStore:
+def _parse_legacy_store(payload: Any) -> LiveStore:
     _bounded_payload(payload)
     required = {
         "id",
@@ -848,6 +849,113 @@ def parse_store(payload: Any) -> LiveStore:
         service_fee=_money(root["serviceFee"]),
         items_type=items_type,
     )
+
+
+_CURRENT_STORE_REQUIRED = frozenset(
+    {
+        "id", "name", "slug", "open", "rating", "filters", "categoryId",
+        "category", "addressId", "cityCode", "enabled", "primeAvailable",
+        "imageId", "viewType", "schedulingEnabled", "deliveryFeeInfo",
+        "serviceFee", "itemsType", "food",
+    }
+)
+_CURRENT_STORE_ALLOWED = _CURRENT_STORE_REQUIRED | frozenset(
+    {
+        "address", "adsTrackingToken", "allergiesInformationAllowed",
+        "availability", "availabilityVM", "canDisplayPrimeTierUpsell",
+        "cartTotalElements", "cartUniqueElements", "cashSupported",
+        "closedStatusMessage", "customDescriptionAllowed", "cutleryRequestAllowed",
+        "dataSharingRequested", "deliveryNotAvailable",
+        "deliveryNotAvailableMessage", "description", "disabledStatus", "distance",
+        "emulateOpen", "etaEnabled", "favorite", "feesPricingCalculationId",
+        "fiscalName", "ghostStore", "lastOrderingTime", "legalCheckboxRequired",
+        "location", "logoImageId", "marketplace", "mcdPartner", "nextOpeningTime",
+        "note", "phoneNumber", "pricingInfo", "productsInformationLink",
+        "productsInformationText", "promotions", "purchasesCommission",
+        "rankingScore", "ratingInfo", "scheduleMessage", "schedulingPossible",
+        "selectedStrategyType", "shopSponsoring", "shopSponsoringPlacement",
+        "specialRequirementsAllowed", "sponsoringInfo", "storeDimensions",
+        "storeViewVersion", "structuredData", "suggestionKeywords",
+        "supportedStrategies", "tags", "topPerformer", "urn",
+    }
+)
+
+
+def _parse_current_store(payload: Any) -> LiveStore:
+    root = _object(
+        payload,
+        required=_CURRENT_STORE_REQUIRED,
+        allowed=_CURRENT_STORE_ALLOWED,
+    )
+    if not _bool(root["open"]) or not _bool(root["enabled"]):
+        _fail("ineligible")
+    if _text(root["category"], maximum=50) != "RESTAURANT" or not _bool(root["food"]):
+        _fail("restricted")
+    slug = _text(root["slug"], maximum=100)
+    if not _SLUG_RE.fullmatch(slug):
+        _fail()
+    rating_value = root["rating"]
+    rating: float | None = None
+    if rating_value is not None:
+        if not isinstance(rating_value, str) or not re.fullmatch(r"(?:100|[1-9]?\d)%", rating_value):
+            _fail()
+        rating = int(rating_value[:-1]) / 20
+    filters = _array(root["filters"], maximum=32)
+    for item in filters:
+        value = _object(
+            item,
+            required={"displayName", "icon", "id", "name", "slug", "translations"},
+            allowed={"displayName", "icon", "id", "name", "slug", "translations"},
+        )
+        _int(value["id"], minimum=1)
+        _text(value["displayName"], maximum=80)
+        _text(value["icon"], maximum=250, allow_empty=True)
+        _text(value["name"], maximum=80)
+        _text(value["slug"], maximum=100)
+        if not isinstance(value["translations"], dict):
+            _fail()
+    view_type = _text(root["viewType"], maximum=30)
+    if view_type not in MENU_LAYOUT_TYPES:
+        _fail()
+    items_type = _text(root["itemsType"], maximum=40)
+    if items_type != "CATEGORIZED":
+        _fail("restricted")
+    fee_info = _object(
+        root["deliveryFeeInfo"],
+        required={"fee", "style"},
+        allowed={"fee", "style"},
+    )
+    _number(fee_info["fee"], minimum=0, maximum=1_000_000)
+    _text(fee_info["style"], maximum=30)
+    _number(root["serviceFee"], minimum=0, maximum=1_000_000)
+    _text(root["imageId"], maximum=250, allow_empty=True)
+    return LiveStore(
+        store_id=_int(root["id"], minimum=1),
+        name=_text(root["name"], maximum=100),
+        slug=slug,
+        address_id=_int(root["addressId"], minimum=1),
+        city_code=_text(root["cityCode"], maximum=20),
+        rating=rating,
+        category_id=_int(root["categoryId"], minimum=1),
+        category="RESTAURANT",
+        prime_available=_bool(root["primeAvailable"]),
+        image_id=None,
+        view_type=view_type,
+        schedule=(),
+        scheduling_enabled=_bool(root["schedulingEnabled"]),
+        next_opening=None,
+        delivery_fee=None,
+        service_fee=None,
+        items_type=items_type,
+    )
+
+
+def parse_store(payload: Any) -> LiveStore:
+    """Parse either the approved legacy fixture or current web-store schema."""
+    _bounded_payload(payload)
+    if isinstance(payload, dict) and "schedule" not in payload:
+        return _parse_current_store(payload)
+    return _parse_legacy_store(payload)
 
 
 def _parse_promotions(value: Any) -> tuple[CatalogPromotion, ...]:
@@ -1022,7 +1130,7 @@ def _parse_product(value: Any) -> CatalogProduct:
     )
 
 
-def parse_menu(payload: Any, *, expected_store_address_id: int) -> CatalogMenu:
+def _parse_legacy_menu(payload: Any, *, expected_store_address_id: int) -> CatalogMenu:
     _bounded_payload(payload)
     expected = _int(expected_store_address_id, minimum=1)
     root = _object(payload, required={"type", "data"}, allowed={"type", "data"})
@@ -1058,3 +1166,229 @@ def parse_menu(payload: Any, *, expected_store_address_id: int) -> CatalogMenu:
         if len(products) > MAX_PRODUCTS:
             _fail()
     return CatalogMenu(layout, store_address_id, tuple(products))
+
+
+def _major_money(value: Any, price_info: Any) -> ExactMoney:
+    amount = _number(value, minimum=0, maximum=1_000_000_000)
+    info = _object(
+        price_info,
+        required={"amount", "currencyCode", "displayText"},
+        allowed={"amount", "currencyCode", "displayText"},
+    )
+    info_amount = _number(info["amount"], minimum=0, maximum=1_000_000_000)
+    if Decimal(str(info_amount)) != Decimal(str(amount)):
+        _fail()
+    currency = _text(info["currencyCode"], maximum=3)
+    if currency not in ISO_4217_EXPONENTS:
+        _fail()
+    _text(info["displayText"], maximum=80, allow_empty=True)
+    try:
+        scaled = Decimal(str(amount)) * (Decimal(10) ** ISO_4217_EXPONENTS[currency])
+    except (InvalidOperation, OverflowError):
+        _fail()
+    if not scaled.is_finite() or scaled != scaled.to_integral_value():
+        _fail()
+    return ExactMoney(_int(int(scaled), maximum=100_000_000_000), currency)
+
+
+def _current_opaque_id(value: Any) -> str:
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value < 1 or value >= 10**128:
+            _fail()
+        return _opaque_id(str(value))
+    return _opaque_id(value)
+
+
+def _parse_current_option_groups(
+    value: Any, *, product_currency: str
+) -> tuple[CatalogOptionGroup, ...]:
+    groups = _array(value, maximum=MAX_OPTION_GROUPS)
+    result: list[CatalogOptionGroup] = []
+    group_ids: set[str] = set()
+    external_ids: set[str] = set()
+    required = {
+        "id", "attributeGroupId", "externalId", "name", "min", "max",
+        "position", "multipleSelection", "collapsedByDefault", "attributes",
+    }
+    option_required = {
+        "id", "attributeId", "externalId", "name", "priceImpact",
+        "priceInfo", "selected",
+    }
+    for raw_group in groups:
+        group = _object(raw_group, required=required, allowed=required)
+        group_id = _current_opaque_id(group["id"])
+        external_id = _opaque_id(group["externalId"])
+        _opaque_id(group["attributeGroupId"])
+        if group_id in group_ids or external_id in external_ids:
+            _fail()
+        group_ids.add(group_id)
+        external_ids.add(external_id)
+        options: list[CatalogOption] = []
+        option_ids: set[str] = set()
+        option_external_ids: set[str] = set()
+        for raw_option in _array(group["attributes"], maximum=MAX_OPTIONS_PER_GROUP):
+            option = _object(
+                raw_option, required=option_required, allowed=option_required
+            )
+            option_id = _current_opaque_id(option["id"])
+            option_external_id = _opaque_id(option["externalId"])
+            _opaque_id(option["attributeId"])
+            if option_id in option_ids or option_external_id in option_external_ids:
+                _fail()
+            option_ids.add(option_id)
+            option_external_ids.add(option_external_id)
+            price = _major_money(option["priceImpact"], option["priceInfo"])
+            if price.currency != product_currency:
+                _fail()
+            options.append(
+                CatalogOption(
+                    key=option_id,
+                    external_id=option_external_id,
+                    label=_text(option["name"], maximum=100),
+                    price=price,
+                    selected=_bool(option["selected"]),
+                )
+            )
+        provider_maximum = _int(
+            group["max"], maximum=MAX_OPTIONS_PER_GROUP
+        )
+        maximum = min(provider_maximum, len(options))
+        result.append(
+            CatalogOptionGroup(
+                key=group_id,
+                external_id=external_id,
+                label=_text(group["name"], maximum=100),
+                minimum=_int(group["min"], maximum=MAX_OPTIONS_PER_GROUP),
+                maximum=maximum,
+                position=_int(group["position"], maximum=MAX_OPTION_GROUPS),
+                multiple_selection=(
+                    _bool(group["multipleSelection"]) or maximum > 1
+                ),
+                collapsed=_bool(group["collapsedByDefault"]),
+                options=tuple(options),
+            )
+        )
+    return tuple(sorted(result, key=lambda item: item.position))
+
+
+_CURRENT_PRODUCT_REQUIRED = frozenset(
+    {
+        "id", "externalId", "storeProductId", "name", "price", "priceInfo",
+        "sponsored", "restricted", "outOfStock", "attributeGroups", "promotions",
+    }
+)
+_CURRENT_PRODUCT_ALLOWED = _CURRENT_PRODUCT_REQUIRED | frozenset(
+    {
+        "description", "imageId", "imageSize", "imageUrl", "images", "indicators",
+        "labels", "productTileFooter", "showQuantifiers", "tags", "tracking", "urn",
+    }
+)
+
+
+def _parse_current_product(value: Any) -> CatalogProduct | None:
+    product = _object(
+        value,
+        required=_CURRENT_PRODUCT_REQUIRED,
+        allowed=_CURRENT_PRODUCT_ALLOWED,
+    )
+    if _bool(product["restricted"]) or _bool(product["outOfStock"]):
+        return None
+    price = _major_money(product["price"], product["priceInfo"])
+    promotions = _array(product["promotions"], maximum=16)
+    if any(not isinstance(item, dict) for item in promotions):
+        _fail()
+    store_product_id = product["storeProductId"]
+    if store_product_id is not None:
+        store_product_id = _opaque_id(str(store_product_id))
+    return CatalogProduct(
+        product_id=_current_opaque_id(product["id"]),
+        external_id=_opaque_id(product["externalId"]),
+        store_product_id=store_product_id,
+        name=_text(product["name"], maximum=120),
+        price=price,
+        sponsored=_bool(product["sponsored"]),
+        option_groups=_parse_current_option_groups(
+            product["attributeGroups"], product_currency=price.currency
+        ),
+        promotions=(),
+    )
+
+
+def _parse_current_menu(payload: Any, *, expected_store_address_id: int) -> CatalogMenu:
+    expected = _int(expected_store_address_id, minimum=1)
+    root = _object(payload, required={"type", "data"}, allowed={"type", "data"})
+    layout = _text(root["type"], maximum=30)
+    if layout not in MENU_LAYOUT_TYPES:
+        _fail()
+    data = _object(
+        root["data"],
+        required={"body", "otcLabelsNavigationLinks", "styles", "tracking"},
+        allowed={"body", "otcLabelsNavigationLinks", "styles", "tracking"},
+    )
+    navigation_links = data["otcLabelsNavigationLinks"]
+    if navigation_links not in ({}, []):
+        _fail()
+    if not isinstance(data["styles"], dict) or not isinstance(data["tracking"], dict):
+        _fail()
+    products_by_id: dict[str, CatalogProduct] = {}
+    external_ids: dict[str, str] = {}
+    for raw_section in _array(data["body"], maximum=MAX_BODY_ELEMENTS):
+        section = _object(
+            raw_section,
+            required={"type", "data"},
+            allowed={"type", "data", "id"},
+        )
+        if _text(section["type"], maximum=40) != "LIST":
+            _fail("unsupported")
+        section_data = _object(
+            section["data"],
+            required={"elements", "slug", "title", "tracking"},
+            allowed={"action", "elements", "icon", "slug", "title", "tracking"},
+        )
+        _text(section_data["slug"], maximum=120, allow_empty=True)
+        _text(section_data["title"], maximum=120, allow_empty=True)
+        if not isinstance(section_data["tracking"], dict):
+            _fail()
+        for raw_element in _array(
+            section_data["elements"], maximum=MAX_BODY_ELEMENTS
+        ):
+            element = _object(
+                raw_element,
+                required={"type", "data", "actions"},
+                allowed={"type", "data", "actions"},
+            )
+            if _text(element["type"], maximum=40) not in DIRECT_PRODUCT_TYPES:
+                _fail("unsupported")
+            _array(element["actions"], maximum=16)
+            product = _parse_current_product(element["data"])
+            if product is None:
+                continue
+            existing = products_by_id.get(product.product_id)
+            existing_id = external_ids.get(product.external_id)
+            if existing is not None:
+                if existing != product:
+                    _fail("mismatch")
+                continue
+            if existing_id is not None and existing_id != product.product_id:
+                _fail()
+            products_by_id[product.product_id] = product
+            external_ids[product.external_id] = product.product_id
+            if len(products_by_id) > MAX_PRODUCTS:
+                _fail()
+    return CatalogMenu(layout, expected, tuple(products_by_id.values()))
+
+
+def parse_menu(payload: Any, *, expected_store_address_id: int) -> CatalogMenu:
+    """Parse either the approved legacy fixture or current web-menu schema."""
+    _bounded_payload(payload)
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("data"), dict)
+        and "storeAddressId" not in payload["data"]
+    ):
+        return _parse_current_menu(
+            payload, expected_store_address_id=expected_store_address_id
+        )
+    return _parse_legacy_menu(
+        payload, expected_store_address_id=expected_store_address_id
+    )

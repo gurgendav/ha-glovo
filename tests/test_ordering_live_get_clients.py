@@ -296,6 +296,130 @@ def menu_payload() -> dict[str, Any]:
     }
 
 
+def current_store_payload() -> dict[str, Any]:
+    return {
+        "id": 71,
+        "name": "KFC",
+        "slug": "kfc-yrv",
+        "open": True,
+        "rating": "98%",
+        "filters": [],
+        "categoryId": 4,
+        "category": "RESTAURANT",
+        "addressId": 81,
+        "cityCode": "YRV",
+        "enabled": True,
+        "primeAvailable": False,
+        "imageId": "store-image",
+        "viewType": "LIST_VIEW_LAYOUT",
+        "schedulingEnabled": True,
+        "deliveryFeeInfo": {"fee": 199.0, "style": "DEFAULT"},
+        "serviceFee": 199.0,
+        "itemsType": "CATEGORIZED",
+        "food": True,
+    }
+
+
+def current_menu_payload() -> dict[str, Any]:
+    return {
+        "type": "LIST_VIEW_LAYOUT",
+        "data": {
+            "body": [
+                {
+                    "type": "LIST",
+                    "data": {
+                        "title": "Meals",
+                        "slug": "meals",
+                        "tracking": {},
+                        "elements": [
+                            {
+                                "type": "PRODUCT_ROW",
+                                "actions": [],
+                                "data": {
+                                    "id": 101,
+                                    "externalId": "external-1",
+                                    "storeProductId": "store-product-1",
+                                    "name": "Chicken combo",
+                                    "price": 3100.0,
+                                    "priceInfo": {
+                                        "amount": 3100.0,
+                                        "currencyCode": "AMD",
+                                        "displayText": "3 100 AMD",
+                                    },
+                                    "sponsored": False,
+                                    "restricted": False,
+                                    "outOfStock": False,
+                                    "attributeGroups": [
+                                        {
+                                            "id": 201,
+                                            "attributeGroupId": "attribute-group-1",
+                                            "externalId": "group-ext-1",
+                                            "name": "Choose one",
+                                            "min": 1,
+                                            "max": 1,
+                                            "position": 0,
+                                            "multipleSelection": False,
+                                            "collapsedByDefault": False,
+                                            "attributes": [
+                                                {
+                                                    "id": 301,
+                                                    "attributeId": "attribute-1",
+                                                    "externalId": "option-ext-1",
+                                                    "name": "Original",
+                                                    "priceImpact": 0.0,
+                                                    "priceInfo": {
+                                                        "amount": 0.0,
+                                                        "currencyCode": "AMD",
+                                                        "displayText": "",
+                                                    },
+                                                    "selected": False,
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                    "promotions": [],
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "otcLabelsNavigationLinks": [],
+            "styles": {},
+            "tracking": {},
+        },
+    }
+
+
+def test_current_web_store_and_menu_shapes_are_strictly_supported(
+    live: dict[str, ModuleType],
+) -> None:
+    contracts = live["ordering_contracts"]
+    store = contracts.parse_store(current_store_payload())
+    assert store.name == "KFC"
+    assert store.slug == "kfc-yrv"
+    assert store.items_type == "CATEGORIZED"
+
+    menu = contracts.parse_menu(current_menu_payload(), expected_store_address_id=81)
+    assert menu.store_address_id == 81
+    assert len(menu.products) == 1
+    product = menu.products[0]
+    assert product.name == "Chicken combo"
+    assert product.price.amount_minor == 310000
+    assert product.price.currency == "AMD"
+    assert product.option_groups[0].minimum == 1
+    assert product.option_groups[0].options[0].selected is False
+
+    drifted_store = current_store_payload()
+    drifted_store["providerUnknown"] = True
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_store(drifted_store)
+    drifted_menu = current_menu_payload()
+    drifted_menu["data"]["providerUnknown"] = True
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_menu(drifted_menu, expected_store_address_id=81)
+
+
 def test_me_customer_id_is_response_derived_positive_strict_int(live: dict[str, ModuleType]) -> None:
     parser = live["ordering_contracts"].parse_customer
     assert parser({"id": 42}).customer_id == 42
@@ -509,9 +633,10 @@ def test_live_address_uses_redacted_provider_subtitle_then_safe_title(
     harness = SessionHarness(live, {path: payload})
     client = live["ordering_account"].AccountClient(harness.session)
     public = run(client.async_saved_addresses(owner_key="admin-a", generation=2))[0]
-    assert public.public_dict()["label"] == "Northern ••••"
-    assert "70" not in json.dumps(public.public_dict())
-    assert "yerevan" not in json.dumps(public.public_dict()).lower()
+    public_dict = public.public_dict()
+    assert public_dict["label"] == "Northern ••••"
+    assert public_dict["fullAddress"] == "70/3 Street"
+    assert "yerevan" not in json.dumps(public_dict).lower()
 
     unsafe = live_address_payload()
     unsafe["data"]["addresses"][0]["title"] = "70 Example Street"

@@ -161,6 +161,17 @@ def test_money_currency_and_reference_models_are_strict_and_redaction_safe(
         "key": "local-destination",
         "label": "Saved destination ••••",
     }
+    admin_address = models.SavedAddressSummary(
+        "local-admin-destination",
+        "Saved destination ••••",
+        "Example Street 12, Apartment 3",
+    )
+    assert admin_address.public_dict() == {
+        "key": "local-admin-destination",
+        "label": "Saved destination ••••",
+        "fullAddress": "Example Street 12, Apartment 3",
+    }
+    assert "Example Street" not in repr(admin_address)
     for raw_label in (
         "123 Synthetic Street",
         "123 Synthetic Street ••••",

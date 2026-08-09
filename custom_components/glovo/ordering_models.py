@@ -231,10 +231,11 @@ def _is_masked_address_alias(label: str) -> bool:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class SavedAddressSummary:
-    """Opaque fixture address selection with no physical address or remote identifier."""
+    """Opaque selection plus an optional admin-only provider display address."""
 
     selection_key: str
     masked_label: str
+    full_address: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selection_key", _safe_key(self.selection_key, "address key"))
@@ -245,12 +246,26 @@ class SavedAddressSummary:
         if not _is_masked_address_alias(label) or _PHYSICAL_ADDRESS_WORD_RE.search(alias):
             raise ValueError("address label must be a short opaque alias ending in ••••")
         object.__setattr__(self, "masked_label", label)
+        if self.full_address is not None:
+            object.__setattr__(
+                self,
+                "full_address",
+                _privacy_safe_display_label(
+                    self.full_address,
+                    "admin address display",
+                    maximum=250,
+                    reject_physical_address=False,
+                ),
+            )
 
     def __repr__(self) -> str:
         return "SavedAddressSummary(<masked>)"
 
     def public_dict(self) -> dict[str, str]:
-        return {"key": self.selection_key, "label": self.masked_label}
+        result = {"key": self.selection_key, "label": self.masked_label}
+        if self.full_address is not None:
+            result["fullAddress"] = self.full_address
+        return result
 
 
 @dataclass(frozen=True, slots=True, repr=False)

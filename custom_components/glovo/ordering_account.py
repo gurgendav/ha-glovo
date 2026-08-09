@@ -302,7 +302,12 @@ class AccountClient:
                 ordinal = ordinal_counts.get(base, 0) + 1
                 ordinal_counts[base] = ordinal
                 label = f"{base} {_ORDINAL_WORDS[ordinal - 1]} ••••"
-            result.append(SavedAddressSummary(handle, label))
+            full_address = (
+                snapshot.address_line
+                if snapshot.is_live_saved_address and snapshot.address_line
+                else None
+            )
+            result.append(SavedAddressSummary(handle, label, full_address))
         self._purge()
         return tuple(result)
 

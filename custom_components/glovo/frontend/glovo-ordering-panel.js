@@ -171,10 +171,10 @@ class GlovoOrderingPanel extends HTMLElement {
   async _loadAddresses() {
     try {
       const response = await this._request("live/addresses", this._withGeneration());
-      const select = this.querySelector("#address"); select.replaceChildren(new Option("Select a masked saved address", ""));
-      (response.addresses || []).forEach((item) => select.add(new Option(item.label, item.key || item.addressHandle)));
+      const select = this.querySelector("#address"); select.replaceChildren(new Option("Select a saved address", ""));
+      (response.addresses || []).forEach((item) => select.add(new Option(item.fullAddress || item.label, item.key || item.addressHandle)));
       this._invalidateAuthority();
-    } catch (_error) { this._setStatus("Saved addresses are unavailable; no exact address was revealed."); }
+    } catch (_error) { this._setStatus("Saved addresses are unavailable."); }
   }
 
   _storeSlug() {

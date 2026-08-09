@@ -30,7 +30,7 @@
     "step": {
       "init": {
         "title": "Glovo options",
-        "description": "Leave the refresh token empty to keep the current one. LIVE ORDERING IS ADMIN-ONLY. allow_ordering permits only live preparation and may change the server basket/template; allow_live_checkout separately permits one paid submission. The provider-selected saved card and the exact authoritative total/currency must be explicitly confirmed immediately before submit. Ambiguous outcomes require manual Glovo checking and have no retry. Re-authentication resets these gates.",
+        "description": "Leave the refresh token empty to keep the current one. Live ordering preparation is admin-only and disabled by default. Enabling it may change the provider basket or quote template. Paid checkout remains unavailable.",
         "data": {
           "scan_interval": "Update interval (seconds)",
           "refresh_token": "New refresh token (optional)",

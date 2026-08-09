@@ -18,4 +18,5 @@ def test_live_spending_gate_is_a_new_migration_and_reauth_reset_contract() -> No
     assert "live_checkout_acknowledged = False" in integration
     assert "CONF_ALLOW_LIVE_CHECKOUT: False" in flow
     assert "CONF_LIVE_CHECKOUT_ACKNOWLEDGED: False" in flow
-    assert "live_checkout_ack_required" in flow
+    assert "live_checkout_ack_required" not in flow
+    assert flow.count("selector.BooleanSelector()") == 1
