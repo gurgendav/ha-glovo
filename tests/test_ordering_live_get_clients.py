@@ -365,10 +365,15 @@ def test_address_handles_are_random_owner_generation_ttl_bound_and_revalidated(
     client = live["ordering_account"].AccountClient(harness.session, clock=clock)
     first = run(client.async_saved_addresses(owner_key="admin-a", generation=9))[0]
     second = run(client.async_saved_addresses(owner_key="admin-a", generation=9))[0]
-    assert first.public_dict().keys() == {"key", "label"}
+    public = first.public_dict()
+    assert public.keys() == {"key", "label"}
+    assert public == {
+        "key": first.selection_key,
+        "label": "Saved home ••••",
+    }
     assert first.selection_key != second.selection_key
-    encoded = json.dumps(first.public_dict())
-    assert "Private" not in encoded and "17" not in encoded
+    assert first.selection_key.startswith("choice-")
+    assert "Private" not in public["label"]
     resolved = client.resolve_address(first.selection_key, owner_key="admin-a", generation=9)
     assert resolved.remote_id == 17
     for owner, generation in (("admin-b", 9), ("admin-a", 10)):
