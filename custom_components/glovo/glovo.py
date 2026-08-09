@@ -422,6 +422,52 @@ def single_attempt_authed_get(
     return _request_json("GET", url, access_token=access_token)
 
 
+_PHASE_MUTATION_ROUTES = (
+    ("POST", re.compile(r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets$")),
+    (
+        "PUT",
+        re.compile(
+            r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/"
+            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/products$"
+        ),
+    ),
+    (
+        "PATCH",
+        re.compile(
+            r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/"
+            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/products/quantity$"
+        ),
+    ),
+    (
+        "DELETE",
+        re.compile(
+            r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/"
+            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        ),
+    ),
+    ("POST", re.compile(r"^/v3/checkouts/order/1/template$")),
+)
+
+
+def single_attempt_authed_phase_mutation(
+    method: str,
+    access_token: str,
+    path: str,
+    query: dict[str, str],
+    body: dict[str, Any] | None,
+) -> Any:
+    """Perform one approved basket/template call with no refresh or replay."""
+    if not any(
+        method == approved_method and pattern.fullmatch(path)
+        for approved_method, pattern in _PHASE_MUTATION_ROUTES
+    ):
+        raise RuntimeError("Mutation route is not approved")
+    url = f"{API_URL}{path}"
+    if query:
+        url = f"{url}?{urllib.parse.urlencode(query)}"
+    return _request_json(method, url, access_token=access_token, body=body)
+
+
 def refresh_access_token(refresh_token: str) -> tuple[str, str, int]:
     data = _request_json(
         "POST",

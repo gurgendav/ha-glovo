@@ -79,8 +79,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
             data={**entry.data, CONF_TOKEN: token_json},
         )
 
-    # One lock owns access/rotating-refresh-token use and persistence for both
-    # legacy tracking and every private live-ordering GET client.
+    # Basket/template mutation helpers stay unconstructed here. This runtime
+    # deliberately has no mutation transport until durable attempt authority and
+    # later live-preparation gates have been reviewed.
     api_session = SerializedApiSession(
         token_source=lambda: entry.data[CONF_TOKEN],
         persist_token=persist_token,
