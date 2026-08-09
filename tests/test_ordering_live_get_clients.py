@@ -512,6 +512,7 @@ def test_live_address_uses_redacted_provider_subtitle_then_safe_title(
     unsafe = live_address_payload()
     unsafe["data"]["addresses"][0]["title"] = "70 Example Street"
     unsafe["data"]["addresses"][0]["subtitle"] = "70/3 Street"
+    unsafe["data"]["addresses"][0]["address"]["addressLine"] = "70/3 Street"
     harness.transport.responses[path] = unsafe
     fallback = run(
         client.async_saved_addresses(owner_key="admin-a", generation=2)
@@ -690,7 +691,7 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
     assert sent["url"].startswith(
         "https://api.glovoapp.com/v3/stores/fixture-kitchen?"
     )
-    assert sent["access_token"] == "access-private"
+    assert "access_token" not in sent
     headers = sent["extra_headers"]
     assert set(headers) == {
         "Accept",

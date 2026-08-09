@@ -491,12 +491,12 @@ def _delivery_headers(context: Mapping[str, str]) -> dict[str, str]:
 
 def single_attempt_authed_location_get(
     method: str,
-    access_token: str,
+    _access_token: str,
     path: str,
     query: dict[str, str],
     delivery_context: dict[str, str],
 ) -> Any:
-    """Perform one authenticated GET with validated private delivery headers."""
+    """Perform one guest catalog GET with validated private delivery headers."""
     if method != "GET":
         raise RuntimeError("Only GET is available through this request seam")
     if not isinstance(path, str) or not path.startswith("/"):
@@ -507,7 +507,6 @@ def single_attempt_authed_location_get(
     return _request_json(
         "GET",
         url,
-        access_token=access_token,
         extra_headers=_delivery_headers(delivery_context),
     )
 

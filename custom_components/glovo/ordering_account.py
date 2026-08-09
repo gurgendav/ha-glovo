@@ -134,9 +134,14 @@ def _address_payload_fingerprint(payload: Any) -> str:
 
 
 def _safe_saved_address_alias(snapshot: AddressSnapshot) -> str | None:
-    """Derive a non-exact alias from Glovo's display subtitle, then title."""
-    if snapshot.display_subtitle:
-        first_segment = snapshot.display_subtitle.split(",", 1)[0]
+    """Derive a non-exact alias from provider display text, then title."""
+    address_line_source = (
+        snapshot.address_line if snapshot.display_title is not None else None
+    )
+    for source in (snapshot.display_subtitle, address_line_source):
+        if not source:
+            continue
+        first_segment = source.split(",", 1)[0]
         words: list[str] = []
         for token in first_segment.split():
             if any(char.isdigit() for char in token):
@@ -146,9 +151,12 @@ def _safe_saved_address_alias(snapshot: AddressSnapshot) -> str | None:
             ).strip("-'’")
             if not cleaned or cleaned.casefold() in _ROAD_TYPE_WORDS:
                 continue
+            next_candidate = " ".join((*words, cleaned))
+            if len(next_candidate) > 40:
+                break
             words.append(cleaned)
         candidate = " ".join(words)
-        if 1 <= len(candidate) <= 40:
+        if candidate:
             return candidate
     return snapshot.display_title
 
