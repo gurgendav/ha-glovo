@@ -719,7 +719,7 @@ class FakeSurfaceAdapter:
         self.handlers.clear()
 
 
-def test_panel_and_handlers_register_enabled_live_surface_with_no_mock_commands(
+def test_panel_with_no_production_facade_registers_only_safe_shells(
     ordering: dict[str, ModuleType],
 ) -> None:
     async def scenario() -> FakeSurfaceAdapter:
@@ -733,7 +733,7 @@ def test_panel_and_handlers_register_enabled_live_surface_with_no_mock_commands(
             "icon": "mdi:cart-outline",
             "require_admin": True,
         }
-        expected = set(ordering["ordering_surface"].PUBLIC_OPERATION_COMMANDS.values()) | set(
+        expected = {ordering["ordering_surface"].PUBLIC_OPERATION_COMMANDS["state"]} | set(
             ordering["ordering_surface"].RECOVERY_COMMANDS
         )
         assert set(adapter.handlers) == expected

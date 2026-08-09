@@ -19,8 +19,6 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import GlovoConfigEntry, GlovoDataUpdateCoordinator
-from .ordering_adapter import MockCheckoutAdapter
-from .ordering_catalog import SyntheticCatalogProvider
 from .ordering_journal import AttemptJournal, HomeAssistantJournalStorage
 from .ordering_prep_authority import (
     HomeAssistantPreparationStorage,
@@ -30,6 +28,13 @@ from .ordering_runtime import OrderingRuntime
 from .ordering_manager import OrderingManager
 from .ordering_account import AccountClient
 from .ordering_live_catalog import LiveCatalogClient
+from .ordering_live_api import LiveOrderingFacade
+from .ordering_live_quote import (
+    AuthoritativeConfirmationManager,
+    QuoteTemplateClient,
+)
+from .ordering_live_selection import LiveSelectionRegistry
+from .ordering_remote_basket import RemoteBasketClient
 from .ordering_state import (
     DurableOrderingState,
     HomeAssistantOrderingStateStorage,
@@ -56,49 +61,53 @@ def _ordering_options(entry: GlovoConfigEntry) -> dict[str, object]:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> bool:
-    """Set up tracking and an independently gated fixture-only ordering runtime."""
+    """Set up tracking plus a gated, production no-payment preparation facade."""
     durable_state = DurableOrderingState(
         HomeAssistantOrderingStateStorage(hass, entry.entry_id)
     )
     try:
-        # Durable authority is loaded before manager construction so reloads and
-        # Home Assistant restarts can never reset generation to one.
+        # State generation/recovery must be durable before any optional ordering
+        # capability is even considered.
         await durable_state.async_load()
     except OrderingStateFault:
-        _LOGGER.error("Glovo mock ordering safety state is unavailable; ordering disabled")
+        _LOGGER.error("Glovo ordering safety state is unavailable; ordering disabled")
 
     options = _ordering_options(entry)
     journal = AttemptJournal(
-        HomeAssistantJournalStorage(hass, entry.entry_id),
-        clock=time.time,
+        HomeAssistantJournalStorage(hass, entry.entry_id), clock=time.time
     )
+    preparation_authority = PreparationMutationAuthority(
+        HomeAssistantPreparationStorage(hass, entry.entry_id),
+        clock=time.time,
+        durable_state=durable_state,
+    )
+    try:
+        # This must complete before constructing the mutation-capable session,
+        # basket/template clients, or facade.
+        await preparation_authority.async_load()
+    except Exception:  # noqa: BLE001 - retain tracking/recovery, fail preparation closed
+        _LOGGER.exception("Glovo preparation authority is unavailable; ordering disabled")
+
     ordering_manager = OrderingManager(
         allow_ordering=options[CONF_ALLOW_ORDERING],
         ordering_acknowledged=options[CONF_ORDERING_ACKNOWLEDGED],
         allow_live_checkout=options[CONF_ALLOW_LIVE_CHECKOUT],
         live_checkout_acknowledged=options[CONF_LIVE_CHECKOUT_ACKNOWLEDGED],
         live_options=lambda: entry.options,
-        catalog=SyntheticCatalogProvider(clock=time.time),
+        # Legacy fixture collaborators are intentionally absent in production.
+        catalog=None,
         journal=journal,
-        checkout_adapter=MockCheckoutAdapter(),
+        checkout_adapter=None,
         clock=time.time,
         durable_state=durable_state,
     )
     await ordering_manager.async_initialize()
-    preparation_authority = PreparationMutationAuthority(
-        HomeAssistantPreparationStorage(hass, entry.entry_id),
-        clock=time.time,
-        durable_state=durable_state,
+    mutation_ready = (
+        ordering_manager.enabled
+        and preparation_authority.loaded
+        and not preparation_authority.integrity_fault
+        and not preparation_authority.unresolved
     )
-    ordering_runtime = OrderingRuntime(
-        manager=ordering_manager,
-        preparation_authority=preparation_authority,
-        live_options=lambda: entry.options,
-    )
-    try:
-        await ordering_runtime.async_initialize()
-    except Exception:  # noqa: BLE001 - keep tracking, fail all optional mutation paths
-        _LOGGER.exception("Glovo live preparation authority is unavailable; ordering disabled")
 
     async def persist_token(token_json: str) -> None:
         hass.config_entries.async_update_entry(
@@ -106,19 +115,71 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
             data={**entry.data, CONF_TOKEN: token_json},
         )
 
-    # Basket/template mutation helpers stay unconstructed here. This runtime
-    # deliberately has no mutation transport until durable attempt authority and
-    # later live-preparation gates have been reviewed.
+    # Tracking always has this read-only session. Its one-attempt mutation
+    # transport cannot exist unless the explicit preparation consent and durable
+    # authority are already clean at this setup boundary.
     api_session = SerializedApiSession(
         token_source=lambda: entry.data[CONF_TOKEN],
         persist_token=persist_token,
         ensure_token=glovo.ensure_access_token,
         transport=glovo.single_attempt_authed_get,
+        mutation_transport=(
+            glovo.single_attempt_authed_phase_mutation if mutation_ready else None
+        ),
         executor=hass.async_add_executor_job,
     )
+    account_client = AccountClient(api_session)
+    catalog_client = LiveCatalogClient(api_session)
+    facade = None
+    if mutation_ready:
+        selections = LiveSelectionRegistry()
+        confirmations = AuthoritativeConfirmationManager()
+        facade_ref: dict[str, LiveOrderingFacade] = {}
+
+        def invalidate_basket_handles() -> None:
+            # A basket write invalidates the previous basket plus every authority
+            # derived from its products or price.
+            facade_ref["facade"].invalidate_basket_mutation_authority()
+
+        def invalidate_quote_handles() -> None:
+            # Template creation invalidates quote/selection authority, but it does
+            # not mutate the remote basket and must not discard that snapshot.
+            facade_ref["facade"].invalidate_quote_mutation_authority()
+
+        baskets = RemoteBasketClient(
+            api_session, invalidate_authority=invalidate_basket_handles
+        )
+        quotes = QuoteTemplateClient(
+            api_session, invalidate_authority=invalidate_quote_handles
+        )
+        facade = LiveOrderingFacade(
+            account=account_client,
+            catalog=catalog_client,
+            selections=selections,
+            baskets=baskets,
+            quotes=quotes,
+            confirmations=confirmations,
+            preparation_authority=preparation_authority,
+        )
+        facade_ref["facade"] = facade
+
+    ordering_runtime = OrderingRuntime(
+        manager=ordering_manager,
+        preparation_authority=preparation_authority,
+        live_options=lambda: entry.options,
+        facade=facade,
+        # Final checkout is deliberately unavailable in every production setup.
+        final_adapter=None,
+        final_request_factory=None,
+    )
+    try:
+        await ordering_runtime.async_initialize()
+    except Exception:  # noqa: BLE001 - keep tracking, fail all optional mutation paths
+        _LOGGER.exception("Glovo live preparation authority is unavailable; ordering disabled")
+
     coordinator = GlovoDataUpdateCoordinator(hass, entry, api_session)
-    coordinator._account_client = AccountClient(api_session)  # noqa: SLF001
-    coordinator._catalog_client = LiveCatalogClient(api_session)  # noqa: SLF001
+    coordinator._account_client = account_client  # noqa: SLF001
+    coordinator._catalog_client = catalog_client  # noqa: SLF001
 
     ordering_surface = None
     if ordering_manager.enabled or ordering_manager.recovery_required:

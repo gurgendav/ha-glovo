@@ -73,11 +73,11 @@ class GlovoOrderingPanel extends HTMLElement {
               <div id="quote" class="quote muted">No authoritative quote. Prices are never calculated locally.</div>
             </div>
             <div id="confirmation" class="section stack" hidden>
-              <strong>6. Exact paid-order confirmation</strong>
+              <strong>6. Exact confirmation preparation</strong>
               <div id="confirmation-copy"></div>
               <label>Type the exact acknowledgement shown below:<input id="typed-ack" autocomplete="off"></label>
-              <div class="row"><button id="prepare-confirmation">Prepare confirmation</button><button id="submit-checkout" disabled>Submit once</button></div>
-              <div class="muted">Submit is single-use. If the outcome is ambiguous, check Glovo manually; there is no retry here.</div>
+              <div class="row"><button id="prepare-confirmation">Prepare confirmation</button><button id="submit-checkout" disabled>Paid checkout unsupported</button></div>
+              <div class="muted">This release prepares and displays an exact authoritative confirmation only. It never submits a paid order.</div>
             </div>
             <div id="checkout-recovery" class="section stack" hidden>
               <div class="danger">MANUAL_CHECK_REQUIRED — no retry or re-submit is available.</div>
@@ -250,7 +250,7 @@ class GlovoOrderingPanel extends HTMLElement {
     const addressHandle = this.querySelector("#address").value; const paymentHandle = this.querySelector("#payment").value;
     if (!addressHandle || !paymentHandle) { this._setStatus("Select both a masked address and the provider-selected card."); return; }
     this._invalidateAuthority();
-    try { const quote = await this._request("live/create_quote", { ...this._withGeneration(), addressHandle, paymentHandle }); this._quote = quote; this._renderQuote(quote); this.querySelector("#confirmation").hidden = this._liveCheckoutAvailable !== true; this._setStatus(this._liveCheckoutAvailable ? "Review the exact authoritative total before preparing confirmation." : "Live paid checkout is unavailable; preparation stopped at the authoritative quote."); }
+    try { const quote = await this._request("live/create_quote", { ...this._withGeneration(), addressHandle, paymentHandle }); this._quote = quote; this._renderQuote(quote); this.querySelector("#confirmation").hidden = false; this._setStatus(this._liveCheckoutAvailable ? "Review the exact authoritative total before preparing confirmation." : "Paid checkout is unsupported; you can prepare and review the exact authoritative confirmation."); }
     catch (_error) { this._setStatus("Authoritative quote is unavailable. No local price was used."); }
   }
 
@@ -263,8 +263,8 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   async _prepareConfirmation() {
-    if (!this._quote || this._liveCheckoutAvailable !== true) return;
-    try { const prepared = await this._request("live/prepare_confirmation", this._withGeneration()); this._challenge = prepared.challenge; const exact = `${prepared.purchaseTotalCents} ${prepared.currencyCode}`; this._ackText = `ACK ${exact}`; this.querySelector("#confirmation-copy").textContent = `Type exactly: ${this._ackText}. This confirms the displayed exact total and currency immediately before one paid submission.`; this.querySelector("#typed-ack").value = ""; this.querySelector("#submit-checkout").disabled = false; this._setStatus("Exact confirmation prepared; type the acknowledgement before submitting once."); }
+    if (!this._quote) return;
+    try { const prepared = await this._request("live/prepare_confirmation", this._withGeneration()); this._challenge = prepared.challenge; const exact = `${prepared.purchaseTotalCents} ${prepared.currencyCode}`; this._ackText = `ACK ${exact}`; this.querySelector("#confirmation-copy").textContent = `Type exactly: ${this._ackText}. This prepares the displayed exact total and currency for canary validation only; paid checkout is unsupported.`; this.querySelector("#typed-ack").value = ""; this.querySelector("#submit-checkout").disabled = true; this._setStatus("Exact confirmation prepared for review. Paid checkout remains unsupported."); }
     catch (_error) { this._invalidateAuthority("Confirmation is invalid or expired. Get a fresh quote."); }
   }
 

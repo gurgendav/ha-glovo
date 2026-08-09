@@ -77,6 +77,7 @@ class Manager:
 
     def __init__(self, *, enabled: bool = False) -> None:
         self.enabled = enabled
+        self.live_ordering_available = enabled
         self.calls: list[dict[str, Any]] = []
         self.state_calls: list[Any] = []
 

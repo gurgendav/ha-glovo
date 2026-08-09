@@ -1,7 +1,7 @@
-"""Runtime composition for the durable, gated live-ordering dependency seam.
+"""Runtime lifecycle for the durable, gated live-ordering dependency seam.
 
-No production mutation or final-checkout adapter is constructed in this module.
-Read-only tracking clients remain independent from the ordering gate.
+Production composition may inject a preparation facade only after its gate and
+durable authority are ready. A production final-checkout adapter is unsupported.
 """
 from __future__ import annotations
 
@@ -33,9 +33,9 @@ class OrderingRuntime:
         self._options = live_options
         self.flow: OrderingLiveFlow | None = None
         self._closed = False
-        # No facade means no remote preparation clients have been instantiated.
-        # This is the normal production configuration until a reviewed adapter is
-        # available. Fixtures can inject all three dependencies explicitly.
+        # No facade means no remote preparation clients were instantiated. The
+        # production setup injects one only after its independent gate and durable
+        # authority are ready; tests may inject the same narrow seam directly.
         if facade is not None:
             from .ordering_live_flow import OrderingLiveFlow
 
@@ -47,17 +47,29 @@ class OrderingRuntime:
                 final_request_factory=final_request_factory,
             )
             self.manager._live_dispatcher = self.flow.async_live_dispatch  # noqa: SLF001
+            self.manager._live_availability = (  # noqa: SLF001
+                lambda: self.live_ordering_available
+            )
 
     @property
     def live_checkout_available(self) -> bool:
         return self.flow is not None and self.flow.live_checkout_available
+
+    @property
+    def live_ordering_available(self) -> bool:
+        return (
+            not self._closed
+            and self.flow is not None
+            and self.flow.live_ordering_available
+        )
 
     async def async_initialize(self) -> None:
         """Load durable prep state before a possible live facade becomes callable."""
         if self._closed:
             return
         try:
-            await self.preparation_authority.async_load()
+            if not self.preparation_authority.loaded:
+                await self.preparation_authority.async_load()
             if self.flow is not None:
                 await self.flow.async_initialize()
         except Exception:
@@ -74,3 +86,7 @@ class OrderingRuntime:
         await self.manager.async_set_enabled(False)
         if self.flow is not None:
             await self.flow.async_invalidate(self.manager.generation)
+        # A retained manager reference must not continue to describe a former
+        # production facade after reload/unload.
+        self.manager._live_dispatcher = None  # noqa: SLF001
+        self.manager._live_availability = None  # noqa: SLF001

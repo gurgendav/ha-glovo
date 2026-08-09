@@ -43,6 +43,7 @@ class OrderingLiveFlow:
         self._final_request_factory = final_request_factory
         self._lock = asyncio.Lock()
         self._loaded = False
+        self._active = False
         self._invalidated_generation: int | None = None
 
     @property
@@ -50,6 +51,11 @@ class OrderingLiveFlow:
         # Fixture adapters may be injected in isolated tests, but production
         # availability is always false until a separately reviewed adapter exists.
         return self._final_adapter is not None and self._final_request_factory is not None
+
+    @property
+    def live_ordering_available(self) -> bool:
+        """Preparation is available only while this initialized facade is active."""
+        return self._active and self._preparation_gate()
 
     def _preparation_gate(self) -> bool:
         try:
@@ -60,6 +66,7 @@ class OrderingLiveFlow:
                 and self._authority.loaded
                 and not self._authority.integrity_fault
                 and not self._authority.unresolved
+                and self._active
             )
         except Exception:
             return False
@@ -82,12 +89,14 @@ class OrderingLiveFlow:
                 return
             await self._authority.async_load()
             self._loaded = True
+            self._active = True
 
     async def async_invalidate(self, generation: int) -> None:
         """Forget every local capability only after caller durably advances it."""
         if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
             raise LiveFlowUnavailable("live ordering is unavailable")
         async with self._lock:
+            self._active = False
             self._invalidated_generation = generation
             invalidate = getattr(self._facade, "invalidate_all", None)
             if callable(invalidate):

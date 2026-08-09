@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib.util
 import json
 import socket
@@ -276,6 +277,9 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     glovo_api.build_token_json = lambda token: f"token-json:{token}"
     glovo_api.ensure_access_token = lambda token: ("access-fixture", token)
     glovo_api.single_attempt_authed_get = lambda method, access, path, query: {}
+    glovo_api.single_attempt_authed_phase_mutation = (
+        lambda method, access, path, query, body: {}
+    )
     monkeypatch.setitem(sys.modules, glovo_api.__name__, glovo_api)
 
     for module_name in (
@@ -284,12 +288,17 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         "api_session",
         "ordering_account",
         "ordering_live_catalog",
+        "ordering_remote_basket",
+        "ordering_live_quote",
+        "ordering_live_selection",
         "ordering_basket",
         "ordering_quote",
         "ordering_catalog",
         "ordering_journal",
         "ordering_state",
         "ordering_prep_authority",
+        "ordering_live_api",
+        "ordering_live_flow",
         "ordering_runtime",
         "ordering_adapter",
         "ordering_manager",
@@ -499,7 +508,9 @@ def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     state_shell = runtime.commands[0]
     admin_connection = runtime.Connection(admin=True)
     run(state_shell(hass, admin_connection, {"id": 1, "type": "glovo/ordering/state"}))
-    assert admin_connection.results[0][1]["mockOnly"] is True
+    assert admin_connection.results[0][1]["mockOnly"] is False
+    assert admin_connection.results[0][1]["liveOrderingAvailable"] is True
+    assert admin_connection.results[0][1]["liveCheckoutAvailable"] is False
 
     non_admin = runtime.Connection(admin=False)
     run(state_shell(hass, non_admin, {"id": 2, "type": "glovo/ordering/state"}))
@@ -562,6 +573,240 @@ def test_disabled_or_unacknowledged_entry_keeps_tracking_without_panel(
     assert entry.runtime_data.ordering_surface is None
     assert hass.config_entries.forwarded
     assert not ha_runtime.panel_calls
+
+
+def test_production_composition_keeps_mutation_transport_and_facade_absent_when_gated_off(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry({"allow_ordering": False, "ordering_acknowledged": True})
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    runtime = entry.runtime_data
+    assert runtime.api_session._mutation_transport is None
+    assert runtime.ordering_runtime.flow is None
+    assert runtime.ordering_manager.live_ordering_available is False
+
+
+def test_checkout_gate_alone_cannot_construct_production_preparation_facade(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {
+            "allow_ordering": False,
+            "ordering_acknowledged": False,
+            "allow_live_checkout": True,
+            "live_checkout_acknowledged": True,
+        }
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    runtime = entry.runtime_data
+    assert runtime.api_session._mutation_transport is None
+    assert runtime.ordering_runtime.flow is None
+    assert runtime.ordering_runtime.live_checkout_available is False
+
+
+def test_clean_preparation_authority_wires_exact_one_attempt_transport_and_no_final_adapter(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": True, "ordering_acknowledged": True}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    runtime = entry.runtime_data
+    glovo_api = sys.modules[f"{ha_runtime.prefix}.glovo"]
+    assert runtime.api_session._mutation_transport is glovo_api.single_attempt_authed_phase_mutation
+    assert runtime.ordering_runtime.flow is not None
+    assert runtime.ordering_manager.live_ordering_available is True
+    assert runtime.ordering_runtime.live_checkout_available is False
+    state = _call_ws(
+        ha_runtime, hass, "glovo/ordering/state", {"type": "glovo/ordering/state"}
+    ).results[0][1]
+    assert state["mockOnly"] is False
+    assert state["liveOrderingAvailable"] is True
+    assert state["liveCheckoutAvailable"] is False
+
+
+def test_admin_fixture_transport_reaches_production_preparation_path_without_final_submit(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    """Exercise canonical HA/WS composition with a method/path/body ledger only."""
+    from test_ordering_live_get_clients import (
+        address_payload,
+        menu_payload,
+        payment_payload,
+        store_payload,
+    )
+    from test_ordering_remote_basket_quotes import basket_payload, quote_response
+
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": True, "ordering_acknowledged": True}
+    )
+    ledger: list[tuple[str, str, dict[str, str], Any]] = []
+    read_responses = {
+        "/customer_profile/api/v1/address_book/me/addresses": [
+            address_payload(), address_payload()
+        ],
+        "/v3/stores/fixture-kitchen": [store_payload()],
+        "/v4/stores/71/addresses/81/content/main": [menu_payload()],
+        "/v3/me": [{"id": 42}],
+        "/v4/payment_methods": [payment_payload(), payment_payload()],
+    }
+    mutation_responses = [basket_payload(), quote_response()]
+    glovo_api = sys.modules[f"{ha_runtime.prefix}.glovo"]
+
+    def get(method: str, access: str, path: str, query: dict[str, str]) -> Any:
+        assert method == "GET" and access == "access-fixture"
+        ledger.append((method, path, copy.deepcopy(query), None))
+        return copy.deepcopy(read_responses[path].pop(0))
+
+    def mutate(
+        method: str, access: str, path: str, query: dict[str, str], body: Any
+    ) -> Any:
+        assert access == "access-fixture"
+        raw = ha_runtime.Store.values["glovo.ordering_prep_authority_v1.entry-one"]
+        assert raw["records"][-1]["state"] == "DISPATCHING"
+        ledger.append((method, path, copy.deepcopy(query), copy.deepcopy(body)))
+        response = copy.deepcopy(mutation_responses.pop(0))
+        if path.endswith("/baskets"):
+            # The provider response must echo the exact menu-derived customization
+            # selected in the submitted intent; the standalone basket fixture uses
+            # a different synthetic option group for its parser-only tests.
+            response["products"][0]["customizations"] = copy.deepcopy(
+                body["products"][0]["customizations"]
+            )
+        return response
+
+    glovo_api.single_attempt_authed_get = get
+    glovo_api.single_attempt_authed_phase_mutation = mutate
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    state = _call_ws(
+        ha_runtime, hass, "glovo/ordering/state", {"type": "glovo/ordering/state"}
+    ).results[0][1]
+    generation = state["generation"]
+    addresses = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/addresses",
+        {"type": "glovo/ordering/live/addresses", "generation": generation},
+    ).results[0][1]["addresses"]
+    stores = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/stores",
+        {
+            "type": "glovo/ordering/live/stores",
+            "generation": generation,
+            "storeSlug": "fixture-kitchen",
+        },
+    ).results[0][1]["stores"]
+    menu = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/store_menu",
+        {
+            "type": "glovo/ordering/live/store_menu",
+            "generation": generation,
+            "storeHandle": stores[0]["storeHandle"],
+        },
+    ).results[0][1]
+    product = menu["products"][0]
+    basket_response = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/basket_set",
+        {
+            "type": "glovo/ordering/live/basket_set",
+            "generation": generation,
+            "expectedRevision": 0,
+            "storeHandle": stores[0]["storeHandle"],
+            "products": [
+                {
+                    "productHandle": product["productHandle"],
+                    "quantity": 2,
+                    "options": [],
+                }
+            ],
+        },
+    )
+    assert basket_response.errors == [], ledger
+    basket = basket_response.results[0][1]
+    payments = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/payment_methods",
+        {"type": "glovo/ordering/live/payment_methods", "generation": generation},
+    ).results[0][1]["paymentMethods"]
+    quote = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/create_quote",
+        {
+            "type": "glovo/ordering/live/create_quote",
+            "generation": generation,
+            "addressHandle": addresses[0]["key"],
+            "paymentHandle": payments[0]["key"],
+        },
+    ).results[0][1]
+    basket_after_quote = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/basket",
+        {"type": "glovo/ordering/live/basket", "generation": generation},
+    ).results[0][1]
+    prepared = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/prepare_confirmation",
+        {"type": "glovo/ordering/live/prepare_confirmation", "generation": generation},
+    ).results[0][1]
+    rejected = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/execute_checkout",
+        {
+            "type": "glovo/ordering/live/execute_checkout",
+            "generation": generation,
+            "challenge": prepared["challenge"],
+            "acknowledged": True,
+        },
+    )
+    assert basket["revision"] == 1
+    assert quote["purchaseTotalCents"] == 560000
+    assert basket_after_quote == basket
+    assert prepared["challenge"]
+    assert rejected.errors[0][1] == "invalid_ordering_request"
+    assert [(method, path) for method, path, _, _ in ledger] == [
+        ("GET", "/customer_profile/api/v1/address_book/me/addresses"),
+        ("GET", "/v3/stores/fixture-kitchen"),
+        ("GET", "/v4/stores/71/addresses/81/content/main"),
+        ("GET", "/v3/me"),
+        ("POST", "/v1/authenticated/customers/42/baskets"),
+        ("GET", "/v4/payment_methods"),
+        ("POST", "/v3/checkouts/order/1/template"),
+        ("GET", "/customer_profile/api/v1/address_book/me/addresses"),
+        ("GET", "/v4/payment_methods"),
+    ]
+    assert ledger[4][2] == {} and ledger[6][2] == {}
+    runtime = entry.runtime_data
+    assert runtime.ordering_runtime.live_checkout_available is False
+
+
+def test_bad_preparation_authority_storage_fails_closed_without_mutation_session_or_facade(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    ha_runtime.Store.values["glovo.ordering_prep_authority_v1.entry-one"] = {"bad": True}
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"allow_ordering": True, "ordering_acknowledged": True}
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    runtime = entry.runtime_data
+    assert runtime.api_session._mutation_transport is None
+    assert runtime.ordering_runtime.flow is None
+    assert runtime.ordering_manager.live_ordering_available is False
 
 
 def test_token_data_update_does_not_reload_tracking_entities(
@@ -1265,7 +1510,7 @@ def test_G_recovery_frontend_has_only_nonretrying_challenge_acknowledged_outcome
         assert prohibited not in lowered
 
 
-def test_H_default_off_tracking_and_mock_only_command_inventory_remain_unchanged(
+def test_H_default_off_tracking_and_production_preparation_inventory(
     ha_runtime: SimpleNamespace,
 ) -> None:
     disabled_hass = ha_runtime.FakeHass()
@@ -1287,6 +1532,8 @@ def test_H_default_off_tracking_and_mock_only_command_inventory_remain_unchanged
     ) is True
     assert set(_command_map(ha_runtime)) == _enabled_commands(ha_runtime)
     assert enabled_entry.runtime_data.ordering_manager.enabled is True
-    assert enabled_entry.runtime_data.ordering_manager._checkout_adapter.execution_count == 0
+    assert enabled_entry.runtime_data.ordering_manager._catalog is None
+    assert enabled_entry.runtime_data.ordering_manager._checkout_adapter is None
+    assert enabled_entry.runtime_data.ordering_runtime.live_checkout_available is False
     assert enabled_hass.config_entries.forwarded
     assert socket.create_connection.__name__ == "blocked"

@@ -92,7 +92,7 @@ class OrderingSurface:
             "glovo/ordering/prepare_manual_resolution": self._prepare_manual_resolution,
             "glovo/ordering/resolve_manual_check": self._resolve_manual_check,
         }
-        if self._manager.enabled:
+        if self._manager.live_ordering_available:
             handlers.update(
                 {
                     command: self._operation_handler(operation)

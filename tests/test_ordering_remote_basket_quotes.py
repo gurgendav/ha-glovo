@@ -1015,16 +1015,20 @@ def test_added_sources_have_private_auxiliary_capability_only() -> None:
         assert prohibited not in source
 
 
-def test_integration_runtime_does_not_wire_private_mutation_helpers() -> None:
-    """This baseline ships helpers only; later gates own runtime construction."""
+def test_integration_runtime_wires_only_gated_preparation_and_no_final_checkout() -> None:
+    """Production composition may wire preparation, never a final adapter."""
     runtime = (GLOVO_ROOT / "__init__.py").read_text()
-    for prohibited in (
+    for required in (
         "ordering_remote_basket",
         "ordering_live_quote",
         "mutation_transport=",
         "single_attempt_authed_phase_mutation",
-        "_remote_basket_client",
-        "_quote_template_client",
-        "_quote_authority",
+    ):
+        assert required in runtime
+    for prohibited in (
+        "FixtureOnlyFinalCheckoutAdapter",
+        "MockCheckoutAdapter",
+        "SyntheticCatalogProvider",
+        "ordering_live_checkout",
     ):
         assert prohibited not in runtime

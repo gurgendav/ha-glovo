@@ -131,15 +131,16 @@ class OrderingManager:
         allow_live_checkout: object = False,
         live_checkout_acknowledged: object = False,
         live_options: Callable[[], Mapping[str, object]] | None = None,
-        catalog: SyntheticCatalogProvider,
+        catalog: SyntheticCatalogProvider | None,
         journal: AttemptJournal,
-        checkout_adapter: MockCheckoutAdapter,
+        checkout_adapter: MockCheckoutAdapter | None,
         clock: Callable[[], float],
         challenge_source: Callable[[], str] | None = None,
         attempt_source: Callable[[], str] | None = None,
         durable_state: DurableOrderingState | None = None,
         execution_mode: str = MOCK_MODE,
         live_dispatcher: Callable[[str, str, Mapping[str, Any]], Any] | None = None,
+        live_availability: Callable[[], bool] | None = None,
     ) -> None:
         if execution_mode not in {MOCK_MODE, "live"}:
             raise ValueError("unsupported execution mode")
@@ -156,6 +157,7 @@ class OrderingManager:
         # An injected flow is the only live-operation dependency seam. The
         # mock adapter remains isolated from this capability.
         self._live_dispatcher = live_dispatcher
+        self._live_availability = live_availability
         self._clock = clock
         self._challenge_source = challenge_source or (lambda: secrets.token_urlsafe(32))
         self._attempt_source = attempt_source or (lambda: secrets.token_hex(16))
@@ -206,6 +208,23 @@ class OrderingManager:
     @property
     def confirmation_ttl_seconds(self) -> int:
         return CONFIRMATION_TTL_SECONDS
+
+    @property
+    def live_ordering_available(self) -> bool:
+        """Return a truthful production-preparation capability claim."""
+        dispatcher = self._live_dispatcher
+        availability = self._live_availability
+        if dispatcher is None or availability is None or not self.enabled:
+            return False
+        try:
+            return availability() is True
+        except Exception:
+            return False
+
+    @property
+    def production_facade_active(self) -> bool:
+        """Whether this manager owns a production facade rather than mock-only state."""
+        return self._live_dispatcher is not None and self._live_availability is not None
 
     def _live_gate(self) -> bool:
         try:
@@ -469,10 +488,8 @@ class OrderingManager:
             return {
                 "enabled": available,
                 "generation": self.generation,
-                "mockOnly": True,
-                # Production does not construct a mutation facade.  Never make
-                # capability claims merely because consent has been granted.
-                "liveOrderingAvailable": False,
+                "mockOnly": not self.production_facade_active,
+                "liveOrderingAvailable": self.live_ordering_available,
                 "manualCheckRequired": self.manual_check_required,
                 "integrityFault": self.integrity_fault,
                 "orderingBlocked": self.recovery_required,

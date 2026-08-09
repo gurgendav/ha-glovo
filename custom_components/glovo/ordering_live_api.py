@@ -11,7 +11,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final
 
 from .ordering_account import AccountClient, InvalidSelection
@@ -65,6 +65,7 @@ class _BasketState:
     store_handle: str
     currency: str
     snapshot: RemoteBasketSnapshot
+    store: Any = field(repr=False)
 
 
 @dataclass(slots=True, repr=False)
@@ -148,6 +149,39 @@ class LiveOrderingFacade:
         )
         self._basket: dict[str, _BasketState] = {}
         self._quote: dict[str, _QuoteState] = {}
+
+    def invalidate_all(self) -> None:
+        """Discard every ephemeral handle/quote/basket on a lifecycle change."""
+        self.invalidate_basket_mutation_authority()
+        self._account.invalidate()
+
+    def invalidate_preparation_authority(self) -> None:
+        """Backward-compatible alias for a basket-changing provider write."""
+        self.invalidate_basket_mutation_authority()
+
+    def invalidate_basket_mutation_authority(self) -> None:
+        """Discard state that a basket-changing provider write can make stale.
+
+        Saved address/payment bindings are deliberately retained until the quote
+        response has been revalidated against the provider; clearing them here
+        would turn that mandatory post-template verification into an impossible
+        local lookup. Lifecycle invalidation uses :meth:`invalidate_all`.
+        """
+        self._basket.clear()
+        self._quote.clear()
+        self._selections.invalidate()
+        self._confirmations.invalidate_all()
+
+    def invalidate_quote_mutation_authority(self) -> None:
+        """Invalidate quote/catalog authority while retaining the remote basket.
+
+        Creating a checkout template does not mutate the basket. Keeping its exact
+        snapshot is required so the administrator can still inspect or explicitly
+        delete that remote basket after quote preparation.
+        """
+        self._quote.clear()
+        self._selections.invalidate()
+        self._confirmations.invalidate_all()
 
     def _owner(self, owner: object) -> str:
         return _handle(owner)
@@ -313,6 +347,12 @@ class LiveOrderingFacade:
                 customer: CustomerIdentity = await self._account.async_customer()
                 choices = parse_selected_products(request["products"])
                 intent = self._selections.compile_intent(owner=owner, generation=generation, customer_id=customer.customer_id, store_handle=store_handle, selections=choices)
+                currency = self._selections.product_currency(
+                    choices[0].product_handle,
+                    owner=owner,
+                    generation=generation,
+                    store_handle=store_handle,
+                )
                 snapshot = await self._async_preparation_mutation(
                     operation="live/basket_set",
                     generation=generation,
@@ -325,7 +365,9 @@ class LiveOrderingFacade:
                         else (lambda: self._baskets.async_replace(existing.snapshot, intent.products))
                     ),
                 )
-                state = _BasketState(generation, expected + 1, store_handle, self._selections.product_currency(choices[0].product_handle, owner=owner, generation=generation, store_handle=store_handle), snapshot)
+                state = _BasketState(
+                    generation, expected + 1, store_handle, currency, snapshot, store
+                )
                 self._basket[owner] = state
                 self._quote.pop(owner, None)
                 self._confirmations.invalidate(owner)
@@ -366,7 +408,7 @@ class LiveOrderingFacade:
                 payment = self._account.resolve_payment(payment_handle, owner_key=owner, generation=generation)
                 if payment.selected is not True:
                     raise PublicContractError
-                store = self._selections.resolve_store(state.store_handle, owner=owner, generation=generation)
+                store = state.store
                 quote_request = QuoteRequest(owner_key=owner, generation=generation, intent_key=f"intent-{state.revision}", source_screen="BASKET", basket=state.snapshot, delivery_address=address, payment=payment, masked_address="Saved destination ••••", masked_payment=f"Saved card •••• {payment.last_four_digits or ''}".strip(), store_display_name=store.name)
                 # A replacement attempt removes previous authority before dispatch.
                 self._confirmations.invalidate(owner)
