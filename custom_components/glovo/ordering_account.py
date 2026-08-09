@@ -79,6 +79,33 @@ def _address_payload_fingerprint(payload: Any) -> str:
     row_metadata = {"title", "subtitle", "isDefault", "default", "defaultAddress"}
     allowed_row = {"entryType", "entry", "address", *row_metadata}
     address_metadata = {"isDefault", "default", "defaultAddress"}
+    raw_fields = candidate.get("fields") if isinstance(candidate, Mapping) else None
+    field_rows = raw_fields if isinstance(raw_fields, list) else []
+    field_schema = sorted(
+        {
+            key
+            for field in field_rows
+            if isinstance(field, Mapping)
+            for key in field
+            if isinstance(key, str) and _SCHEMA_KEY.fullmatch(key)
+        }
+    )[:32]
+    field_types = sorted(
+        {
+            str(field["type"])
+            for field in field_rows
+            if isinstance(field, Mapping)
+            and isinstance(field.get("type"), str)
+            and _SCHEMA_KEY.fullmatch(field["type"])
+        }
+    )[:32]
+    field_value_types = sorted(
+        {
+            type(field.get("value")).__name__
+            for field in field_rows
+            if isinstance(field, Mapping) and "value" in field
+        }
+    )
     return (
         f"root={type(payload).__name__} data_depth={data_depth} "
         f"leaf={type(cursor).__name__} addresses={type(addresses).__name__} "
@@ -92,7 +119,9 @@ def _address_payload_fingerprint(payload: Any) -> str:
         f"row_metadata={len(set(first).intersection(row_metadata)) if isinstance(first, Mapping) else -1} "
         f"address_keys={len(candidate) if isinstance(candidate, Mapping) else -1} "
         f"address_metadata={len(set(candidate).intersection(address_metadata)) if isinstance(candidate, Mapping) else -1} "
-        f"row_schema={_schema_keys(first)} address_schema={_schema_keys(candidate)}"
+        f"row_schema={_schema_keys(first)} address_schema={_schema_keys(candidate)} "
+        f"field_count={len(field_rows)} field_schema={','.join(field_schema)} "
+        f"field_types={','.join(field_types)} field_value_types={','.join(field_value_types)}"
     )
 
 
