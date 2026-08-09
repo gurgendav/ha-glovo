@@ -501,7 +501,11 @@ def test_live_address_uses_redacted_provider_subtitle_then_safe_title(
     path = "/customer_profile/api/v1/address_book/me/addresses"
     payload = live_address_payload()
     payload["data"]["addresses"][0]["title"] = "Parents Home"
-    payload["data"]["addresses"][0]["subtitle"] = "Northern Street 70/3, Yerevan"
+    payload["data"]["addresses"][0]["subtitle"] = "70/3 Street"
+    payload["data"]["addresses"][0]["address"]["addressLine"] = "70/3 Street"
+    for field in payload["data"]["addresses"][0]["address"]["fields"]:
+        if field["type"] == "STREET_NAME":
+            field["value"] = "Northern Street"
     harness = SessionHarness(live, {path: payload})
     client = live["ordering_account"].AccountClient(harness.session)
     public = run(client.async_saved_addresses(owner_key="admin-a", generation=2))[0]
@@ -513,6 +517,9 @@ def test_live_address_uses_redacted_provider_subtitle_then_safe_title(
     unsafe["data"]["addresses"][0]["title"] = "70 Example Street"
     unsafe["data"]["addresses"][0]["subtitle"] = "70/3 Street"
     unsafe["data"]["addresses"][0]["address"]["addressLine"] = "70/3 Street"
+    for field in unsafe["data"]["addresses"][0]["address"]["fields"]:
+        if field["type"] in {"STREET_NAME", "BUILDING_NAME"}:
+            field["value"] = "70/3 Street"
     harness.transport.responses[path] = unsafe
     fallback = run(
         client.async_saved_addresses(owner_key="admin-a", generation=2)

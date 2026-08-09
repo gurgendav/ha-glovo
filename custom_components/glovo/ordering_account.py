@@ -138,7 +138,20 @@ def _safe_saved_address_alias(snapshot: AddressSnapshot) -> str | None:
     address_line_source = (
         snapshot.address_line if snapshot.display_title is not None else None
     )
-    for source in (snapshot.display_subtitle, address_line_source):
+    field_sources = (
+        tuple(
+            field.value
+            for field in snapshot.fields
+            if field.field_type in {"STREET_NAME", "BUILDING_NAME"}
+        )
+        if snapshot.display_title is not None
+        else ()
+    )
+    for source in (
+        snapshot.display_subtitle,
+        address_line_source,
+        *field_sources,
+    ):
         if not source:
             continue
         first_segment = source.split(",", 1)[0]
