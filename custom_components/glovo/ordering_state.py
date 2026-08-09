@@ -401,6 +401,30 @@ class DurableOrderingState:
     async def async_latch_fault(self) -> int:
         return await self.async_bump(latch_fault=True)
 
+    async def _async_proves_inert_legacy_state_lineage(self) -> bool:
+        """Prove the loaded v2 state descends from the retained mock-only v1 file."""
+        async with self._lock:
+            if not self.loaded or self.storage_fault:
+                return False
+            legacy_loader = getattr(self._storage, "async_load_legacy", None)
+            if legacy_loader is None:
+                return False
+            try:
+                raw = await legacy_loader()
+                legacy = OrderingStateSnapshot.from_legacy(raw)
+                durable = await self._async_read_v2()
+            except OrderingStateFault:
+                raise
+            except Exception as err:
+                raise OrderingStateFault("legacy ordering state evidence could not be read") from err
+            return (
+                durable == self._snapshot
+                and durable.generation >= legacy.generation
+                and not durable.manual_check_required
+                and durable.manual_binding is None
+                and durable.preparation_binding is None
+            )
+
     async def _async_repair_legacy_mock_integrity(
         self, *, expected_generation: int
     ) -> int:

@@ -388,7 +388,15 @@ class OrderingManager:
             and self.journal.load_source == "v2"
             and state.integrity_fault
         )
-        if not (mixed_first_boot or already_latched_boot):
+        empty_journal_lineage = (
+            self.journal.load_source == "new"
+            and not self.journal.records
+            and (
+                state.load_source == "v1"
+                or (state.load_source == "v2" and state.integrity_fault)
+            )
+        )
+        if not (mixed_first_boot or already_latched_boot or empty_journal_lineage):
             self._legacy_repair_status = "source-not-eligible"
             return False
         if not state.loaded or state.storage_fault:
@@ -417,8 +425,12 @@ class OrderingManager:
             self._legacy_repair_status = "journal-manual-check"
             return False
         try:
-            if not await self.journal.async_repair_legacy_mock_no_remote_effect():
-                self._legacy_repair_status = "legacy-proof-mismatch"
+            if empty_journal_lineage:
+                if not await state._async_proves_inert_legacy_state_lineage():  # noqa: SLF001
+                    self._legacy_repair_status = "legacy-state-proof-mismatch"
+                    return False
+            elif not await self.journal.async_repair_legacy_mock_no_remote_effect():
+                self._legacy_repair_status = "legacy-journal-proof-mismatch"
                 return False
             expected_generation = state.generation
             await state._async_repair_legacy_mock_integrity(  # noqa: SLF001

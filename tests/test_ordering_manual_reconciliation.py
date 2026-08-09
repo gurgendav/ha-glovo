@@ -1081,6 +1081,71 @@ def test_legacy_mock_mixed_source_and_already_latched_boots_repair_once(
     asyncio.run(scenario())
 
 
+def test_legacy_state_with_new_empty_journal_repairs_once(
+    ordering: dict[str, ModuleType],
+) -> None:
+    async def scenario() -> None:
+        state_module = ordering["ordering_state"]
+        journal_module = ordering["ordering_journal"]
+        legacy_state = {"version": 1, "generation": 70, "safety_fault": True}
+        state_storage = state_module.MemoryOrderingStateStorage(legacy_data=legacy_state)
+        journal_storage = journal_module.MemoryJournalStorage()
+
+        first = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=state_storage,
+            journal_storage=journal_storage,
+        )
+        assert first.generation == 71
+        assert first.integrity_fault is False
+        assert first.legacy_repair_status == "repaired"
+        assert state_storage.legacy_data == legacy_state
+        assert journal_storage.data is None
+
+        # Reproduce the exact next boot after an older candidate latched the
+        # otherwise inert v1-state/new-journal source mismatch.
+        state_storage.data = _state(None, generation=75, integrity=True)
+        restarted = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=state_storage,
+            journal_storage=journal_storage,
+        )
+        assert restarted.generation == 76
+        assert restarted.integrity_fault is False
+        assert restarted.legacy_repair_status == "repaired"
+
+        clean_restart = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=state_storage,
+            journal_storage=journal_storage,
+        )
+        assert clean_restart.generation == 76
+        assert clean_restart.integrity_fault is False
+        assert clean_restart.legacy_repair_status == "source-not-eligible"
+
+    asyncio.run(scenario())
+
+
+def test_new_empty_journal_without_retained_v1_state_cannot_clear_integrity(
+    ordering: dict[str, ModuleType],
+) -> None:
+    async def scenario() -> None:
+        state_storage = ordering["ordering_state"].MemoryOrderingStateStorage(
+            _state(None, generation=75, integrity=True)
+        )
+        journal_storage = ordering["ordering_journal"].MemoryJournalStorage()
+        manager = await _build_legacy_repair_manager(
+            ordering,
+            state_storage=state_storage,
+            journal_storage=journal_storage,
+        )
+        assert manager.integrity_fault is True
+        assert manager.enabled is False
+        assert manager.legacy_repair_status == "repair-persistence-fault"
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     "gate",
     [
