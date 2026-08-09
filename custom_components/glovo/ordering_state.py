@@ -72,6 +72,57 @@ class ManualCheckBinding:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class PreparationReconciliationBinding:
+    """Exact private binding for one non-replayable preparatory reconciliation."""
+
+    attempt_id: str
+    record_revision: int
+    generation: int
+    purpose: str
+    expectation_hash: str
+
+    @classmethod
+    def from_raw(cls, raw: object) -> PreparationReconciliationBinding:
+        if (
+            not isinstance(raw, Mapping)
+            or frozenset(raw)
+            != {"attempt_id", "record_revision", "generation", "purpose", "expectation_hash"}
+        ):
+            raise OrderingStateFault("preparation reconciliation binding schema mismatch")
+        attempt_id = raw["attempt_id"]
+        revision = raw["record_revision"]
+        generation = raw["generation"]
+        purpose = raw["purpose"]
+        expectation_hash = raw["expectation_hash"]
+        if (
+            not isinstance(attempt_id, str)
+            or not attempt_id.startswith("prep-")
+            or len(attempt_id) > 100
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or revision < 1
+            or isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+            or purpose not in {"basket_create", "basket_replace", "basket_delete", "quote_template_create"}
+            or not isinstance(expectation_hash, str)
+            or len(expectation_hash) != 64
+            or any(character not in "0123456789abcdef" for character in expectation_hash)
+        ):
+            raise OrderingStateFault("preparation reconciliation binding is invalid")
+        return cls(attempt_id, revision, generation, purpose, expectation_hash)
+
+    def to_raw(self) -> dict[str, Any]:
+        return {
+            "attempt_id": self.attempt_id,
+            "record_revision": self.record_revision,
+            "generation": self.generation,
+            "purpose": self.purpose,
+            "expectation_hash": self.expectation_hash,
+        }
+
+
 class MemoryOrderingStateStorage:
     """Separate v2/v1 deterministic storage for tests."""
 
@@ -120,21 +171,33 @@ class OrderingStateSnapshot:
     manual_check_required: bool
     integrity_fault: bool
     manual_binding: ManualCheckBinding | None = None
+    preparation_binding: PreparationReconciliationBinding | None = None
 
     @property
     def safety_fault(self) -> bool:
         """Compatibility aggregate for callers predating v2."""
-        return self.manual_check_required or self.integrity_fault
+        return (
+            self.manual_check_required
+            or self.preparation_binding is not None
+            or self.integrity_fault
+        )
 
     @classmethod
     def from_raw(cls, raw: object) -> OrderingStateSnapshot:
         if raw is None:
             return cls(generation=1, manual_check_required=False, integrity_fault=False)
         base_keys = {"version", "generation", "manual_check_required", "integrity_fault"}
-        if not isinstance(raw, Mapping) or frozenset(raw) not in {
+        allowed = {
             frozenset(base_keys),
             frozenset({*base_keys, "manual_binding"}),
-        } or raw["version"] != STATE_VERSION:
+            frozenset({*base_keys, "preparation_binding"}),
+            frozenset({*base_keys, "manual_binding", "preparation_binding"}),
+        }
+        if (
+            not isinstance(raw, Mapping)
+            or frozenset(raw) not in allowed
+            or raw["version"] != STATE_VERSION
+        ):
             raise OrderingStateFault("ordering safety state schema mismatch")
         generation = raw["generation"]
         manual = raw["manual_check_required"]
@@ -148,11 +211,18 @@ class OrderingStateSnapshot:
             if "manual_binding" in raw and raw["manual_binding"] is not None
             else None
         )
+        preparation_binding = (
+            PreparationReconciliationBinding.from_raw(raw["preparation_binding"])
+            if "preparation_binding" in raw and raw["preparation_binding"] is not None
+            else None
+        )
         if manual != (binding is not None):
             raise OrderingStateFault("manual check latch is not uniquely bound")
         if binding is not None and binding.generation > generation:
             raise OrderingStateFault("manual check binding generation is invalid")
-        return cls(generation, manual, integrity, binding)
+        if preparation_binding is not None and preparation_binding.generation > generation:
+            raise OrderingStateFault("preparation reconciliation generation is invalid")
+        return cls(generation, manual, integrity, binding, preparation_binding)
 
     @classmethod
     def from_legacy(cls, raw: object) -> OrderingStateSnapshot:
@@ -170,7 +240,7 @@ class OrderingStateSnapshot:
             raise OrderingStateFault("legacy ordering safety latch is invalid")
         # V1 uncertainty was not safely distinguishable from corruption. Preserve it
         # as permanent integrity fault rather than making it UI-clearable.
-        return cls(generation, False, safety_fault, None)
+        return cls(generation, False, safety_fault, None, None)
 
     def to_raw(self) -> dict[str, Any]:
         raw = {
@@ -181,6 +251,8 @@ class OrderingStateSnapshot:
         }
         if self.manual_binding is not None:
             raw["manual_binding"] = self.manual_binding.to_raw()
+        if self.preparation_binding is not None:
+            raw["preparation_binding"] = self.preparation_binding.to_raw()
         return raw
 
 
@@ -190,7 +262,7 @@ class DurableOrderingState:
     def __init__(self, storage: OrderingStateStorage) -> None:
         self._storage = storage
         self._lock = asyncio.Lock()
-        self._snapshot = OrderingStateSnapshot(1, False, False, None)
+        self._snapshot = OrderingStateSnapshot(1, False, False, None, None)
         self.loaded = False
         self.storage_fault = False
         self.transient_write_fault = False
@@ -213,8 +285,17 @@ class DurableOrderingState:
         return self._snapshot.manual_binding
 
     @property
+    def preparation_binding(self) -> PreparationReconciliationBinding | None:
+        return self._snapshot.preparation_binding
+
+    @property
     def safety_fault(self) -> bool:
-        return self.manual_check_required or self.integrity_fault or self.transient_write_fault
+        return (
+            self.manual_check_required
+            or self.preparation_binding is not None
+            or self.integrity_fault
+            or self.transient_write_fault
+        )
 
     async def _async_raw_with_source(self) -> tuple[Any, str]:
         raw = await self._storage.async_load()
@@ -299,9 +380,12 @@ class DurableOrderingState:
                 self.storage_fault = True
                 raise OrderingStateFault("manual check binding changed unexpectedly")
             binding = manual_binding or durable.manual_binding or self._snapshot.manual_binding
+            preparation_binding = durable.preparation_binding or self._snapshot.preparation_binding
             next_generation = base_generation + 1
             if binding is not None:
                 binding = replace(binding, generation=next_generation)
+            if preparation_binding is not None:
+                preparation_binding = replace(preparation_binding, generation=next_generation)
             candidate = OrderingStateSnapshot(
                 generation=next_generation,
                 manual_check_required=binding is not None,
@@ -309,6 +393,7 @@ class DurableOrderingState:
                     self._snapshot.integrity_fault or durable.integrity_fault or latch_fault
                 ),
                 manual_binding=binding,
+                preparation_binding=preparation_binding,
             )
             await self._async_save_candidate(candidate)
             return candidate.generation
@@ -328,6 +413,73 @@ class DurableOrderingState:
             }
         )
         return await self.async_bump(manual_binding=binding)
+
+    async def async_latch_preparation_reconciliation(
+        self,
+        *,
+        attempt_id: str,
+        record_revision: int,
+        purpose: str,
+        expectation_hash: str,
+    ) -> int:
+        """Durably account-block one exact preparatory reconciliation attempt."""
+        async with self._lock:
+            durable = await self._async_read_v2()
+            requested = PreparationReconciliationBinding.from_raw(
+                {
+                    "attempt_id": attempt_id,
+                    "record_revision": record_revision,
+                    "generation": durable.generation,
+                    "purpose": purpose,
+                    "expectation_hash": expectation_hash,
+                }
+            )
+            if durable.preparation_binding is not None:
+                existing = durable.preparation_binding
+                if (
+                    existing.attempt_id != requested.attempt_id
+                    or existing.purpose != requested.purpose
+                    or existing.expectation_hash != requested.expectation_hash
+                ):
+                    self.storage_fault = True
+                    raise OrderingStateFault("preparation reconciliation binding changed unexpectedly")
+            next_generation = max(self._snapshot.generation, durable.generation) + 1
+            candidate = OrderingStateSnapshot(
+                next_generation,
+                durable.manual_check_required,
+                durable.integrity_fault,
+                durable.manual_binding,
+                replace(requested, generation=next_generation),
+            )
+            await self._async_save_candidate(candidate)
+            return candidate.generation
+
+    async def async_clear_preparation_reconciliation(
+        self,
+        *,
+        attempt_id: str,
+        purpose: str,
+        expectation_hash: str,
+    ) -> None:
+        """Clear only a matching authority-verified preparation binding."""
+        async with self._lock:
+            durable = await self._async_read_v2()
+            binding = durable.preparation_binding
+            if (
+                binding is None
+                or binding.attempt_id != attempt_id
+                or binding.purpose != purpose
+                or binding.expectation_hash != expectation_hash
+            ):
+                raise OrderingStateFault("preparation reconciliation clear binding mismatch")
+            candidate = OrderingStateSnapshot(
+                durable.generation,
+                durable.manual_check_required,
+                durable.integrity_fault,
+                durable.manual_binding,
+                None,
+            )
+            await self._async_save_candidate(candidate, permanent_on_failure=False)
 
     async def async_update_manual_binding(
         self,
@@ -359,6 +511,7 @@ class DurableOrderingState:
                 True,
                 durable.integrity_fault,
                 binding,
+                durable.preparation_binding,
             )
             await self._async_save_candidate(candidate)
 
@@ -394,7 +547,11 @@ class DurableOrderingState:
             ):
                 raise OrderingStateFault("manual check clear binding mismatch")
             candidate = OrderingStateSnapshot(
-                max(self._snapshot.generation, durable.generation), False, False, None
+                max(self._snapshot.generation, durable.generation),
+                False,
+                False,
+                None,
+                durable.preparation_binding,
             )
             # A transient failure leaves the durable manual latch set and permits a
             # same-resolution recovery call to finish the clear later.
@@ -415,6 +572,7 @@ class DurableOrderingState:
                 durable.generation != expected_generation
                 or durable.generation != self._snapshot.generation
                 or durable.manual_check_required
+                or durable.preparation_binding is not None
                 or durable.integrity_fault
             ):
                 raise OrderingStateFault("durable ordering authority changed")

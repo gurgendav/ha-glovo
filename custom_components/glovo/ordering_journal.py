@@ -178,6 +178,7 @@ _RECORD_KEYS = frozenset(
         "execution_mode",
         "request_fingerprint",
         "provider_session_hash",
+        "provider_evidence_hash",
         "checkout_id",
         "dispatch_started_at",
         "failure_class",
@@ -209,12 +210,16 @@ _ALLOWED_RESOLUTIONS = frozenset(
     {
         "found_succeeded",
         "found_failed_or_cancelled",
+        "provider_succeeded",
+        "provider_failed",
         "legacy_mock_no_remote_effect",
         "synthetic_success",
         "synthetic_failure",
     }
 )
-_ALLOWED_EVIDENCE = frozenset({"admin_review", "legacy_migration", "mock_adapter"})
+_ALLOWED_EVIDENCE = frozenset(
+    {"admin_review", "legacy_migration", "mock_adapter", "provider_response"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +236,7 @@ class AttemptRecord:
     execution_mode: str
     request_fingerprint: str
     provider_session_hash: str | None
+    provider_evidence_hash: str | None
     checkout_id: str | None
     dispatch_started_at: float | None
     failure_class: str | None
@@ -266,6 +272,7 @@ class AttemptRecord:
             "execution_mode": self.execution_mode,
             "request_fingerprint": self.request_fingerprint,
             "provider_session_hash": self.provider_session_hash,
+            "provider_evidence_hash": self.provider_evidence_hash,
             "checkout_id": self.checkout_id,
             "dispatch_started_at": self.dispatch_started_at,
             "failure_class": self.failure_class,
@@ -282,6 +289,10 @@ class AttemptRecord:
 
     @classmethod
     def from_dict(cls, value: object) -> AttemptRecord:
+        # Pre-evidence v2 records remain readable; a new write normalizes the
+        # private evidence slot without making legacy ambiguity resolvable.
+        if isinstance(value, Mapping) and frozenset(value) == (_RECORD_KEYS - {"provider_evidence_hash"}):
+            value = {**value, "provider_evidence_hash": None}
         if not isinstance(value, Mapping) or frozenset(value) != _RECORD_KEYS:
             raise JournalCorrupt("journal record schema mismatch")
         attempt_id = value["attempt_id"]
@@ -339,6 +350,11 @@ class AttemptRecord:
                 "journal provider session hash is invalid",
                 optional=True,
             ),
+            provider_evidence_hash=_hash(
+                value["provider_evidence_hash"],
+                "journal provider evidence hash is invalid",
+                optional=True,
+            ),
             checkout_id=checkout_id,
             dispatch_started_at=_optional_timestamp(
                 value["dispatch_started_at"], "journal dispatch timestamp is invalid"
@@ -394,6 +410,7 @@ def _validate_record_invariants(record: AttemptRecord) -> None:
         record.failure_class is None
         and record.resolution is None
         and record.evidence_source is None
+        and record.provider_evidence_hash is None
         and record.last_reviewed_at is None
     )
     if record.state in {
@@ -421,11 +438,13 @@ def _validate_record_invariants(record: AttemptRecord) -> None:
     if record.state is JournalState.CONFIRMED_SUCCEEDED:
         expected = {
             ("live", "found_succeeded", "admin_review"),
+            ("live", "provider_succeeded", "provider_response"),
             ("mock", "synthetic_success", "mock_adapter"),
         }
     elif record.state is JournalState.CONFIRMED_FAILED:
         expected = {
             ("live", "found_failed_or_cancelled", "admin_review"),
+            ("live", "provider_failed", "provider_response"),
             ("mock", "synthetic_failure", "mock_adapter"),
         }
     else:
@@ -437,6 +456,14 @@ def _validate_record_invariants(record: AttemptRecord) -> None:
             or (record.execution_mode == "live" and record.failure_class is None)
             or (record.execution_mode == "live" and record.last_reviewed_at is None)
             or (record.execution_mode == "mock" and record.failure_class is not None)
+            or (
+                record.evidence_source == "provider_response"
+                and record.provider_evidence_hash is None
+            )
+            or (
+                record.evidence_source != "provider_response"
+                and record.provider_evidence_hash is not None
+            )
         ):
             raise JournalCorrupt("confirmed journal metadata is contradictory")
         return
@@ -561,6 +588,7 @@ def _migrate_v1_record(value: object) -> AttemptRecord:
             "execution_mode": "mock",
             "request_fingerprint": value["quote_fingerprint"],
             "provider_session_hash": None,
+            "provider_evidence_hash": None,
             "checkout_id": None,
             "dispatch_started_at": None,
             "failure_class": failure_class,
@@ -754,6 +782,7 @@ class AttemptJournal:
                     "execution_mode": execution_mode,
                     "request_fingerprint": request_fingerprint,
                     "provider_session_hash": provider_session_hash,
+                    "provider_evidence_hash": None,
                     "checkout_id": checkout_id,
                     "dispatch_started_at": None,
                     "failure_class": None,
@@ -825,6 +854,56 @@ class AttemptJournal:
             )
             candidate = list(self._records)
             candidate[index] = updated
+            await self._async_save_records_unlocked(candidate)
+            self._records = candidate
+            return updated
+
+    async def async_record_provider_terminal(
+        self,
+        attempt_id: str,
+        *,
+        expected_revision: int,
+        succeeded: bool,
+        provider_evidence_hash: str,
+        checkout_reference: str | None = None,
+        failure_class: str = "unknown_ambiguous",
+    ) -> AttemptRecord:
+        """Record direct live terminal evidence only from a hashed provider response.
+
+        This narrow API intentionally accepts no caller/admin text and is valid
+        only after the durable DISPATCHING boundary.
+        """
+        if failure_class not in _ALLOWED_FAILURE_CLASSES:
+            raise JournalCorrupt("provider failure class is invalid")
+        evidence = _hash(provider_evidence_hash, "provider evidence hash is invalid")
+        checkout_reference = _checkout_reference(checkout_reference)
+        async with self._lock:
+            current = self.get(attempt_id)
+            if (
+                current.execution_mode != "live"
+                or current.state is not JournalState.DISPATCHING
+                or current.record_revision != expected_revision
+            ):
+                raise JournalCorrupt("provider terminal identity changed")
+            state = JournalState.CONFIRMED_SUCCEEDED if succeeded else JournalState.CONFIRMED_FAILED
+            resolution = "provider_succeeded" if succeeded else "provider_failed"
+            now = self._now()
+            updated = AttemptRecord.from_dict(
+                replace(
+                    current,
+                    state=state,
+                    updated_at=now,
+                    checkout_id=checkout_reference,
+                    provider_evidence_hash=evidence,
+                    failure_class=failure_class,
+                    resolution=resolution,
+                    evidence_source="provider_response",
+                    last_reviewed_at=now,
+                    record_revision=current.record_revision + 1,
+                ).to_dict()
+            )
+            candidate = list(self._records)
+            candidate[candidate.index(current)] = updated
             await self._async_save_records_unlocked(candidate)
             self._records = candidate
             return updated
