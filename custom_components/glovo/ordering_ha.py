@@ -101,6 +101,44 @@ _OPERATION_FIELDS: dict[str, dict[Any, Any]] = {
         vol.Required("acknowledged"): vol.All(bool, vol.In([True])),
     },
     "live/checkout_status": {vol.Required("generation"): _strict_positive_int},
+    "library/list": {vol.Required("generation"): _strict_positive_int},
+    "library/address_save": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("expectedStoreRevision"): _strict_nonnegative_int,
+        vol.Required("addressRef"): str,
+        vol.Required("expectedRevision"): _strict_nonnegative_int,
+        vol.Required("name"): str,
+        vol.Required("addressHandle"): str,
+    },
+    "library/address_delete": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("expectedStoreRevision"): _strict_nonnegative_int,
+        vol.Required("addressRef"): str,
+        vol.Required("expectedRevision"): _strict_positive_int,
+    },
+    "library/package_save": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("expectedStoreRevision"): _strict_nonnegative_int,
+        vol.Required("packageRef"): str,
+        vol.Required("expectedRevision"): _strict_nonnegative_int,
+        vol.Required("name"): str,
+        vol.Required("aliases"): vol.All([str], vol.Length(max=8)),
+        vol.Required("addressRef"): str,
+        vol.Required("addressRevision"): _strict_positive_int,
+        vol.Required("storeHandle"): str,
+        vol.Required("products"): vol.All(list, vol.Length(min=1, max=50)),
+    },
+    "library/package_delete": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("expectedStoreRevision"): _strict_nonnegative_int,
+        vol.Required("packageRef"): str,
+        vol.Required("expectedRevision"): _strict_positive_int,
+    },
+    "library/package_prepare": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("packageKey"): str,
+        vol.Required("addressKey"): str,
+    },
 }
 
 _COMMAND_SCHEMAS: dict[str, dict[Any, Any]] = {

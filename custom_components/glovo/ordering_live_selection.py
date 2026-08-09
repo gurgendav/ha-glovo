@@ -242,6 +242,203 @@ class LiveSelectionRegistry:
             result.append({"productHandle": product_handle, "label": product.name, "priceMinor": product.price.amount_minor, "currency": product.price.currency, "optionGroups": groups})
         return {"storeHandle": store_handle, "products": result}
 
+    def capture_selection(
+        self,
+        *,
+        owner: str,
+        generation: int,
+        store_handle: str,
+        selections: Sequence[SelectedProduct],
+    ) -> tuple[
+        tuple[
+            CatalogProduct,
+            int,
+            tuple[tuple[Any, tuple[CatalogOption, ...]], ...],
+        ],
+        ...,
+    ]:
+        """Resolve a complete selection to private DTOs without provider effects."""
+        self._resolve(
+            store_handle,
+            owner=owner,
+            generation=generation,
+            expected=LiveStore,
+        )
+        if not isinstance(selections, tuple) or not 1 <= len(selections) <= MAX_PRODUCTS:
+            raise LiveSelectionError
+        captured: list[
+            tuple[
+                CatalogProduct,
+                int,
+                tuple[tuple[Any, tuple[CatalogOption, ...]], ...],
+            ]
+        ] = []
+        for selected in selections:
+            if not isinstance(selected, SelectedProduct):
+                raise LiveSelectionError
+            product = self._resolve(
+                selected.product_handle,
+                owner=owner,
+                generation=generation,
+                expected=CatalogProduct,
+                parent=store_handle,
+            )
+            provided = dict(selected.option_groups)
+            if len(provided) != len(selected.option_groups):
+                raise LiveSelectionError
+            groups: list[tuple[Any, tuple[CatalogOption, ...]]] = []
+            for group in product.option_groups:
+                group_handles = [
+                    key
+                    for key, bound in self._values.items()
+                    if bound.value is group and bound.parent == selected.product_handle
+                ]
+                if len(group_handles) != 1:
+                    raise LiveSelectionError
+                group_handle = group_handles[0]
+                chosen_handles = provided.pop(group_handle, None)
+                chosen = (
+                    tuple(option for option in group.options if option.selected)
+                    if chosen_handles is None
+                    else tuple(
+                        self._resolve(
+                            handle,
+                            owner=owner,
+                            generation=generation,
+                            expected=CatalogOption,
+                            parent=group_handle,
+                        )
+                        for handle in chosen_handles
+                    )
+                )
+                if (
+                    len(chosen) != len(set(chosen))
+                    or any(option not in group.options for option in chosen)
+                    or not group.minimum <= len(chosen) <= group.maximum
+                    or (not group.multiple_selection and len(chosen) > 1)
+                    or any(
+                        not isinstance(option.price, ExactMoney)
+                        or option.price.currency != product.price.currency
+                        or option.price.amount_minor < 0
+                        for option in chosen
+                    )
+                ):
+                    raise LiveSelectionError
+                groups.append((group, chosen))
+            if provided:
+                raise LiveSelectionError
+            captured.append((product, selected.quantity, tuple(groups)))
+        return tuple(captured)
+
+    @staticmethod
+    def safe_lines(
+        captured: Sequence[
+            tuple[
+                CatalogProduct,
+                int,
+                Sequence[tuple[Any, Sequence[CatalogOption]]],
+            ]
+        ],
+        product_handles: Sequence[str],
+    ) -> list[dict[str, Any]]:
+        """Build a line-level projection from current safe catalog labels/prices."""
+        if len(captured) != len(product_handles):
+            raise LiveSelectionError
+        lines: list[dict[str, Any]] = []
+        for handle, (product, quantity, groups) in zip(
+            product_handles, captured, strict=True
+        ):
+            unit_price = product.price.amount_minor + sum(
+                option.price.amount_minor for _group, options in groups for option in options
+            )
+            lines.append(
+                {
+                    "productHandle": handle,
+                    "label": product.name,
+                    "quantity": quantity,
+                    "unitPriceMinor": unit_price,
+                    "currency": product.price.currency,
+                    "options": [
+                        {
+                            "groupLabel": group.label,
+                            "optionLabels": [option.label for option in options],
+                        }
+                        for group, options in groups
+                        if options
+                    ],
+                }
+            )
+        return lines
+
+    def issue_reconciled_selection(
+        self,
+        *,
+        store: LiveStore,
+        address_handle: str,
+        menu: CatalogMenu,
+        captured: Sequence[
+            tuple[
+                CatalogProduct,
+                int,
+                Sequence[tuple[Any, Sequence[CatalogOption]]],
+            ]
+        ],
+        owner: str,
+        generation: int,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """Rematerialize fresh handles for an exact GET-only reconciliation."""
+        store_public = self.issue_store(
+            store,
+            owner=owner,
+            generation=generation,
+            address_handle=address_handle,
+        )
+        store_handle = store_public["storeHandle"]
+        menu_public = self.issue_menu(
+            store_handle, menu, owner=owner, generation=generation
+        )
+        products: list[dict[str, Any]] = []
+        for product, quantity, groups in captured:
+            product_handles = [
+                key
+                for key, bound in self._values.items()
+                if bound.value is product and bound.parent == store_handle
+            ]
+            if len(product_handles) != 1:
+                raise LiveSelectionError
+            product_handle = product_handles[0]
+            options_public: list[dict[str, Any]] = []
+            for group, options in groups:
+                group_handles = [
+                    key
+                    for key, bound in self._values.items()
+                    if bound.value is group and bound.parent == product_handle
+                ]
+                if len(group_handles) != 1:
+                    raise LiveSelectionError
+                group_handle = group_handles[0]
+                option_handles: list[str] = []
+                for option in options:
+                    handles = [
+                        key
+                        for key, bound in self._values.items()
+                        if bound.value is option and bound.parent == group_handle
+                    ]
+                    if len(handles) != 1:
+                        raise LiveSelectionError
+                    option_handles.append(handles[0])
+                options_public.append(
+                    {"groupHandle": group_handle, "optionHandles": option_handles}
+                )
+            products.append(
+                {
+                    "productHandle": product_handle,
+                    "quantity": quantity,
+                    "options": options_public,
+                }
+            )
+        return store_public, menu_public, {"products": products}
+
     def compile_intent(
         self,
         *,
@@ -301,6 +498,22 @@ class LiveSelectionRegistry:
     def product_currency(self, handle: str, *, owner: str, generation: int, store_handle: str) -> str:
         product = self._resolve(handle, owner=owner, generation=generation, expected=CatalogProduct, parent=store_handle)
         return product.price.currency
+
+    def store_address_handle(
+        self, handle: str, *, owner: str, generation: int
+    ) -> str:
+        """Return the private parent address handle after exact scope validation."""
+        handle = _handle(handle)
+        self._resolve(
+            handle,
+            owner=owner,
+            generation=generation,
+            expected=LiveStore,
+        )
+        bound = self._values.get(handle)
+        if bound is None or bound.parent is None:
+            raise LiveSelectionError
+        return _handle(bound.parent)
 
     def resolve_store(
         self,

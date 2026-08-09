@@ -16,7 +16,7 @@ GLOVO = ROOT / "custom_components" / "glovo"
 MODULES = (
     "ordering_models", "ordering_contracts", "api_session", "ordering_remote_basket",
     "ordering_live_quote", "ordering_account", "ordering_live_catalog",
-    "ordering_live_selection", "ordering_prep_authority", "ordering_live_api",
+    "ordering_live_selection", "ordering_packages", "ordering_prep_authority", "ordering_live_api",
     "ordering_live_flow",
 )
 

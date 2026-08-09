@@ -311,6 +311,48 @@ class AccountClient:
         self._purge()
         return tuple(result)
 
+    async def async_fresh_saved_addresses(self) -> tuple[AddressSnapshot, ...]:
+        """Fetch private current snapshots without issuing or exposing handles."""
+        payload = await self._session.async_get("address", _ADDRESS_PATH)
+        try:
+            return parse_saved_addresses(payload)
+        except ContractError as err:
+            _LOGGER.warning(
+                "Glovo saved-address response failed schema validation at %s: %s",
+                err.category,
+                _address_payload_fingerprint(payload),
+            )
+            raise ApiSessionError(
+                category=err.category,
+                endpoint_family="address",
+            ) from None
+
+    def issue_saved_address(
+        self,
+        snapshot: AddressSnapshot,
+        *,
+        owner_key: str,
+        generation: int,
+        label: str = "Saved destination ••••",
+    ) -> SavedAddressSummary:
+        """Issue a fresh owner/generation/TTL handle for one exact snapshot."""
+        owner, current_generation = self._identity(owner_key, generation)
+        if not isinstance(snapshot, AddressSnapshot):
+            raise InvalidSelection
+        handle = self._new_handle(self._addresses)
+        self._addresses[handle] = _Selection(
+            owner,
+            current_generation,
+            self._clock() + self.selection_ttl_seconds,
+            snapshot,
+        )
+        full_address = (
+            snapshot.address_line
+            if snapshot.is_live_saved_address and snapshot.address_line
+            else None
+        )
+        return SavedAddressSummary(handle, label, full_address)
+
     async def async_saved_payments(
         self,
         *,

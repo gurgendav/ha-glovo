@@ -34,6 +34,11 @@ from .ordering_live_quote import (
     QuoteTemplateClient,
 )
 from .ordering_live_selection import LiveSelectionRegistry
+from .ordering_packages import (
+    HomeAssistantPackageLibraryStorage,
+    PackageLibrary,
+    PackageLibraryError,
+)
 from .ordering_remote_basket import RemoteBasketClient
 from .ordering_state import (
     DurableOrderingState,
@@ -73,6 +78,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         _LOGGER.error("Glovo ordering safety state is unavailable; ordering disabled")
 
     options = _ordering_options(entry)
+    package_library = PackageLibrary(
+        HomeAssistantPackageLibraryStorage(hass, entry.entry_id)
+    )
+    try:
+        # This independent local store is loaded before any facade is published.
+        # Corruption disables only library operations; provider preparation and
+        # the ordering safety latches remain independent.
+        await package_library.async_load()
+    except PackageLibraryError:
+        _LOGGER.error("Glovo ordering library is unavailable; library writes disabled")
     journal = AttemptJournal(
         HomeAssistantJournalStorage(hass, entry.entry_id), clock=time.time
     )
@@ -167,6 +182,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
             quotes=quotes,
             confirmations=confirmations,
             preparation_authority=preparation_authority,
+            package_library=package_library,
         )
         facade_ref["facade"] = facade
 
@@ -219,6 +235,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
     coordinator.ordering_manager = ordering_manager
     coordinator.ordering_runtime = ordering_runtime
     coordinator.ordering_surface = ordering_surface
+    coordinator.ordering_package_library = package_library
     coordinator.api_session = api_session
     # Config-entry update listeners run for both options and internal data. Keep
     # the options applied to this runtime so token persistence can be ignored

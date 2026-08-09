@@ -31,6 +31,12 @@ PUBLIC_OPERATION_COMMANDS: dict[str, str] = {
     "live/prepare_confirmation": "glovo/ordering/live/prepare_confirmation",
     "live/execute_checkout": "glovo/ordering/live/execute_checkout",
     "live/checkout_status": "glovo/ordering/live/checkout_status",
+    "library/list": "glovo/ordering/library/list",
+    "library/address_save": "glovo/ordering/library/address_save",
+    "library/address_delete": "glovo/ordering/library/address_delete",
+    "library/package_save": "glovo/ordering/library/package_save",
+    "library/package_delete": "glovo/ordering/library/package_delete",
+    "library/package_prepare": "glovo/ordering/library/package_prepare",
 }
 
 RECOVERY_COMMANDS: tuple[str, ...] = (
