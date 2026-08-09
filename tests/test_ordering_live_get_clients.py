@@ -298,6 +298,11 @@ def test_saved_addresses_accept_exact_live_shape_and_reject_schema_drift(
     assert len(parsed) == 1
     assert parsed[0].kind == "APARTMENT"
     assert "Private" not in repr(parsed[0])
+    nullable_markers = copy.deepcopy(current)
+    nullable_markers["data"]["addresses"][0]["address"]["faulty"] = None
+    nullable_markers["data"]["addresses"][0]["address"]["originalLatitude"] = None
+    nullable_markers["data"]["addresses"][0]["address"]["originalLongitude"] = None
+    assert len(contracts.parse_saved_addresses(nullable_markers)) == 1
 
     unknown_row = copy.deepcopy(current)
     unknown_row["data"]["addresses"][0]["providerExtra"] = True
@@ -309,11 +314,14 @@ def test_saved_addresses_accept_exact_live_shape_and_reject_schema_drift(
     wrong_original_coordinate["data"]["addresses"][0]["address"][
         "originalLatitude"
     ] = "40.177"
+    wrong_faulty_marker = copy.deepcopy(current)
+    wrong_faulty_marker["data"]["addresses"][0]["address"]["faulty"] = "false"
     for malformed in (
         unknown_row,
         unknown_address,
         mixed_envelope,
         wrong_original_coordinate,
+        wrong_faulty_marker,
     ):
         with pytest.raises(contracts.ContractError):
             contracts.parse_saved_addresses(malformed)

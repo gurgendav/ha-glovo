@@ -530,7 +530,7 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
             for label in ("title", "subtitle"):
                 if label in row and row[label] is not None:
                     _text(row[label], maximum=250, allow_empty=True)
-            if "faulty" in address:
+            if "faulty" in address and address["faulty"] is not None:
                 try:
                     _bool(address["faulty"])
                 except ContractError:
