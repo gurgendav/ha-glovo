@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
 
 from .ordering_contracts import (
     AddressSnapshot,
+    ContractError,
     CustomerIdentity,
     SavedPayment,
     address_snapshots_equal,
@@ -18,12 +20,55 @@ from .ordering_contracts import (
     parse_saved_addresses,
     parse_saved_payments,
 )
+from .api_session import ApiSessionError
 from .ordering_models import MaskedPaymentSummary, SavedAddressSummary
 
 _ADDRESS_PATH: Final = "/customer_profile/api/v1/address_book/me/addresses"
 _PAYMENT_PATH: Final = "/v4/payment_methods"
 _CUSTOMER_PATH: Final = "/v3/me"
 SELECTION_TTL_SECONDS: Final = 300.0
+
+_LOGGER = logging.getLogger(__name__)
+_ADDRESS_FIELDS: Final = frozenset(
+    {
+        "id",
+        "addressLine",
+        "details",
+        "latitude",
+        "longitude",
+        "countryCode",
+        "cityCode",
+        "cityName",
+        "kind",
+        "tag",
+        "fields",
+    }
+)
+
+
+def _address_payload_fingerprint(payload: Any) -> str:
+    """Describe only fixed response structure; never values or unknown key names."""
+    cursor = payload
+    data_depth = 0
+    while isinstance(cursor, Mapping) and "data" in cursor and data_depth < 5:
+        cursor = cursor["data"]
+        data_depth += 1
+    addresses = cursor.get("addresses") if isinstance(cursor, Mapping) else None
+    first = addresses[0] if isinstance(addresses, list) and addresses else None
+    entry = first.get("entry") if isinstance(first, Mapping) else None
+    address = entry.get("address") if isinstance(entry, Mapping) else None
+    direct = first.get("address") if isinstance(first, Mapping) else None
+    candidate = address if isinstance(address, Mapping) else direct
+    covered = len(_ADDRESS_FIELDS.intersection(candidate)) if isinstance(candidate, Mapping) else 0
+    return (
+        f"root={type(payload).__name__} data_depth={data_depth} "
+        f"leaf={type(cursor).__name__} addresses={type(addresses).__name__} "
+        f"count={len(addresses) if isinstance(addresses, list) else -1} "
+        f"item={type(first).__name__} "
+        f"entryType={isinstance(first, Mapping) and 'entryType' in first} "
+        f"entry={isinstance(entry, Mapping)} nested_address={isinstance(address, Mapping)} "
+        f"direct_address={isinstance(direct, Mapping)} fields={covered}/{len(_ADDRESS_FIELDS)}"
+    )
 
 
 class InvalidSelection(ValueError):
@@ -98,7 +143,17 @@ class AccountClient:
     ) -> tuple[SavedAddressSummary, ...]:
         owner, current_generation = self._identity(owner_key, generation)
         payload = await self._session.async_get("address", _ADDRESS_PATH)
-        snapshots = parse_saved_addresses(payload)
+        try:
+            snapshots = parse_saved_addresses(payload)
+        except ContractError as err:
+            _LOGGER.warning(
+                "Glovo saved-address response failed schema validation: %s",
+                _address_payload_fingerprint(payload),
+            )
+            raise ApiSessionError(
+                category=err.category,
+                endpoint_family="address",
+            ) from None
         expires_at = self._clock() + self.selection_ttl_seconds
         result: list[SavedAddressSummary] = []
         labels = {

@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from .api_session import ApiSessionError
 from .ordering_account import AccountClient, InvalidSelection
 from .ordering_contracts import CustomerIdentity
 from .ordering_live_catalog import LiveCatalogClient
@@ -445,6 +446,11 @@ class LiveOrderingFacade:
             if operation == "live/checkout_status":
                 # There is no order identifier or provider polling endpoint in this release.
                 return {"status": "unsupported"}
+        except ApiSessionError:
+            # This exception contains only allowlisted category/family/status fields.
+            # Preserve it so the HA boundary can log an operationally useful,
+            # privacy-safe failure rather than collapsing every read to unavailable.
+            raise
         except (LiveSelectionError, InvalidSelection, InvalidQuoteConfirmation, ValueError):
             raise PublicContractError from None
         except Exception:
