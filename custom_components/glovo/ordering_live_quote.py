@@ -361,8 +361,12 @@ class AuthoritativeQuote:
     template_id: int | None = field(repr=False)
     basket_id: str = field(repr=False)
     basket_version: str = field(repr=False)
+    customer_id: int = field(repr=False)
     store_id: int = field(repr=False)
     store_address_id: int = field(repr=False)
+    store_category_id: int = field(repr=False)
+    city_code: str = field(repr=False)
+    handling_strategy: str = field(repr=False)
     exact_products: tuple[RemoteBasketProduct, ...] = field(repr=False)
     address_fingerprint: str = field(repr=False)
     payment_fingerprint: str = field(repr=False)
@@ -397,8 +401,12 @@ class AuthoritativeQuote:
                 "basket": {
                     "id": self.basket_id,
                     "version": self.basket_version,
+                    "customerId": self.customer_id,
                     "storeId": self.store_id,
                     "storeAddressId": self.store_address_id,
+                    "storeCategoryId": self.store_category_id,
+                    "cityCode": self.city_code,
+                    "handlingStrategy": self.handling_strategy,
                     "products": [
                         item.canonical_dict() for item in self.exact_products
                     ],
@@ -559,10 +567,17 @@ def _parse_components(
                 or any(item not in _CAPABILITIES for item in capabilities)
                 or "DELIVERY" not in capabilities
                 or "CREDIT_CARD" not in capabilities
+                or "IMMEDIATE" not in capabilities
             ):
                 _fail("unsupported")
             normalized.append({"type": component_type, "capabilities": capabilities})
-    if "PAYMENT_METHOD_PICKER" not in seen or lines is None:
+    if (
+        "PAYMENT_METHOD_PICKER" not in seen
+        or "PRICE_BREAKDOWN" not in seen
+        or "DELIVERY_ETA" not in seen
+        or "STORE_CAPABILITIES" not in seen
+        or lines is None
+    ):
         _fail("unsupported")
     return lines, _canonical_hash(normalized)
 
@@ -666,8 +681,12 @@ def parse_quote_template(
         template_id=template_id,
         basket_id=basket_id,
         basket_version=basket_version,
+        customer_id=basket.customer_id,
         store_id=store_id,
         store_address_id=store_address_id,
+        store_category_id=basket.store_category_id,
+        city_code=basket.city_code or "",
+        handling_strategy=basket.handling_strategy,
         exact_products=basket.products,
         address_fingerprint=request.address_fingerprint,
         payment_fingerprint=request.payment_fingerprint,

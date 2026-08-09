@@ -88,6 +88,13 @@ class AddressField:
     field_type: str = field(repr=False)
     value: str = field(repr=False)
 
+    def __post_init__(self) -> None:
+        field_type = _text(self.field_type, maximum=40)
+        if field_type not in ADDRESS_FIELD_TYPES:
+            _fail()
+        object.__setattr__(self, "field_type", field_type)
+        object.__setattr__(self, "value", _text(self.value, maximum=250, allow_empty=True))
+
 
 @dataclass(frozen=True, slots=True, repr=False)
 class AddressSnapshot:
@@ -102,6 +109,28 @@ class AddressSnapshot:
     kind: str = field(repr=False)
     tag: str | None = field(repr=False)
     fields: tuple[AddressField, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "remote_id", _int(self.remote_id, minimum=1))
+        object.__setattr__(self, "address_line", _text(self.address_line, maximum=500))
+        object.__setattr__(self, "details", _text(self.details, maximum=500, allow_empty=True))
+        object.__setattr__(self, "latitude", _number(self.latitude, minimum=-90, maximum=90))
+        object.__setattr__(self, "longitude", _number(self.longitude, minimum=-180, maximum=180))
+        object.__setattr__(self, "country_code", _text(self.country_code, maximum=3))
+        object.__setattr__(self, "city_code", _text(self.city_code, maximum=20))
+        object.__setattr__(self, "city_name", _text(self.city_name, maximum=100))
+        kind = _text(self.kind, maximum=20)
+        if kind not in ADDRESS_KINDS:
+            _fail()
+        object.__setattr__(self, "kind", kind)
+        if self.tag is not None:
+            object.__setattr__(self, "tag", _text(self.tag, maximum=80))
+        if not isinstance(self.fields, tuple) or len(self.fields) > MAX_ADDRESS_FIELDS:
+            _fail()
+        if not all(isinstance(item, AddressField) for item in self.fields):
+            _fail()
+        if len({item.field_type for item in self.fields}) != len(self.fields):
+            _fail()
 
     @property
     def canonical_fingerprint(self) -> str:
@@ -138,6 +167,17 @@ class SavedPayment:
     last_four_digits: str | None = field(repr=False)
     selected: bool = field(repr=False)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payment_instrument_id", _opaque_id(self.payment_instrument_id))
+        object.__setattr__(self, "metadata_id", _int(self.metadata_id, minimum=1))
+        object.__setattr__(self, "display_name", _text(self.display_name, maximum=40))
+        object.__setattr__(self, "display_description", _text(self.display_description, maximum=80))
+        if self.last_four_digits is not None:
+            if not isinstance(self.last_four_digits, str) or not re.fullmatch(r"\d{1,4}", self.last_four_digits):
+                _fail()
+        if not isinstance(self.selected, bool):
+            _fail()
+
     def __repr__(self) -> str:
         return "SavedPayment(<private>)"
 
@@ -146,6 +186,11 @@ class SavedPayment:
 class ExactMoney:
     amount_minor: int
     currency: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "amount_minor", _int(self.amount_minor, maximum=100_000_000_000))
+        if not isinstance(self.currency, str) or self.currency not in ISO_4217_EXPONENTS:
+            _fail()
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -178,14 +223,23 @@ class LiveStore:
 
 @dataclass(frozen=True, slots=True)
 class CatalogOption:
-    key: str
+    """Private provider option identity; public handles are issued separately."""
+
+    key: str = field(repr=False)
+    external_id: str = field(repr=False)
     label: str
     price: ExactMoney
     selected: bool
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", _opaque_id(self.key))
+        object.__setattr__(self, "external_id", _opaque_id(self.external_id))
+        object.__setattr__(self, "label", _text(self.label, maximum=100))
+        if not isinstance(self.price, ExactMoney) or not isinstance(self.selected, bool):
+            _fail()
+
     def public_dict(self) -> dict[str, Any]:
         return {
-            "key": self.key,
             "label": self.label,
             "priceCents": self.price.amount_minor,
             "currencyCode": self.price.currency,
@@ -195,7 +249,10 @@ class CatalogOption:
 
 @dataclass(frozen=True, slots=True)
 class CatalogOptionGroup:
-    key: str
+    """Private provider group identity; public handles are issued separately."""
+
+    key: str = field(repr=False)
+    external_id: str = field(repr=False)
     label: str
     minimum: int
     maximum: int
@@ -204,9 +261,33 @@ class CatalogOptionGroup:
     collapsed: bool
     options: tuple[CatalogOption, ...]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", _opaque_id(self.key))
+        object.__setattr__(self, "external_id", _opaque_id(self.external_id))
+        object.__setattr__(self, "label", _text(self.label, maximum=100))
+        minimum = _int(self.minimum, maximum=MAX_OPTIONS_PER_GROUP)
+        maximum = _int(self.maximum, maximum=MAX_OPTIONS_PER_GROUP)
+        position = _int(self.position, maximum=MAX_OPTION_GROUPS)
+        if (
+            not isinstance(self.multiple_selection, bool)
+            or not isinstance(self.collapsed, bool)
+            or not isinstance(self.options, tuple)
+            or not self.options
+            or len(self.options) > MAX_OPTIONS_PER_GROUP
+            or not all(isinstance(item, CatalogOption) for item in self.options)
+            or len({item.key for item in self.options}) != len(self.options)
+            or len({item.external_id for item in self.options}) != len(self.options)
+            or minimum > maximum
+            or maximum > len(self.options)
+            or (not self.multiple_selection and maximum > 1)
+        ):
+            _fail()
+        object.__setattr__(self, "minimum", minimum)
+        object.__setattr__(self, "maximum", maximum)
+        object.__setattr__(self, "position", position)
+
     def public_dict(self) -> dict[str, Any]:
         return {
-            "key": self.key,
             "label": self.label,
             "min": self.minimum,
             "max": self.maximum,
@@ -234,6 +315,24 @@ class CatalogProduct:
     sponsored: bool
     option_groups: tuple[CatalogOptionGroup, ...]
     promotions: tuple[CatalogPromotion, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "product_id", _opaque_id(self.product_id))
+        object.__setattr__(self, "external_id", _opaque_id(self.external_id))
+        if self.store_product_id is not None:
+            object.__setattr__(self, "store_product_id", _opaque_id(self.store_product_id))
+        object.__setattr__(self, "name", _text(self.name, maximum=120))
+        if (
+            not isinstance(self.price, ExactMoney)
+            or not isinstance(self.sponsored, bool)
+            or not isinstance(self.option_groups, tuple)
+            or not all(isinstance(item, CatalogOptionGroup) for item in self.option_groups)
+            or len({item.key for item in self.option_groups}) != len(self.option_groups)
+            or len({item.position for item in self.option_groups}) != len(self.option_groups)
+            or not isinstance(self.promotions, tuple)
+            or not all(isinstance(item, CatalogPromotion) for item in self.promotions)
+        ):
+            _fail()
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -685,7 +784,7 @@ def _parse_option_groups(value: Any, *, product_currency: str) -> tuple[CatalogO
     for item in groups:
         group = _object(item, required=required, allowed=required)
         group_id = _opaque_id(group["id"])
-        _opaque_id(group["externalId"])
+        group_external_id = _opaque_id(group["externalId"])
         minimum = _int(group["min"], maximum=MAX_OPTIONS_PER_GROUP)
         maximum = _int(group["max"], maximum=MAX_OPTIONS_PER_GROUP)
         position = _int(group["position"], maximum=MAX_OPTION_GROUPS)
@@ -725,24 +824,26 @@ def _parse_option_groups(value: Any, *, product_currency: str) -> tuple[CatalogO
             selected_count += int(selected)
             options.append(
                 CatalogOption(
-                    option_id,
-                    _text(option["name"], maximum=100),
-                    price,
-                    selected,
+                    key=option_id,
+                    external_id=external_id,
+                    label=_text(option["name"], maximum=100),
+                    price=price,
+                    selected=selected,
                 )
             )
         if selected_count > maximum or (selected_count and selected_count < minimum):
             _fail()
         result.append(
             CatalogOptionGroup(
-                group_id,
-                _text(group["name"], maximum=100),
-                minimum,
-                maximum,
-                position,
-                multiple,
-                _bool(group["collapsed"]),
-                tuple(options),
+                key=group_id,
+                external_id=group_external_id,
+                label=_text(group["name"], maximum=100),
+                minimum=minimum,
+                maximum=maximum,
+                position=position,
+                multiple_selection=_bool(group["multipleSelection"]),
+                collapsed=_bool(group["collapsed"]),
+                options=tuple(options),
             )
         )
     return tuple(sorted(result, key=lambda item: item.position))

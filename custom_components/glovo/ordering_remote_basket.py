@@ -82,6 +82,14 @@ class RemoteCustomization:
     attribute_name: str = field(repr=False)
     quantity: int = field(repr=False)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "group_id", _opaque_id(self.group_id))
+        object.__setattr__(self, "group_name", _text(self.group_name, maximum=100))
+        object.__setattr__(self, "group_position", _int(self.group_position, maximum=MAX_CUSTOMIZATIONS))
+        object.__setattr__(self, "attribute_id", _opaque_id(self.attribute_id))
+        object.__setattr__(self, "attribute_name", _text(self.attribute_name, maximum=100))
+        object.__setattr__(self, "quantity", _int(self.quantity, minimum=1, maximum=MAX_PRODUCT_QUANTITY))
+
     def canonical_dict(self) -> dict[str, Any]:
         return {
             "groupId": self.group_id,
@@ -103,6 +111,32 @@ class RemoteBasketProduct:
     quantity: int = field(default=1, repr=False)
     quantity_limit: int | None = field(default=None, repr=False)
     customizations: tuple[RemoteCustomization, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "product_id", _opaque_id(self.product_id))
+        for name in ("external_id", "legacy_id", "store_product_id", "basket_product_id"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _opaque_id(value))
+        quantity = _int(self.quantity, minimum=1, maximum=MAX_PRODUCT_QUANTITY)
+        limit = self.quantity_limit
+        if limit is not None:
+            limit = _int(limit, minimum=1, maximum=MAX_PRODUCT_QUANTITY)
+            if quantity > limit:
+                _fail()
+        if (
+            not isinstance(self.customizations, tuple)
+            or len(self.customizations) > MAX_CUSTOMIZATIONS
+            or not all(isinstance(item, RemoteCustomization) for item in self.customizations)
+        ):
+            _fail()
+        identities = {(item.group_id, item.attribute_id) for item in self.customizations}
+        positions = {(item.group_id, item.group_position) for item in self.customizations}
+        if len(identities) != len(self.customizations) or len({item.group_id for item in self.customizations}) != len(positions):
+            _fail()
+        object.__setattr__(self, "quantity", quantity)
+        object.__setattr__(self, "quantity_limit", limit)
+        object.__setattr__(self, "customizations", tuple(sorted(self.customizations, key=lambda item: (item.group_position, item.group_id, item.attribute_id))))
 
     @property
     def identity(self) -> tuple[str, str | None, str | None, str | None, str | None]:
@@ -136,6 +170,18 @@ class BasketIntent:
     handling_strategy: str = field(repr=False)
     products: tuple[RemoteBasketProduct, ...] = field(repr=False)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "customer_id", _int(self.customer_id, minimum=1))
+        object.__setattr__(self, "store_id", _int(self.store_id, minimum=1))
+        object.__setattr__(self, "store_address_id", _int(self.store_address_id, minimum=1))
+        object.__setattr__(self, "store_category_id", _int(self.store_category_id, minimum=1))
+        if self.handling_strategy != "DELIVERY" or not _valid_product_tuple(self.products):
+            _fail("unsupported")
+        identities = [item.identity for item in self.products]
+        if len(set(identities)) != len(identities):
+            _fail()
+        object.__setattr__(self, "products", tuple(sorted(self.products, key=lambda item: item.identity)))
+
     def create_body(self) -> dict[str, Any]:
         return {
             "storeId": self.store_id,
@@ -153,6 +199,15 @@ class BasketPrice:
     major: float = field(repr=False)
     formatted: str = field(repr=False)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "total_formatted", _text(self.total_formatted, maximum=100))
+        if self.minor is not None:
+            object.__setattr__(self, "minor", _int(self.minor, maximum=100_000_000_000))
+        if isinstance(self.major, bool) or not isinstance(self.major, (int, float)) or not math.isfinite(float(self.major)) or not 0 <= float(self.major) <= 1_000_000_000:
+            _fail()
+        object.__setattr__(self, "major", float(self.major))
+        object.__setattr__(self, "formatted", _text(self.formatted, maximum=100))
+
 
 @dataclass(frozen=True, slots=True, repr=False)
 class RemoteBasketSnapshot:
@@ -169,6 +224,36 @@ class RemoteBasketSnapshot:
     city_code: str | None = field(repr=False)
     is_prime_subscription_simulated: bool | None = field(repr=False)
     using_dh_basket: bool | None = field(repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "basket_id", _opaque_id(self.basket_id))
+        object.__setattr__(self, "basket_version", _opaque_id(self.basket_version))
+        # Constructing intent revalidates every order-bearing field and duplicate identity.
+        intent = BasketIntent(self.customer_id, self.store_id, self.store_address_id, self.store_category_id, self.handling_strategy, self.products)
+        object.__setattr__(self, "customer_id", intent.customer_id)
+        object.__setattr__(self, "store_id", intent.store_id)
+        object.__setattr__(self, "store_address_id", intent.store_address_id)
+        object.__setattr__(self, "store_category_id", intent.store_category_id)
+        object.__setattr__(self, "products", intent.products)
+        if not isinstance(self.basket_price, BasketPrice):
+            _fail()
+        if self.city_code is not None and _CITY_RE.fullmatch(_text(self.city_code, maximum=20)) is None:
+            _fail()
+        if self.is_prime_subscription_simulated is not None and not isinstance(self.is_prime_subscription_simulated, bool):
+            _fail()
+        if self.using_dh_basket is not None and not isinstance(self.using_dh_basket, bool):
+            _fail()
+        if not isinstance(self.suggestions, tuple) or len(self.suggestions) > 20:
+            _fail()
+        ids: set[str] = set()
+        for item in self.suggestions:
+            if not isinstance(item, tuple) or len(item) != 2:
+                _fail()
+            item_id = _opaque_id(item[0])
+            if item_id in ids:
+                _fail()
+            ids.add(item_id)
+            _text(item[1], maximum=100)
 
     def intent(self) -> BasketIntent:
         return BasketIntent(

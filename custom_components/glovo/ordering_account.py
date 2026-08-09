@@ -34,11 +34,20 @@ class InvalidSelection(ValueError):
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class _PaymentContext:
+    amount_minor: int = field(repr=False)
+    currency: str = field(repr=False)
+    checkout_session: str | None = field(repr=False)
+    store_address_id: int | None = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class _Selection:
     owner_key: str = field(repr=False)
     generation: int = field(repr=False)
     expires_at: float = field(repr=False)
     value: AddressSnapshot | SavedPayment = field(repr=False)
+    payment_context: _PaymentContext | None = field(default=None, repr=False)
 
 
 class AccountClient:
@@ -65,7 +74,7 @@ class AccountClient:
     def _identity(owner_key: str, generation: int) -> tuple[str, int]:
         if not isinstance(owner_key, str) or not owner_key or len(owner_key) > 128:
             raise InvalidSelection
-        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation <= 0:
             raise InvalidSelection
         return owner_key, generation
 
@@ -130,12 +139,16 @@ class AccountClient:
         )
         payload = await self._session.async_get("payment", _PAYMENT_PATH, query)
         payments = parse_saved_payments(payload)
+        selected = tuple(item for item in payments if item.selected is True)
+        if len(selected) > 1:
+            raise InvalidSelection
         expires_at = self._clock() + self.selection_ttl_seconds
+        context = _PaymentContext(amount_minor, currency, checkout_session, store_address_id)
         result: list[MaskedPaymentSummary] = []
-        for payment in payments:
+        for payment in selected:
             handle = self._new_handle(self._payments)
             self._payments[handle] = _Selection(
-                owner, current_generation, expires_at, payment
+                owner, current_generation, expires_at, payment, context
             )
             suffix = f" {payment.last_four_digits}" if payment.last_four_digits else ""
             result.append(
@@ -203,6 +216,48 @@ class AccountClient:
             and address_snapshots_equal(item, selected)
             for item in current
         )
+
+    async def async_revalidate_payment(
+        self,
+        handle: str,
+        *,
+        owner_key: str,
+        generation: int,
+        amount_minor: int,
+        currency: str,
+        checkout_session: str,
+        store_address_id: int,
+    ) -> bool:
+        """Re-fetch the exact checkout-scoped method and require the same selected card."""
+        owner, current_generation = self._identity(owner_key, generation)
+        selected = self._resolve(
+            self._payments, handle, owner_key=owner, generation=current_generation
+        )
+        if not isinstance(selected, SavedPayment) or selected.selected is not True:
+            return False
+        record = self._payments.get(handle)
+        try:
+            query = build_payment_query(
+                amount_minor=amount_minor,
+                currency=currency,
+                checkout_session=checkout_session,
+                store_address_id=store_address_id,
+                client_supports=("CREDIT_CARD",),
+                client_ready=True,
+            )
+        except Exception:
+            return False
+        payload = await self._session.async_get("payment", _PAYMENT_PATH, query)
+        current = parse_saved_payments(payload)
+        matches = [
+            item
+            for item in current
+            if item.selected is True
+            and item.payment_instrument_id == selected.payment_instrument_id
+            and item.metadata_id == selected.metadata_id
+            and item.last_four_digits == selected.last_four_digits
+        ]
+        return len(matches) == 1 and record is not None and record.owner_key == owner
 
     def _purge(self) -> None:
         now = self._clock()
