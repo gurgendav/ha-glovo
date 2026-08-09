@@ -524,7 +524,7 @@ def test_live_address_uses_redacted_provider_subtitle_then_safe_title(
     fallback = run(
         client.async_saved_addresses(owner_key="admin-a", generation=2)
     )[0]
-    assert fallback.public_dict()["label"] == "Saved home ••••"
+    assert fallback.public_dict()["label"] == "Home one ••••"
 
 
 def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, ModuleType]) -> None:

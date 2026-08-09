@@ -36,6 +36,11 @@ _ROAD_TYPE_WORDS: Final = frozenset(
         "street", "st", "unit",
     }
 )
+_ORDINAL_WORDS: Final = (
+    "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+)
 
 _LOGGER = logging.getLogger(__name__)
 _ADDRESS_FIELDS: Final = frozenset(
@@ -171,7 +176,14 @@ def _safe_saved_address_alias(snapshot: AddressSnapshot) -> str | None:
         candidate = " ".join(words)
         if candidate:
             return candidate
-    return snapshot.display_title
+    if snapshot.display_title and snapshot.display_title.casefold() not in {
+        "saved apartment",
+        "saved home",
+        "saved office",
+        "saved other",
+    }:
+        return snapshot.display_title
+    return None
 
 
 class InvalidSelection(ValueError):
@@ -266,6 +278,13 @@ class AccountClient:
             "OFFICE": "Saved office ••••",
             "OTHER": "Saved destination ••••",
         }
+        ordinal_bases = {
+            "HOUSE": "Home",
+            "APARTMENT": "Home",
+            "OFFICE": "Office",
+            "OTHER": "Destination",
+        }
+        ordinal_counts: dict[str, int] = {}
         for snapshot in snapshots:
             handle = self._new_handle(self._addresses)
             self._addresses[handle] = _Selection(
@@ -277,9 +296,12 @@ class AccountClient:
                 try:
                     label = SavedAddressSummary(handle, f"{alias} ••••").masked_label
                 except ValueError:
-                    # A provider title that looks physical or otherwise unsafe is
-                    # never exposed; retain the deliberately generic fallback.
-                    pass
+                    alias = None
+            if not alias and snapshot.display_title is not None:
+                base = ordinal_bases[snapshot.kind]
+                ordinal = ordinal_counts.get(base, 0) + 1
+                ordinal_counts[base] = ordinal
+                label = f"{base} {_ORDINAL_WORDS[ordinal - 1]} ••••"
             result.append(SavedAddressSummary(handle, label))
         self._purge()
         return tuple(result)
