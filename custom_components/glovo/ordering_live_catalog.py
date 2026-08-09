@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import traceback
 from collections.abc import Mapping
 from typing import Any, Final
 
@@ -24,6 +26,7 @@ _CLASSIFIED_FALLBACKS: Final = {
     "UNSUPPORTED_ENDPOINT": "unsupported",
     "UNSUPPORTED_VERSION": "unsupported",
 }
+_LOGGER = logging.getLogger(__name__)
 
 
 
@@ -146,6 +149,19 @@ class LiveCatalogClient:
                 payload, expected_store_address_id=store.address_id
             )
         except ContractError as err:
+            frames = [
+                frame
+                for frame in traceback.extract_tb(err.__traceback__)
+                if frame.filename.endswith("ordering_contracts.py")
+                and frame.name != "_fail"
+            ]
+            if frames:
+                _LOGGER.warning(
+                    "Strict menu contract rejected at %s",
+                    ">".join(
+                        f"{frame.name}:{frame.lineno}" for frame in frames[-6:]
+                    ),
+                )
             raise ApiSessionError(
                 category=err.category, endpoint_family="catalog"
             ) from None
