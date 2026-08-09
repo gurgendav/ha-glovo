@@ -305,6 +305,12 @@ def test_saved_addresses_accept_exact_live_shape_and_reject_schema_drift(
     nullable_markers["data"]["addresses"][0]["address"]["originalLatitude"] = None
     nullable_markers["data"]["addresses"][0]["address"]["originalLongitude"] = None
     assert len(contracts.parse_saved_addresses(nullable_markers)) == 1
+    for external_id in (None, 42):
+        alternate_external_id = copy.deepcopy(current)
+        alternate_external_id["data"]["addresses"][0]["address"]["fields"][0][
+            "externalId"
+        ] = external_id
+        assert len(contracts.parse_saved_addresses(alternate_external_id)) == 1
 
     unknown_row = copy.deepcopy(current)
     unknown_row["data"]["addresses"][0]["providerExtra"] = True

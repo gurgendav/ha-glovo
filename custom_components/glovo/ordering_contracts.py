@@ -577,7 +577,13 @@ def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
                     allowed=field_keys,
                 )
                 if live_shape:
-                    _opaque_id(field_data["externalId"])
+                    external_id = field_data["externalId"]
+                    if external_id is None:
+                        pass
+                    elif isinstance(external_id, int) and not isinstance(external_id, bool):
+                        _int(external_id, minimum=0)
+                    else:
+                        _opaque_id(external_id)
                 field_type = _text(field_data["type"], maximum=40)
                 if field_type not in ADDRESS_FIELD_TYPES or field_type in field_types:
                     _fail()
