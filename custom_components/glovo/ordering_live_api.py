@@ -9,8 +9,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import secrets
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -37,6 +39,26 @@ from .ordering_packages import (
     store_digest,
 )
 from .ordering_remote_basket import RemoteBasketClient, RemoteBasketSnapshot
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@contextmanager
+def _basket_sync_stage(name: str):
+    """Log only a closed stage and redaction-safe exception classification."""
+    try:
+        yield
+    except Exception as err:
+        status = getattr(err, "status", None)
+        if status not in {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}:
+            status = None
+        _LOGGER.warning(
+            "Glovo basket sync rejected at stage=%s class=%s status=%s",
+            name,
+            type(err).__name__,
+            status,
+        )
+        raise
 
 PUBLIC_OPERATIONS: Final = (
     "state", "live/addresses", "live/stores", "live/store_menu", "live/payment_methods",
@@ -252,6 +274,18 @@ class LiveOrderingFacade:
             "currency": state.currency,
             "providerTotal": provider_total,
             "lines": [dict(line) for line in state.lines],
+        }
+
+    @staticmethod
+    def _empty_basket_public() -> dict[str, Any]:
+        return {
+            "revision": 0,
+            "storeHandle": "",
+            "storeLabel": "",
+            "itemCount": 0,
+            "currency": "",
+            "providerTotal": None,
+            "lines": [],
         }
 
     @staticmethod
@@ -656,60 +690,86 @@ class LiveOrderingFacade:
                 menu = await self._catalog.async_menu(store, delivery_address)
                 return self._selections.issue_menu(handle, menu, owner=owner, generation=generation)
             if operation == "live/basket":
-                return self._basket_public(self._state(owner, generation))
-            if operation == "live/basket_set":
-                expected = _revision(request["expectedRevision"])
-                existing = self._basket.get(owner)
-                if existing is not None and (existing.generation != generation or existing.revision != expected):
+                state = self._basket.get(owner)
+                if state is None:
+                    return self._empty_basket_public()
+                if state.generation != generation:
                     raise PublicContractError
-                store_handle = _handle(request["storeHandle"])
-                address_handle = _handle(request["addressHandle"])
-                delivery_address = self._account.resolve_address(
-                    address_handle, owner_key=owner, generation=generation
-                )
+                return self._basket_public(state)
+            if operation == "live/basket_set":
+                with _basket_sync_stage("request"):
+                    expected = _revision(request["expectedRevision"])
+                existing = self._basket.get(owner)
+                if existing is not None and (
+                    existing.generation != generation or existing.revision != expected
+                ):
+                    raise PublicContractError
+                with _basket_sync_stage("address"):
+                    store_handle = _handle(request["storeHandle"])
+                    address_handle = _handle(request["addressHandle"])
+                    delivery_address = self._account.resolve_address(
+                        address_handle, owner_key=owner, generation=generation
+                    )
                 address_fingerprint = delivery_address.canonical_fingerprint
-                store = self._selections.resolve_store(
-                    store_handle,
-                    owner=owner,
-                    generation=generation,
-                    address_handle=address_handle,
-                )
+                with _basket_sync_stage("store"):
+                    store = self._selections.resolve_store(
+                        store_handle,
+                        owner=owner,
+                        generation=generation,
+                        address_handle=address_handle,
+                    )
                 if existing is not None and (
                     store_digest(existing.store) != store_digest(store)
                     or existing.address_fingerprint != address_fingerprint
                 ):
                     raise PublicContractError
-                customer: CustomerIdentity = await self._account.async_customer()
-                choices = parse_selected_products(request["products"])
-                captured = self._selections.capture_selection(
-                    owner=owner,
-                    generation=generation,
-                    store_handle=store_handle,
-                    selections=choices,
-                )
-                lines = self._selections.safe_lines(
-                    captured, [item.product_handle for item in choices]
-                )
-                intent = self._selections.compile_intent(owner=owner, generation=generation, customer_id=customer.customer_id, store_handle=store_handle, selections=choices)
-                currency = self._selections.product_currency(
-                    choices[0].product_handle,
-                    owner=owner,
-                    generation=generation,
-                    store_handle=store_handle,
-                )
-                await self._async_require_store_open(store, delivery_address)
-                snapshot = await self._async_preparation_mutation(
-                    operation="live/basket_set",
-                    generation=generation,
-                    purpose_name=("basket_create" if existing is None else "basket_replace"),
-                    expected_category="expected_present",
-                    expected=intent,
-                    invoke=(
-                        (lambda: self._baskets.async_create(intent))
-                        if existing is None
-                        else (lambda: self._baskets.async_replace(existing.snapshot, intent.products))
-                    ),
-                )
+                with _basket_sync_stage("customer"):
+                    customer: CustomerIdentity = await self._account.async_customer()
+                with _basket_sync_stage("selection"):
+                    choices = parse_selected_products(request["products"])
+                    captured = self._selections.capture_selection(
+                        owner=owner,
+                        generation=generation,
+                        store_handle=store_handle,
+                        selections=choices,
+                    )
+                    lines = self._selections.safe_lines(
+                        captured, [item.product_handle for item in choices]
+                    )
+                    intent = self._selections.compile_intent(
+                        owner=owner,
+                        generation=generation,
+                        customer_id=customer.customer_id,
+                        store_handle=store_handle,
+                        selections=choices,
+                    )
+                    currency = self._selections.product_currency(
+                        choices[0].product_handle,
+                        owner=owner,
+                        generation=generation,
+                        store_handle=store_handle,
+                    )
+                with _basket_sync_stage("fresh_store"):
+                    await self._async_require_store_open(store, delivery_address)
+                with _basket_sync_stage("provider_mutation"):
+                    snapshot = await self._async_preparation_mutation(
+                        operation="live/basket_set",
+                        generation=generation,
+                        purpose_name=(
+                            "basket_create" if existing is None else "basket_replace"
+                        ),
+                        expected_category="expected_present",
+                        expected=intent,
+                        invoke=(
+                            (lambda: self._baskets.async_create(intent))
+                            if existing is None
+                            else (
+                                lambda: self._baskets.async_replace(
+                                    existing.snapshot, intent.products
+                                )
+                            )
+                        ),
+                    )
                 state = _BasketState(
                     generation=generation,
                     revision=expected + 1,

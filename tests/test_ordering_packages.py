@@ -783,6 +783,20 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
             preparation_authority=Authority(),
             preparation_attempt_source=lambda: "prep-" + "a" * 32,
         )
+        empty = await facade.async_dispatch(
+            owner="admin-owner",
+            operation="live/basket",
+            request={"generation": 1},
+        )
+        assert empty == {
+            "revision": 0,
+            "storeHandle": "",
+            "storeLabel": "",
+            "itemCount": 0,
+            "currency": "",
+            "providerTotal": None,
+            "lines": [],
+        }
         first = await facade.async_dispatch(
             owner="admin-owner",
             operation="live/basket_set",
