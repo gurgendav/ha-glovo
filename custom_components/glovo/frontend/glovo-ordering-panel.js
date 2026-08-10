@@ -6,6 +6,8 @@ class GlovoOrderingPanel extends HTMLElement {
     this._readEpochs = new Map();
     this._singleFlights = new Map();
     this._generation = undefined;
+    this._runtimeEpoch = undefined;
+    this._handlesIssuedAt = 0;
     this._rendered = false;
   }
 
@@ -273,9 +275,14 @@ class GlovoOrderingPanel extends HTMLElement {
 
   async _applyState(state, initial = false) {
     const nextGeneration = Number.isInteger(state?.generation) && state.generation > 0 ? state.generation : undefined;
-    if (nextGeneration && nextGeneration !== this._generation) {
+    const nextRuntimeEpoch = typeof state?.runtimeEpoch === "string" && state.runtimeEpoch ? state.runtimeEpoch : undefined;
+    const runtimeChanged = Boolean(this._runtimeEpoch && nextRuntimeEpoch && this._runtimeEpoch !== nextRuntimeEpoch);
+    if (nextRuntimeEpoch) this._runtimeEpoch = nextRuntimeEpoch;
+    if ((nextGeneration && nextGeneration !== this._generation) || runtimeChanged) {
       this._generation = nextGeneration;
-      this._resetEphemeralGeneration("Ordering generation changed; local handles and quote authority were discarded.");
+      this._resetEphemeralGeneration(runtimeChanged
+        ? "Home Assistant ordering runtime changed; stale draft handles were discarded. Reload the menu before syncing."
+        : "Ordering generation changed; local handles and quote authority were discarded.");
     }
     this._model.capability = {
       liveOrderingAvailable: state?.liveOrderingAvailable === true || state?.orderingAvailable === true,
@@ -312,6 +319,7 @@ class GlovoOrderingPanel extends HTMLElement {
 
   _resetEphemeralGeneration(reason) {
     this._readEpochs.clear();
+    this._handlesIssuedAt = 0;
     this._closeAllDialogs(false);
     this._invalidateAuthority("");
     this._model.overlay = null;
@@ -545,6 +553,7 @@ class GlovoOrderingPanel extends HTMLElement {
     try {
       const response = await this._request("live/addresses", this._withGeneration());
       if (!this._isLatestRead("addresses", token, capturedGeneration)) return;
+      this._handlesIssuedAt = Date.now();
       this._model.context.addresses = Array.isArray(response?.addresses) ? response.addresses : [];
       if (!this._model.context.addresses.some((item) => (item.key || item.addressHandle) === this._model.context.addressHandle)) {
         this._model.context.addressHandle = ""; this._model.context.addressLabel = ""; this._resetCatalog();
@@ -834,9 +843,38 @@ class GlovoOrderingPanel extends HTMLElement {
     else this._model.basket.status = "remote-only";
   }
 
+  async _basketAuthorityPreflight() {
+    let state;
+    try {
+      state = await this._request("state");
+    } catch (_error) {
+      this._setLifecycle("ready", "Could not verify current ordering authority. Nothing was submitted.", "error");
+      return false;
+    }
+    const nextGeneration = Number.isInteger(state?.generation) && state.generation > 0 ? state.generation : undefined;
+    const nextRuntimeEpoch = typeof state?.runtimeEpoch === "string" && state.runtimeEpoch ? state.runtimeEpoch : undefined;
+    const runtimeChanged = !nextRuntimeEpoch || nextRuntimeEpoch !== this._runtimeEpoch;
+    const generationChanged = !nextGeneration || nextGeneration !== this._generation;
+    const handlesExpired = !this._handlesIssuedAt || Date.now() - this._handlesIssuedAt >= 240000;
+    if (!runtimeChanged && !generationChanged && !handlesExpired) return true;
+    if (handlesExpired && !runtimeChanged && !generationChanged) {
+      this._resetEphemeralGeneration("");
+    }
+    await this._applyState(state, true);
+    this._setLifecycle(
+      "ready",
+      runtimeChanged || generationChanged
+        ? "Ordering runtime changed; stale draft handles were discarded. Reload the menu before syncing."
+        : "Address and menu authority expired; the stale draft was discarded. Reload the menu before syncing.",
+      "warning",
+    );
+    return false;
+  }
+
   async _syncBasket() {
     if (!this._storeAllowsOrdering()) { this._setLifecycle("ready", "The store is closed. Basket synchronization is unavailable and no provider request was sent.", "warning"); return; }
     return this._runSingleFlight("basket-sync", async () => {
+      if (!await this._basketAuthorityPreflight()) return;
       const capturedGeneration = this._generation;
       const products = this._serializeBasket(); const storeHandle = this._model.context.store?.storeHandle; const addressHandle = this._model.context.addressHandle;
       if (!products.length || !storeHandle || !addressHandle) { this._setLifecycle("ready", "Choose an address, store, and at least one item before syncing.", "warning"); return; }

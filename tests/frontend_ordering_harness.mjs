@@ -193,6 +193,71 @@ panel._renderBasketSurfaces = () => {};
 await panel._syncBasket();
 assert.equal(closedMutationRequests, 0);
 
+// Sync performs a GET-only runtime/age preflight. A runtime rebuild or handles older
+// than the safety margin discards the draft and must never reach basket_set.
+const authorityPanel = new Panel();
+authorityPanel._generation = 9;
+authorityPanel._runtimeEpoch = "runtime-a";
+authorityPanel._handlesIssuedAt = Date.now();
+authorityPanel._setLifecycle = () => {};
+authorityPanel._renderBasketSurfaces = () => {};
+authorityPanel._renderAll = () => {};
+authorityPanel._invalidateAuthority = () => {};
+authorityPanel._model.context.addressHandle = "address-current";
+authorityPanel._model.context.store = { storeHandle: "store-current", isOpen: true, orderingAvailable: true };
+authorityPanel._model.draft.lines = [{ productHandle: "product-current", quantity: 1, options: [] }];
+let authorityRequests = [];
+authorityPanel._request = async (operation) => {
+  authorityRequests.push(operation);
+  return { generation: 9, runtimeEpoch: "runtime-b", liveOrderingAvailable: true };
+};
+authorityPanel._applyState = async (state) => {
+  authorityPanel._runtimeEpoch = state.runtimeEpoch;
+  authorityPanel._resetEphemeralGeneration("");
+};
+await authorityPanel._syncBasket();
+assert.deepEqual(authorityRequests, ["state"]);
+assert.deepEqual(authorityPanel._model.draft.lines, []);
+
+authorityPanel._generation = 9;
+authorityPanel._runtimeEpoch = "runtime-b";
+authorityPanel._handlesIssuedAt = Date.now() - 241000;
+authorityPanel._model.context.addressHandle = "address-expired";
+authorityPanel._model.context.store = { storeHandle: "store-expired", isOpen: true, orderingAvailable: true };
+authorityPanel._model.draft.lines = [{ productHandle: "product-expired", quantity: 1, options: [] }];
+authorityRequests = [];
+authorityPanel._request = async (operation) => {
+  authorityRequests.push(operation);
+  return { generation: 9, runtimeEpoch: "runtime-b", liveOrderingAvailable: true };
+};
+authorityPanel._applyState = async () => {};
+await authorityPanel._syncBasket();
+assert.deepEqual(authorityRequests, ["state"]);
+assert.deepEqual(authorityPanel._model.draft.lines, []);
+
+const freshPanel = new Panel();
+freshPanel._generation = 9;
+freshPanel._runtimeEpoch = "runtime-fresh";
+freshPanel._handlesIssuedAt = Date.now();
+freshPanel._setLifecycle = () => {};
+freshPanel._renderBasketSurfaces = () => {};
+freshPanel._renderAll = () => {};
+freshPanel._invalidateAuthority = () => {};
+freshPanel._loadPayments = async () => {};
+freshPanel._model.context.addressHandle = "address-fresh";
+freshPanel._model.context.store = { storeHandle: "store-fresh", isOpen: true, orderingAvailable: true };
+freshPanel._model.draft.lines = [{ productHandle: "product-fresh", quantity: 1, options: [] }];
+const freshRequests = [];
+freshPanel._request = async (operation) => {
+  freshRequests.push(operation);
+  if (operation === "state") return { generation: 9, runtimeEpoch: "runtime-fresh", liveOrderingAvailable: true };
+  assert.equal(operation, "live/basket_set");
+  return { revision: 1, itemCount: 1, currency: "EUR", providerTotal: 100, lines: [] };
+};
+await freshPanel._syncBasket();
+assert.deepEqual(freshRequests, ["state", "live/basket_set"]);
+assert.equal(freshPanel._model.basket.status, "synced");
+
 panel._rendered = false;
 panel._invalidateAuthority = Panel.prototype._invalidateAuthority.bind(panel);
 panel._model.overlay = { type: "customizer" };

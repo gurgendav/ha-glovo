@@ -7,6 +7,7 @@ the authenticated user's id is the *only* owner input.
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
@@ -78,6 +79,9 @@ class OrderingSurface:
         self._manager = manager
         self._adapter = adapter
         self._registered = False
+        # Client-only invalidation marker. Unlike durable generation this changes
+        # whenever integration runtime memory (and its ephemeral handles) is rebuilt.
+        self._runtime_epoch = secrets.token_urlsafe(16)
 
     @property
     def registered(self) -> bool:
@@ -135,7 +139,9 @@ class OrderingSurface:
         self, user: OrderingUser, _message: Mapping[str, Any]
     ) -> dict[str, Any]:
         """Return the authoritative generation without requiring prior state."""
-        return await self._manager.async_state(user)
+        result = dict(await self._manager.async_state(user))
+        result["runtimeEpoch"] = self._runtime_epoch
+        return result
 
     def _operation_handler(self, operation: str) -> Handler:
         async def handler(user: OrderingUser, message: Mapping[str, Any]) -> dict[str, Any]:

@@ -1419,7 +1419,10 @@ def test_E_integrity_fault_is_privacy_safe_permanent_and_not_clearable(
     state = _call_ws(
         ha_runtime, hass, "glovo/ordering/state", {"type": "glovo/ordering/state"}
     )
-    assert state.results[0][1] == {
+    public_state = dict(state.results[0][1])
+    runtime_epoch = public_state.pop("runtimeEpoch")
+    assert isinstance(runtime_epoch, str) and len(runtime_epoch) >= 16
+    assert public_state == {
         "enabled": False,
         "generation": 4,
         "mockOnly": True,

@@ -126,6 +126,23 @@ def test_enabled_surface_registers_all_frozen_operations(
     assert set(adapter.handlers) == set(surface_module.PUBLIC_OPERATION_COMMANDS.values()) | set(surface_module.RECOVERY_COMMANDS)
 
 
+def test_state_exposes_stable_per_runtime_epoch(surface_module: ModuleType) -> None:
+    manager, adapter = Manager(enabled=True), Adapter()
+    first_surface = surface_module.OrderingSurface(manager, adapter)
+    run(first_surface.async_setup())
+    user = surface_module.OrderingUser("authenticated-admin", True)
+    first = run(adapter.handlers["glovo/ordering/state"](user, {}))
+    second = run(adapter.handlers["glovo/ordering/state"](user, {}))
+    assert first["runtimeEpoch"] == second["runtimeEpoch"]
+    assert isinstance(first["runtimeEpoch"], str) and len(first["runtimeEpoch"]) >= 16
+
+    second_adapter = Adapter()
+    second_surface = surface_module.OrderingSurface(manager, second_adapter)
+    run(second_surface.async_setup())
+    rebuilt = run(second_adapter.handlers["glovo/ordering/state"](user, {}))
+    assert rebuilt["runtimeEpoch"] != first["runtimeEpoch"]
+
+
 def test_owner_is_always_authenticated_user_and_never_a_spoofed_request_value(
     surface_module: ModuleType,
 ) -> None:
