@@ -25,6 +25,7 @@ from .ordering_remote_basket import (
 )
 
 LIVE_SELECTION_TTL_SECONDS: Final = 300.0
+PACKAGE_CAPTURE_TTL_SECONDS: Final = 7200.0
 MAX_HANDLE_LENGTH: Final = 64
 
 
@@ -40,6 +41,7 @@ class _Bound:
     owner: str = field(repr=False)
     generation: int = field(repr=False)
     expires_at: float = field(repr=False)
+    package_expires_at: float = field(repr=False)
     value: object = field(repr=False)
     parent: str | None = field(default=None, repr=False)
 
@@ -137,6 +139,7 @@ class LiveSelectionRegistry:
     """Issues private, expiring catalog handles and compiles exact remote intents."""
 
     selection_ttl_seconds = LIVE_SELECTION_TTL_SECONDS
+    package_capture_ttl_seconds = PACKAGE_CAPTURE_TTL_SECONDS
 
     def __init__(
         self,
@@ -164,20 +167,42 @@ class LiveSelectionRegistry:
 
     def _bind(self, *, owner: str, generation: int, value: object, parent: str | None = None) -> str:
         handle = self._new_handle()
-        self._values[handle] = _Bound(owner, generation, self._now() + self.selection_ttl_seconds, value, parent)
+        now = self._now()
+        self._values[handle] = _Bound(
+            owner,
+            generation,
+            now + self.selection_ttl_seconds,
+            now + self.package_capture_ttl_seconds,
+            value,
+            parent,
+        )
         return handle
 
-    def _resolve(self, handle: object, *, owner: object, generation: object, expected: type, parent: str | None = None) -> Any:
+    def _resolve(
+        self,
+        handle: object,
+        *,
+        owner: object,
+        generation: object,
+        expected: type,
+        parent: str | None = None,
+        package_capture: bool = False,
+    ) -> Any:
         handle = _handle(handle)
         owner = _owner(owner)
         generation = _generation(generation)
         self.purge()
         bound = self._values.get(handle)
+        deadline = (
+            bound.package_expires_at
+            if bound is not None and package_capture
+            else bound.expires_at if bound is not None else 0.0
+        )
         if (
             bound is None
             or bound.owner != owner
             or bound.generation != generation
-            or bound.expires_at <= self._now()
+            or deadline <= self._now()
             or not isinstance(bound.value, expected)
             or (parent is not None and bound.parent != parent)
         ):
@@ -265,11 +290,67 @@ class LiveSelectionRegistry:
         ...,
     ]:
         """Resolve a complete selection to private DTOs without provider effects."""
+        store, captured = self._capture_selection(
+            owner=owner,
+            generation=generation,
+            store_handle=store_handle,
+            selections=selections,
+            package_capture=False,
+        )
+        return captured
+
+    def capture_package_selection(
+        self,
+        *,
+        owner: str,
+        generation: int,
+        store_handle: str,
+        selections: Sequence[SelectedProduct],
+    ) -> tuple[
+        LiveStore,
+        tuple[
+            tuple[
+                CatalogProduct,
+                int,
+                tuple[tuple[Any, tuple[CatalogOption, ...]], ...],
+            ],
+            ...,
+        ],
+    ]:
+        """Capture reusable local intent without granting provider mutation authority."""
+        return self._capture_selection(
+            owner=owner,
+            generation=generation,
+            store_handle=store_handle,
+            selections=selections,
+            package_capture=True,
+        )
+
+    def _capture_selection(
+        self,
+        *,
+        owner: str,
+        generation: int,
+        store_handle: str,
+        selections: Sequence[SelectedProduct],
+        package_capture: bool,
+    ) -> tuple[
+        LiveStore,
+        tuple[
+            tuple[
+                CatalogProduct,
+                int,
+                tuple[tuple[Any, tuple[CatalogOption, ...]], ...],
+            ],
+            ...,
+        ],
+    ]:
         store = self._resolve(
             store_handle,
             owner=owner,
             generation=generation,
             expected=LiveStore,
+            package_capture=package_capture,
         )
         if store.is_open is not True:
             raise LiveSelectionError
@@ -291,6 +372,7 @@ class LiveSelectionRegistry:
                 generation=generation,
                 expected=CatalogProduct,
                 parent=store_handle,
+                package_capture=package_capture,
             )
             provided = dict(selected.option_groups)
             if len(provided) != len(selected.option_groups):
@@ -300,7 +382,16 @@ class LiveSelectionRegistry:
                 group_handles = [
                     key
                     for key, bound in self._values.items()
-                    if bound.value is group and bound.parent == selected.product_handle
+                    if bound.value is group
+                    and bound.parent == selected.product_handle
+                    and bound.owner == owner
+                    and bound.generation == generation
+                    and (
+                        bound.package_expires_at
+                        if package_capture
+                        else bound.expires_at
+                    )
+                    > self._now()
                 ]
                 if len(group_handles) != 1:
                     raise LiveSelectionError
@@ -316,6 +407,7 @@ class LiveSelectionRegistry:
                             generation=generation,
                             expected=CatalogOption,
                             parent=group_handle,
+                            package_capture=package_capture,
                         )
                         for handle in chosen_handles
                     )
@@ -337,7 +429,7 @@ class LiveSelectionRegistry:
             if provided:
                 raise LiveSelectionError
             captured.append((product, selected.quantity, tuple(groups)))
-        return tuple(captured)
+        return store, tuple(captured)
 
     @staticmethod
     def safe_lines(
@@ -548,7 +640,11 @@ class LiveSelectionRegistry:
 
     def purge(self) -> None:
         now = self._now()
-        for handle in [key for key, bound in self._values.items() if bound.expires_at <= now]:
+        for handle in [
+            key
+            for key, bound in self._values.items()
+            if bound.package_expires_at <= now
+        ]:
             self._values.pop(handle, None)
 
     def invalidate(self) -> None:

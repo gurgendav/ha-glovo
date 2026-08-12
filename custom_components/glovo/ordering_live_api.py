@@ -418,17 +418,8 @@ class LiveOrderingFacade:
                     ):
                         raise PublicContractError
                     store_handle = _handle(request["storeHandle"])
-                    parent_address_handle = self._selections.store_address_handle(
-                        store_handle, owner=owner, generation=generation
-                    )
-                    store = self._selections.resolve_store(
-                        store_handle,
-                        owner=owner,
-                        generation=generation,
-                        address_handle=parent_address_handle,
-                    )
                     choices = parse_selected_products(request["products"])
-                    captured = self._selections.capture_selection(
+                    store, captured = self._selections.capture_package_selection(
                         owner=owner,
                         generation=generation,
                         store_handle=store_handle,

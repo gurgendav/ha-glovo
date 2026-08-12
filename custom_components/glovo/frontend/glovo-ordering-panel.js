@@ -1114,7 +1114,7 @@ class GlovoOrderingPanel extends HTMLElement {
         await this._request("library/package_save", { ...this._withGeneration(), expectedStoreRevision: this._model.library.storeRevision, packageRef: editor.packageRef, expectedRevision: editor.expectedRevision, name: editor.name.trim(), aliases, storeHandle: this._model.context.store.storeHandle, products: this._serializeBasket() });
         if (capturedGeneration !== this._generation) return;
         this._model.library.packageEditor = null; this._closeDialog("package-dialog"); this._setLifecycle("ready", "Package saved. This changed only the local versioned library; provider basket was not mutated."); await this._loadLibrary(); this._renderAll();
-      } catch (_error) { if (capturedGeneration !== this._generation) return; this._setLifecycle("ready", "Package was not saved. Refresh the library before retrying manually.", "error"); }
+      } catch (_error) { if (capturedGeneration !== this._generation) return; this._setLifecycle("ready", "Package was not saved. If this draft has been open for a long time, reload the menu before retrying.", "error"); }
     });
   }
 

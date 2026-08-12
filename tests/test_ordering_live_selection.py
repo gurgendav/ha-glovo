@@ -81,9 +81,48 @@ def test_handles_are_owner_generation_ttl_bound_and_provider_ids_never_projected
         registry.resolve_store(public_store["storeHandle"], owner="owner-b", generation=1)
     with pytest.raises(live["ordering_live_selection"].LiveSelectionError):
         registry.resolve_store(public_store["storeHandle"], owner="owner-a", generation=2)
+    choices = live["ordering_live_selection"].parse_selected_products(
+        [
+            {
+                "productHandle": public_menu["products"][0]["productHandle"],
+                "quantity": 2,
+                "options": [],
+            }
+        ]
+    )
     clock.value += registry.selection_ttl_seconds
     with pytest.raises(live["ordering_live_selection"].LiveSelectionError):
         registry.resolve_store(public_store["storeHandle"], owner="owner-a", generation=1)
+    with pytest.raises(live["ordering_live_selection"].LiveSelectionError):
+        registry.compile_intent(
+            owner="owner-a",
+            generation=1,
+            customer_id=7,
+            store_handle=public_store["storeHandle"],
+            selections=choices,
+        )
+
+    # A local package save is not provider mutation authority. The same exact
+    # owner/generation-bound catalog objects remain capturable for a longer,
+    # bounded draft window even after live mutation handles expire.
+    captured_store, captured = registry.capture_package_selection(
+        owner="owner-a",
+        generation=1,
+        store_handle=public_store["storeHandle"],
+        selections=choices,
+    )
+    assert captured_store is store
+    assert captured[0][0] is menu.products[0]
+    assert captured[0][1] == 2
+
+    clock.value += registry.package_capture_ttl_seconds
+    with pytest.raises(live["ordering_live_selection"].LiveSelectionError):
+        registry.capture_package_selection(
+            owner="owner-a",
+            generation=1,
+            store_handle=public_store["storeHandle"],
+            selections=choices,
+        )
 
 
 def test_closed_store_menu_is_browseable_but_never_compiles_authority(

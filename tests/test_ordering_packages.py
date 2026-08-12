@@ -580,6 +580,111 @@ def test_cancelled_initial_load_never_publishes_empty_writable_state(
     asyncio.run(scenario())
 
 
+def test_package_save_accepts_owner_bound_draft_after_live_mutation_lease_expires(
+    modules: dict[str, ModuleType],
+) -> None:
+    async def scenario() -> None:
+        api = modules["ordering_live_api"]
+        packages = modules["ordering_packages"]
+        selections_module = modules["ordering_live_selection"]
+        objects = domain_objects(modules["ordering_contracts"])
+
+        class Clock:
+            value = 1.0
+
+            def __call__(self) -> float:
+                return self.value
+
+        clock = Clock()
+        selections = selections_module.LiveSelectionRegistry(
+            clock=clock,
+            handle_source=iter(
+                ("store-local", "product-local", "group-local", "option-local")
+            ).__next__,
+        )
+        store_public = selections.issue_store(
+            objects["store"], owner="admin-owner", generation=1
+        )
+        menu_public = selections.issue_menu(
+            store_public["storeHandle"],
+            modules["ordering_contracts"].CatalogMenu(
+                "LIST_VIEW_LAYOUT", objects["store"].address_id, (objects["product"],)
+            ),
+            owner="admin-owner",
+            generation=1,
+        )
+        product_handle = menu_public["products"][0]["productHandle"]
+
+        library = packages.PackageLibrary(
+            packages.MemoryPackageLibraryStorage(),
+            ref_source=lambda _prefix: "pkg-" + "c" * 32,
+        )
+        await library.async_load()
+
+        class Account:
+            async def async_customer(self) -> Any:
+                return objects["customer"]
+
+        class Forbidden:
+            def __getattr__(self, name: str) -> Any:
+                raise AssertionError(f"local package save reached forbidden client: {name}")
+
+        facade = api.LiveOrderingFacade(
+            account=Account(),
+            catalog=Forbidden(),
+            selections=selections,
+            baskets=Forbidden(),
+            quotes=Forbidden(),
+            confirmations=Forbidden(),
+            preparation_authority=Forbidden(),
+            package_library=library,
+        )
+
+        clock.value += selections.selection_ttl_seconds
+        with pytest.raises(selections_module.LiveSelectionError):
+            selections.compile_intent(
+                owner="admin-owner",
+                generation=1,
+                customer_id=objects["customer"].customer_id,
+                store_handle=store_public["storeHandle"],
+                selections=selections_module.parse_selected_products(
+                    [
+                        {
+                            "productHandle": product_handle,
+                            "quantity": 2,
+                            "options": [],
+                        }
+                    ]
+                ),
+            )
+
+        saved = await facade.async_dispatch(
+            owner="admin-owner",
+            operation="library/package_save",
+            request={
+                "generation": 1,
+                "expectedStoreRevision": 0,
+                "packageRef": "",
+                "expectedRevision": 0,
+                "name": "Late local draft",
+                "aliases": [],
+                "storeHandle": store_public["storeHandle"],
+                "products": [
+                    {
+                        "productHandle": product_handle,
+                        "quantity": 2,
+                        "options": [],
+                    }
+                ],
+            },
+        )
+        assert saved["package"]["name"] == "Late local draft"
+        assert saved["package"]["itemCount"] == 2
+        assert "address" not in json.dumps(saved).casefold()
+
+    asyncio.run(scenario())
+
+
 def test_package_prepare_is_get_only_and_rematerializes_fresh_handles(
     modules: dict[str, ModuleType],
 ) -> None:
