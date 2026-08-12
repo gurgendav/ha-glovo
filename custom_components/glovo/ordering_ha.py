@@ -269,11 +269,20 @@ class HomeAssistantOrderingSurfaceAdapter:
             except (OrderingError, KeyError, TypeError, ValueError) as err:
                 code, public_message = _error_code(err)
                 if isinstance(err, OrderingError):
-                    _LOGGER.debug(
-                        "Rejected Glovo ordering command %s: %s",
-                        name,
-                        type(err).__name__,
-                    )
+                    stage = getattr(err, "stage", None)
+                    if isinstance(stage, str):
+                        _LOGGER.warning(
+                            "Rejected Glovo ordering command %s: %s stage=%s",
+                            name,
+                            type(err).__name__,
+                            stage,
+                        )
+                    else:
+                        _LOGGER.debug(
+                            "Rejected Glovo ordering command %s: %s",
+                            name,
+                            type(err).__name__,
+                        )
                 else:
                     _LOGGER.warning(
                         "Glovo ordering command %s failed contract validation: %s",
@@ -283,6 +292,26 @@ class HomeAssistantOrderingSurfaceAdapter:
                 connection.send_error(message["id"], code, public_message)
                 return
             except Exception as err:  # noqa: BLE001 - public error boundary must redact
+                stage = getattr(err, "stage", None)
+                package_messages = {
+                    "account": "Glovo account details are unavailable; refresh and retry",
+                    "request": "Package details are incomplete or invalid",
+                    "selection": "Draft items expired or changed; reload the menu and rebuild the draft",
+                    "validation": "Package name or aliases are invalid or already used",
+                    "storage": "Package storage is unavailable; retry after checking Home Assistant storage",
+                }
+                if isinstance(stage, str) and stage in package_messages:
+                    _LOGGER.warning(
+                        "Glovo ordering command %s rejected at package_save_stage=%s",
+                        name,
+                        stage,
+                    )
+                    connection.send_error(
+                        message["id"],
+                        f"package_save_{stage}",
+                        package_messages[stage],
+                    )
+                    return
                 if isinstance(err, ApiSessionError):
                     _LOGGER.warning(
                         "Glovo ordering command %s failed provider read: category=%s family=%s status=%s",

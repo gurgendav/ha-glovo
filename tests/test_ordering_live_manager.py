@@ -98,6 +98,49 @@ def test_live_flow_defaults_off_and_never_claims_a_production_final_adapter(
     run(scenario())
 
 
+def test_package_save_stage_survives_privacy_redaction(
+    modules: dict[str, ModuleType],
+) -> None:
+    async def scenario() -> None:
+        options = {"allow_ordering": True, "ordering_acknowledged": True}
+        prep = modules["ordering_prep_authority"]
+        authority = prep.PreparationMutationAuthority(
+            prep.MemoryPreparationStorage(), clock=Clock()
+        )
+
+        class FailingFacade:
+            async def async_dispatch(self, **_kwargs: Any) -> dict[str, Any]:
+                raise modules["ordering_live_api"].PackageSaveStageError("selection")
+
+        flow = modules["ordering_live_flow"].OrderingLiveFlow(
+            facade=FailingFacade(),
+            preparation_authority=authority,
+            live_options=lambda: options,
+        )
+        await flow.async_initialize()
+        with pytest.raises(modules["ordering_live_flow"].LiveFlowUnavailable) as err:
+            await flow.async_live_dispatch(
+                "admin-one",
+                "library/package_save",
+                {
+                    "generation": 1,
+                    "expectedStoreRevision": 0,
+                    "packageRef": "",
+                    "expectedRevision": 0,
+                    "name": "Safe display name",
+                    "aliases": [],
+                    "storeHandle": "store-local",
+                    "products": [
+                        {"productHandle": "product-local", "quantity": 1, "options": []}
+                    ],
+                },
+            )
+        assert err.value.stage == "selection"
+        assert str(err.value) == "package save is unavailable"
+
+    run(scenario())
+
+
 def test_authority_requires_durable_prepared_and_dispatching_before_single_call(
     modules: dict[str, ModuleType],
 ) -> None:

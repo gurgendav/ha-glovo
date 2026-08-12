@@ -43,7 +43,7 @@ _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _ADDRESS_REF_RE = re.compile(r"^addr-[0-9a-f]{32}$")
 _PACKAGE_REF_RE = re.compile(r"^pkg-[0-9a-f]{32}$")
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,99}$")
-_ALIAS_KEY_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$")
+
 STALE_REASONS: Final = frozenset(
     {
         "account_changed",
@@ -107,7 +107,10 @@ def normalize_package_name(value: object) -> str:
 def normalize_lookup_key(value: object) -> str:
     value = _normalized_text(value, maximum=48).casefold()
     value = re.sub(r"[\s_-]+", "-", value)
-    if _ALIAS_KEY_RE.fullmatch(value) is None:
+    # Package names are display text, not transport slugs. Keep normalized
+    # Unicode and punctuation while requiring at least one letter or number so
+    # ordinary localized names remain usable and punctuation-only aliases fail.
+    if not any(char.isalnum() for char in value):
         raise PackageLibraryError
     return value
 

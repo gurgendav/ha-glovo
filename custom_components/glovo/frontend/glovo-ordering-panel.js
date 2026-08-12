@@ -1114,7 +1114,17 @@ class GlovoOrderingPanel extends HTMLElement {
         await this._request("library/package_save", { ...this._withGeneration(), expectedStoreRevision: this._model.library.storeRevision, packageRef: editor.packageRef, expectedRevision: editor.expectedRevision, name: editor.name.trim(), aliases, storeHandle: this._model.context.store.storeHandle, products: this._serializeBasket() });
         if (capturedGeneration !== this._generation) return;
         this._model.library.packageEditor = null; this._closeDialog("package-dialog"); this._setLifecycle("ready", "Package saved. This changed only the local versioned library; provider basket was not mutated."); await this._loadLibrary(); this._renderAll();
-      } catch (_error) { if (capturedGeneration !== this._generation) return; this._setLifecycle("ready", "Package was not saved. If this draft has been open for a long time, reload the menu before retrying.", "error"); }
+      } catch (error) {
+        if (capturedGeneration !== this._generation) return;
+        const messages = {
+          package_save_account: "Glovo account details are unavailable. Refresh the panel and retry.",
+          package_save_request: "Package details are incomplete or invalid.",
+          package_save_selection: "Draft items expired or changed. Reload the menu and rebuild the draft.",
+          package_save_validation: "Use a unique package name and unique optional aliases, each up to 48 characters.",
+          package_save_storage: "Package storage is unavailable. Check Home Assistant storage and retry.",
+        };
+        this._setLifecycle("ready", messages[error?.code] || error?.message || "Package was not saved.", "error");
+      }
     });
   }
 

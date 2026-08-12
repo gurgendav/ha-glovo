@@ -10,7 +10,7 @@ import asyncio
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
-from .ordering_live_api import PublicContractError, validate_public_request
+from .ordering_live_api import PackageSaveStageError, PublicContractError, validate_public_request
 from .ordering_prep_authority import PreparationMutationAuthority
 
 
@@ -22,6 +22,10 @@ class FinalDispatchAdapter(Protocol):
 
 class LiveFlowUnavailable(RuntimeError):
     """Live preparation or checkout is unavailable without exposing internals."""
+
+    def __init__(self, message: str, *, stage: str | None = None) -> None:
+        self.stage = stage
+        super().__init__(message)
 
 
 class OrderingLiveFlow:
@@ -157,6 +161,10 @@ class OrderingLiveFlow:
                 result = await self._facade.async_dispatch(
                     owner=owner_key, operation=operation, request=copied
                 )
+            except PackageSaveStageError as err:
+                raise LiveFlowUnavailable(
+                    "package save is unavailable", stage=err.stage
+                ) from None
             except PublicContractError:
                 raise LiveFlowUnavailable("live ordering is unavailable") from None
             if not isinstance(result, dict):

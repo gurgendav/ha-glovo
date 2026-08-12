@@ -307,6 +307,24 @@ def test_exact_recipe_reconciliation_and_closed_drift(modules: dict[str, ModuleT
     assert err.value.reason == "selection_constraints_changed"
 
 
+def test_package_names_are_unicode_display_text_with_stable_lookup_keys(
+    modules: dict[str, ModuleType],
+) -> None:
+    packages = modules["ordering_packages"]
+    assert packages.normalize_package_name("  Ընտանեկան ընթրիք!  ") == "Ընտանեկան ընթրիք!"
+    assert packages.normalize_lookup_key("Ընտանեկան ընթրիք!") == "ընտանեկան-ընթրիք!"
+    assert packages.normalize_lookup_key("KFC_lunch") == packages.normalize_lookup_key(
+        "KFC-lunch"
+    )
+    assert packages.normalize_lookup_key("KFC lunch") == packages.normalize_lookup_key(
+        "KFC-lunch"
+    )
+    with pytest.raises(packages.PackageLibraryError):
+        packages.normalize_package_name("x" * 49)
+    with pytest.raises(packages.PackageLibraryError):
+        packages.normalize_package_name("bad\u0000name")
+
+
 def test_strict_parser_and_storage_failure_is_library_local(modules: dict[str, ModuleType]) -> None:
     async def scenario() -> None:
         packages = modules["ordering_packages"]

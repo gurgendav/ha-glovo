@@ -31,6 +31,7 @@ from .ordering_live_selection import LiveSelectionError, LiveSelectionRegistry, 
 from .ordering_packages import (
     PackageLibrary,
     PackageLibraryError,
+    PackageLibraryUnavailable,
     PackageStale,
     account_digest,
     recipe_items_from_capture,
@@ -103,6 +104,18 @@ class PublicContractError(ValueError):
 
     def __init__(self) -> None:
         super().__init__("live ordering request is unavailable or invalid")
+
+
+class PackageSaveStageError(PublicContractError):
+    """Privacy-safe package-save failure with an allowlisted diagnostic stage."""
+
+    _STAGES = frozenset({"account", "request", "selection", "validation", "storage"})
+
+    def __init__(self, stage: str) -> None:
+        if stage not in self._STAGES:
+            stage = "request"
+        self.stage = stage
+        super().__init__()
 
 
 @dataclass(slots=True, repr=False)
@@ -406,8 +419,11 @@ class LiveOrderingFacade:
                 if operation == "library/list":
                     return await library.async_list()
                 if operation == "library/package_save":
-                    customer = await self._account.async_customer()
-                    current_account_digest = account_digest(customer)
+                    try:
+                        customer = await self._account.async_customer()
+                        current_account_digest = account_digest(customer)
+                    except Exception as err:
+                        raise PackageSaveStageError("account") from err
                     package_ref = request["packageRef"]
                     aliases = request["aliases"]
                     if (
@@ -416,25 +432,34 @@ class LiveOrderingFacade:
                         or not isinstance(request["name"], str)
                         or not isinstance(aliases, list)
                     ):
-                        raise PublicContractError
-                    store_handle = _handle(request["storeHandle"])
-                    choices = parse_selected_products(request["products"])
-                    store, captured = self._selections.capture_package_selection(
-                        owner=owner,
-                        generation=generation,
-                        store_handle=store_handle,
-                        selections=choices,
-                    )
-                    record = await library.async_save_package(
-                        expected_store_revision=_revision(request["expectedStoreRevision"]),
-                        package_ref=package_ref,
-                        expected_revision=_revision(request["expectedRevision"]),
-                        name=request["name"],
-                        aliases=aliases,
-                        store=store,
-                        items=recipe_items_from_capture(captured),
-                        current_account_digest=current_account_digest,
-                    )
+                        raise PackageSaveStageError("request")
+                    try:
+                        store_handle = _handle(request["storeHandle"])
+                        choices = parse_selected_products(request["products"])
+                        store, captured = self._selections.capture_package_selection(
+                            owner=owner,
+                            generation=generation,
+                            store_handle=store_handle,
+                            selections=choices,
+                        )
+                        items = recipe_items_from_capture(captured)
+                    except Exception as err:
+                        raise PackageSaveStageError("selection") from err
+                    try:
+                        record = await library.async_save_package(
+                            expected_store_revision=_revision(request["expectedStoreRevision"]),
+                            package_ref=package_ref,
+                            expected_revision=_revision(request["expectedRevision"]),
+                            name=request["name"],
+                            aliases=aliases,
+                            store=store,
+                            items=items,
+                            current_account_digest=current_account_digest,
+                        )
+                    except PackageLibraryUnavailable as err:
+                        raise PackageSaveStageError("storage") from err
+                    except PackageLibraryError as err:
+                        raise PackageSaveStageError("validation") from err
                     return {
                         "storeRevision": library.revision,
                         "package": record.public_dict(),
@@ -790,6 +815,8 @@ class LiveOrderingFacade:
             if operation == "live/checkout_status":
                 # There is no order identifier or provider polling endpoint in this release.
                 return {"status": "unsupported"}
+        except PackageSaveStageError:
+            raise
         except ApiSessionError:
             # This exception contains only allowlisted category/family/status fields.
             # Preserve it so the HA boundary can log an operationally useful,
