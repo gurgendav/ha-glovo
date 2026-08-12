@@ -479,8 +479,20 @@ def test_current_menu_catalog_bound_is_independent_from_basket_bound(
 def test_me_customer_id_is_response_derived_positive_strict_int(live: dict[str, ModuleType]) -> None:
     parser = live["ordering_contracts"].parse_customer
     assert parser({"id": 42}).customer_id == 42
+    assert parser(
+        {
+            "id": 42,
+            "type": "Customer",
+            "urn": "glv:customer:opaque",
+            "name": "Private",
+            "email": "private@example.invalid",
+            "phoneNumber": {"number": "private", "countryCode": "AM"},
+            "virtualBalance": {"balance": 0.0},
+            "defaulter": False,
+        }
+    ).customer_id == 42
     assert "42" not in repr(parser({"id": 42}))
-    for bad in ({}, {"id": True}, {"id": 0}, {"id": -1}, {"id": "42"}, {"id": 1, "email": "private"}):
+    for bad in ({}, {"id": True}, {"id": 0}, {"id": -1}, {"id": "42"}):
         with pytest.raises(live["ordering_contracts"].ContractError):
             parser(bad)
 

@@ -474,8 +474,13 @@ def _envelope(payload: Any, leaf: str) -> Any:
 
 def parse_customer(payload: Any) -> CustomerIdentity:
     _bounded_payload(payload, maximum=16_000)
-    root = _object(payload, required={"id"}, allowed={"id"})
-    return CustomerIdentity(_int(root["id"], minimum=1))
+    if not isinstance(payload, dict) or "id" not in payload:
+        _fail()
+    # /v3/me is a full customer profile whose unrelated fields evolve over
+    # time.  Only the response-derived positive integer ID is authoritative
+    # for ordering; the bounded profile remainder is deliberately ignored and
+    # never projected, persisted, or logged.
+    return CustomerIdentity(_int(payload["id"], minimum=1))
 
 
 def parse_saved_addresses(payload: Any) -> tuple[AddressSnapshot, ...]:
