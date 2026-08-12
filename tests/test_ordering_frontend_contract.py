@@ -33,8 +33,8 @@ def test_frontend_uses_frozen_live_and_library_operations_with_generation_rules(
         "state", "live/addresses", "live/stores", "live/store_menu", "live/payment_methods",
         "live/basket", "live/basket_set", "live/basket_clear", "live/create_quote",
         "live/prepare_confirmation", "live/execute_checkout", "live/checkout_status",
-        "library/list", "library/address_save", "library/address_delete", "library/package_save",
-        "library/package_delete", "library/package_prepare",
+        "library/list", "library/package_save", "library/package_delete",
+        "library/package_prepare",
     )
     for operation in operations:
         assert f'"{operation}"' in source
@@ -43,7 +43,7 @@ def test_frontend_uses_frozen_live_and_library_operations_with_generation_rules(
     assert "live/basket_reconcile" not in source
     for field in (
         "generation", "expectedRevision", "expectedStoreRevision", "addressHandle", "paymentHandle",
-        "storeHandle", "storeSlug", "addressRef", "addressRevision", "packageRef", "aliases", "products",
+        "storeHandle", "storeSlug", "packageRef", "packageKey", "aliases", "products",
     ):
         assert field in source
     assert "challenge, acknowledged: true" in source
@@ -115,16 +115,29 @@ def test_frontend_responsive_theme_and_input_mode_contract() -> None:
         assert token in source
 
 
-def test_frontend_package_and_address_alias_crud_is_backend_backed() -> None:
+def test_frontend_package_library_is_address_independent_and_package_first() -> None:
     source = _source()
     for token in (
-        "Address aliases", "Create address alias", "Update alias", "Delete alias",
-        "Package library", "Create package", "Update package", "Duplicate", "Delete package", "Load into draft",
-        "storeRevision", "addressRevision", "packageKey", "addressKey", "selectionComplete",
+        "Package library", "Save as package", "Update package", "Duplicate", "Delete package",
+        "Order this package", "Delivery address for this order", "fullAddress",
+        "storeRevision", "packageKey", "addressHandle", "selectionComplete",
     ):
         assert token in source
+    for forbidden in (
+        "Address aliases", "Create address alias", "Update alias", "Delete alias",
+        "addressRef", "addressRevision", "addressKey", "Pinned versioned address",
+    ):
+        assert forbidden not in source
     for persistence in ("localStorage", "sessionStorage", "indexedDB", "document.cookie"):
         assert persistence not in source
+
+
+def test_mobile_package_controls_are_single_column_full_width_and_touch_sized() -> None:
+    source = _source()
+    assert "@media (max-width: 719px)" in source
+    assert ".field-row, .search-row, .card-actions, .library-actions, .dialog-foot { display: grid; grid-template-columns: 1fr; inline-size: 100%; }" in source
+    assert ".package-address { inline-size: 100%;" in source
+    assert "min-block-size: 44px" in source
 
 
 def test_frontend_quotes_are_authoritative_and_paid_cta_is_capability_gated() -> None:

@@ -258,6 +258,85 @@ await freshPanel._syncBasket();
 assert.deepEqual(freshRequests, ["state", "live/basket_set"]);
 assert.equal(freshPanel._model.basket.status, "synced");
 
+// Saving a multi-line local draft creates an address-independent package and does
+// not mutate the provider basket.
+const packagePanel = new Panel();
+packagePanel._generation = 11;
+packagePanel._setLifecycle = () => {};
+packagePanel._closeDialog = () => {};
+packagePanel._renderAll = () => {};
+packagePanel._loadLibrary = async () => {};
+packagePanel._model.library.storeRevision = 4;
+packagePanel._model.library.packageEditor = { packageRef: "", expectedRevision: 0, name: "Team lunch", aliases: ["usual"] };
+packagePanel._model.context.store = { storeHandle: "store-live", isOpen: true, orderingAvailable: true };
+packagePanel._model.draft.lines = [
+  { productHandle: "product-a", label: "Meal A", quantity: 2, options: [] },
+  { productHandle: "product-b", label: "Meal B", quantity: 1, options: [{ groupHandle: "group-b", optionHandles: ["option-b"], optionLabels: ["Large"] }] },
+];
+const packageRequests = [];
+packagePanel._request = async (operation, request) => { packageRequests.push({ operation, request }); return { storeRevision: 5 }; };
+await packagePanel._savePackage();
+assert.equal(packageRequests.length, 1);
+assert.equal(packageRequests[0].operation, "library/package_save");
+assert.deepEqual(packageRequests[0].request.products, [
+  { productHandle: "product-a", quantity: 2, options: [] },
+  { productHandle: "product-b", quantity: 1, options: [{ groupHandle: "group-b", optionHandles: ["option-b"] }] },
+]);
+assert.equal("addressRef" in packageRequests[0].request, false);
+assert.equal("addressRevision" in packageRequests[0].request, false);
+assert.equal("addressHandle" in packageRequests[0].request, false);
+
+// Package preparation requires an explicit fresh current address. Missing selection
+// sends nothing; a valid selection sends only packageKey + addressHandle authority.
+const preparePanel = new Panel();
+preparePanel._generation = 12;
+preparePanel._setLifecycle = () => {};
+preparePanel._renderAll = () => {};
+preparePanel._invalidateAuthority = () => {};
+preparePanel._model.basket = { status: "empty", revision: 0, itemCount: 0, currency: "", providerTotal: null, linesAvailable: true };
+const prepareRequests = [];
+preparePanel._request = async (operation, request) => {
+  prepareRequests.push({ operation, request });
+  return {
+    status: "ready",
+    selectionComplete: true,
+    address: { key: "address-fresh", fullAddress: "123 Synthetic Avenue" },
+    store: { storeHandle: "store-fresh", label: "Synthetic Store", isOpen: true, orderingAvailable: true },
+    menu: { products: [{ productHandle: "product-fresh", label: "Fresh meal", priceMinor: 900, currency: "EUR", optionGroups: [] }] },
+    selection: { products: [{ productHandle: "product-fresh", quantity: 2, options: [] }] },
+  };
+};
+await preparePanel._preparePackage("pkg-synthetic", "");
+assert.deepEqual(prepareRequests, []);
+await preparePanel._preparePackage("pkg-synthetic", "address-fresh");
+assert.deepEqual(prepareRequests.map((entry) => entry.operation), ["library/package_prepare"]);
+assert.deepEqual(prepareRequests[0].request, { generation: 12, packageKey: "pkg-synthetic", addressHandle: "address-fresh" });
+assert.equal(preparePanel._model.context.addressLabel, "123 Synthetic Avenue");
+assert.equal(preparePanel._model.library.activeView, "menu");
+assert.deepEqual(preparePanel._model.draft.lines.map((line) => [line.label, line.quantity]), [["Fresh meal", 2]]);
+assert.equal(prepareRequests.some((entry) => entry.operation === "live/basket_set"), false);
+
+// Package-card address options intentionally show the admin-only full address.
+assert.equal(preparePanel._addressDisplay({ fullAddress: "123 Synthetic Avenue", label: "Masked" }), "123 Synthetic Avenue");
+
+// Bootstrap may render packages before the parallel address read completes. Once
+// addresses arrive, the active package view must rerender so its selectors gain
+// the current full-address options instead of remaining permanently empty.
+const addressRacePanel = new Panel();
+addressRacePanel._generation = 13;
+addressRacePanel._model.library.activeView = "packages";
+const addressRaceEvents = [];
+addressRacePanel._renderContext = () => { addressRaceEvents.push(["context", addressRacePanel._model.context.addresses.length]); };
+addressRacePanel._renderPackages = () => { addressRaceEvents.push(["packages", addressRacePanel._model.context.addresses.length]); };
+addressRacePanel._resetCatalog = () => {};
+addressRacePanel._request = async (operation) => {
+  assert.equal(operation, "live/addresses");
+  return { addresses: [{ key: "address-race", fullAddress: "456 Synthetic Boulevard" }] };
+};
+await addressRacePanel._loadAddresses();
+assert.deepEqual(addressRaceEvents, [["context", 1], ["packages", 1]]);
+assert.equal(addressRacePanel._addressDisplay(addressRacePanel._model.context.addresses[0]), "456 Synthetic Boulevard");
+
 panel._rendered = false;
 panel._invalidateAuthority = Panel.prototype._invalidateAuthority.bind(panel);
 panel._model.overlay = { type: "customizer" };

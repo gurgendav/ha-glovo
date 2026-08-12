@@ -807,7 +807,9 @@ def test_documentation_calls_feature_default_off_admin_only_preparation() -> Non
     for phrase in (
         "default-off",
         "administrator-only ordering workspace",
-        "durable packages and address aliases",
+        "durable packages",
+        "never own or pin a",
+        "delivery address",
         "zero basket writes",
         "registers no home assistant ordering service",
         "paid checkout is unavailable",

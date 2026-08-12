@@ -1,16 +1,15 @@
-"""Strict durable address aliases and GET-only package recipes.
+"""Strict durable address-independent package recipes.
 
 The repository persists only domain-separated provider identity digests, one
 strict store slug needed for exact lookup, and display-safe labels.  Durable
-records never contain live handles, full addresses, coordinates, generations,
-prices, basket/quote/payment data, or mutation authority.
+Schema-v2 records never contain address bindings, live handles, full addresses,
+coordinates, generations, prices, basket/quote/payment data, or mutation authority.
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
-import math
 import re
 import secrets
 import unicodedata
@@ -19,7 +18,6 @@ from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
 from .ordering_contracts import (
-    AddressSnapshot,
     CatalogOption,
     CatalogOptionGroup,
     CatalogProduct,
@@ -27,7 +25,9 @@ from .ordering_contracts import (
     LiveStore,
 )
 
+# Keep the Home Assistant Store envelope at v1 so existing data remains loadable.
 STORE_VERSION: Final = 1
+SCHEMA_VERSION: Final = 2
 STORE_KEY_PREFIX: Final = "glovo.ordering_packages_v1"
 MAX_SERIALIZED_BYTES: Final = 512 * 1024
 MAX_DEPTH: Final = 12
@@ -47,7 +47,6 @@ _ALIAS_KEY_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$")
 STALE_REASONS: Final = frozenset(
     {
         "account_changed",
-        "address_missing_or_changed",
         "store_missing_or_changed",
         "product_missing_or_changed",
         "option_missing_or_changed",
@@ -146,30 +145,6 @@ def account_digest(customer: CustomerIdentity) -> str:
     return _domain_digest("account", (customer.customer_id,))
 
 
-def address_digest(address: AddressSnapshot) -> str:
-    if not isinstance(address, AddressSnapshot):
-        raise PackageLibraryError
-    if not math.isfinite(address.latitude) or not math.isfinite(address.longitude):
-        raise PackageLibraryError
-    fields = sorted((field.field_type, field.value) for field in address.fields)
-    return _domain_digest(
-        "address",
-        (
-            address.remote_id,
-            address.address_line,
-            address.details,
-            address.country_code,
-            address.city_code,
-            address.city_name,
-            address.kind,
-            address.tag,
-            address.latitude,
-            address.longitude,
-            fields,
-        ),
-    )
-
-
 def store_digest(store: LiveStore) -> str:
     if not isinstance(store, LiveStore):
         raise PackageLibraryError
@@ -214,17 +189,6 @@ class AddressAlias:
         object.__setattr__(self, "revision", _strict_int(self.revision, minimum=1))
         object.__setattr__(self, "name", normalize_address_name(self.name))
         object.__setattr__(self, "match_digest", _digest(self.match_digest))
-
-    def public_dict(self) -> dict[str, Any]:
-        return {"addressRef": self.alias_ref, "revision": self.revision, "name": self.name}
-
-    def storage_dict(self) -> dict[str, Any]:
-        return {
-            "alias_ref": self.alias_ref,
-            "revision": self.revision,
-            "name": self.name,
-            "match_digest": self.match_digest,
-        }
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -300,8 +264,6 @@ class PackageRecord:
     revision: int
     name: str
     aliases: tuple[str, ...]
-    address_ref: str
-    address_revision: int
     store_slug: str
     store_digest: str
     store_label: str
@@ -314,9 +276,6 @@ class PackageRecord:
         name = normalize_package_name(self.name)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "aliases", normalize_aliases(self.aliases, package_name=name))
-        if not isinstance(self.address_ref, str) or _ADDRESS_REF_RE.fullmatch(self.address_ref) is None:
-            raise PackageLibraryError
-        object.__setattr__(self, "address_revision", _strict_int(self.address_revision, minimum=1))
         if not isinstance(self.store_slug, str) or _SLUG_RE.fullmatch(self.store_slug) is None:
             raise PackageLibraryError
         object.__setattr__(self, "store_digest", _digest(self.store_digest))
@@ -330,17 +289,13 @@ class PackageRecord:
         ):
             raise PackageLibraryError
 
-    def public_dict(self, address: AddressAlias) -> dict[str, Any]:
-        if not isinstance(address, AddressAlias):
-            raise PackageLibraryError
+    def public_dict(self) -> dict[str, Any]:
         return {
             "packageRef": self.package_ref,
             "revision": self.revision,
             "name": self.name,
             "aliases": list(self.aliases),
             "storeLabel": self.store_label,
-            "addressRef": self.address_ref,
-            "addressName": address.name,
             "itemCount": sum(item.quantity for item in self.items),
             "items": [item.public_dict() for item in self.items],
         }
@@ -351,8 +306,6 @@ class PackageRecord:
             "revision": self.revision,
             "name": self.name,
             "aliases": list(self.aliases),
-            "address_ref": self.address_ref,
-            "address_revision": self.address_revision,
             "store_slug": self.store_slug,
             "store_digest": self.store_digest,
             "store_label": self.store_label,
@@ -364,7 +317,6 @@ class PackageRecord:
 class LibraryImage:
     revision: int = 0
     account_digest: str | None = None
-    addresses: tuple[AddressAlias, ...] = ()
     packages: tuple[PackageRecord, ...] = ()
 
     def __post_init__(self) -> None:
@@ -372,13 +324,7 @@ class LibraryImage:
         if self.account_digest is not None:
             object.__setattr__(self, "account_digest", _digest(self.account_digest))
         if (
-            not isinstance(self.addresses, tuple)
-            or len(self.addresses) > MAX_ADDRESSES
-            or not all(isinstance(item, AddressAlias) for item in self.addresses)
-            or len({item.alias_ref for item in self.addresses}) != len(self.addresses)
-            or len({normalize_lookup_key(item.name) for item in self.addresses})
-            != len(self.addresses)
-            or not isinstance(self.packages, tuple)
+            not isinstance(self.packages, tuple)
             or len(self.packages) > MAX_PACKAGES
             or not all(isinstance(item, PackageRecord) for item in self.packages)
             or len({item.package_ref for item in self.packages}) != len(self.packages)
@@ -391,18 +337,15 @@ class LibraryImage:
         ]
         if len(set(tokens)) != len(tokens):
             raise PackageLibraryError
-        address_refs = {item.alias_ref for item in self.addresses}
-        if any(item.address_ref not in address_refs for item in self.packages):
-            raise PackageLibraryError
-        if (self.addresses or self.packages) and self.account_digest is None:
+        if self.packages and self.account_digest is None:
             raise PackageLibraryError
 
     def storage_dict(self) -> dict[str, Any]:
         return {
             "version": STORE_VERSION,
+            "schema_version": SCHEMA_VERSION,
             "revision": self.revision,
             "account_digest": self.account_digest,
-            "address_aliases": [item.storage_dict() for item in self.addresses],
             "packages": [item.storage_dict() for item in self.packages],
         }
 
@@ -454,60 +397,137 @@ def _depth(value: object, depth: int = 0) -> int:
     return depth
 
 
+def _parse_package_rows(raw_packages: object, *, legacy: bool) -> tuple[PackageRecord, ...]:
+    if not isinstance(raw_packages, list):
+        raise PackageLibraryError
+    packages: list[PackageRecord] = []
+    package_keys = {
+        "package_ref", "revision", "name", "aliases", "store_slug",
+        "store_digest", "store_label", "items",
+    }
+    if legacy:
+        package_keys.update({"address_ref", "address_revision"})
+    for raw in raw_packages:
+        row = _exact_mapping(raw, package_keys)
+        if not isinstance(row["items"], list) or not isinstance(row["aliases"], list):
+            raise PackageLibraryError
+        items: list[RecipeItem] = []
+        for raw_item in row["items"]:
+            item = _exact_mapping(
+                raw_item, {"product_digest", "label", "quantity", "option_groups"}
+            )
+            if not isinstance(item["option_groups"], list):
+                raise PackageLibraryError
+            groups: list[RecipeGroup] = []
+            for raw_group in item["option_groups"]:
+                group = _exact_mapping(
+                    raw_group,
+                    {"group_digest", "label", "option_digests", "option_labels"},
+                )
+                if not isinstance(group["option_digests"], list) or not isinstance(
+                    group["option_labels"], list
+                ):
+                    raise PackageLibraryError
+                groups.append(
+                    RecipeGroup(
+                        group["group_digest"],
+                        group["label"],
+                        tuple(group["option_digests"]),
+                        tuple(group["option_labels"]),
+                    )
+                )
+            items.append(
+                RecipeItem(
+                    item["product_digest"], item["label"], item["quantity"], tuple(groups)
+                )
+            )
+        packages.append(
+            PackageRecord(
+                row["package_ref"],
+                row["revision"],
+                row["name"],
+                tuple(row["aliases"]),
+                row["store_slug"],
+                row["store_digest"],
+                row["store_label"],
+                tuple(items),
+            )
+        )
+    return tuple(packages)
+
+
 def parse_library_image(value: object) -> LibraryImage:
-    """Parse the entire strict v1 image; unknown keys and partial recovery fail."""
+    """Strictly parse schema v2 or deterministically migrate a complete v1 image."""
     try:
-        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
+        encoded = json.dumps(
+            value, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+        ).encode()
     except (TypeError, ValueError, OverflowError):
         raise PackageLibraryError from None
     if len(encoded) > MAX_SERIALIZED_BYTES:
         raise PackageLibraryError
     _depth(value)
-    root = _exact_mapping(
-        value,
-        {"version", "revision", "account_digest", "address_aliases", "packages"},
-    )
-    if root["version"] != STORE_VERSION or isinstance(root["version"], bool):
+    if not isinstance(value, Mapping):
         raise PackageLibraryError
-    raw_addresses = root["address_aliases"]
-    raw_packages = root["packages"]
-    if not isinstance(raw_addresses, list) or not isinstance(raw_packages, list):
-        raise PackageLibraryError
-    addresses: list[AddressAlias] = []
-    for raw in raw_addresses:
-        row = _exact_mapping(raw, {"alias_ref", "revision", "name", "match_digest"})
-        addresses.append(AddressAlias(row["alias_ref"], row["revision"], row["name"], row["match_digest"]))
-    packages: list[PackageRecord] = []
-    for raw in raw_packages:
-        row = _exact_mapping(
-            raw,
-            {
-                "package_ref", "revision", "name", "aliases", "address_ref",
-                "address_revision", "store_slug", "store_digest", "store_label", "items",
-            },
+    schema_version = value.get("schema_version")
+    if schema_version is None:
+        root = _exact_mapping(
+            value,
+            {"version", "revision", "account_digest", "address_aliases", "packages"},
         )
-        if not isinstance(row["items"], list) or not isinstance(row["aliases"], list):
+        if root["version"] != STORE_VERSION or isinstance(root["version"], bool):
             raise PackageLibraryError
-        items: list[RecipeItem] = []
-        for raw_item in row["items"]:
-            item = _exact_mapping(raw_item, {"product_digest", "label", "quantity", "option_groups"})
-            if not isinstance(item["option_groups"], list):
-                raise PackageLibraryError
-            groups: list[RecipeGroup] = []
-            for raw_group in item["option_groups"]:
-                group = _exact_mapping(raw_group, {"group_digest", "label", "option_digests", "option_labels"})
-                if not isinstance(group["option_digests"], list) or not isinstance(group["option_labels"], list):
-                    raise PackageLibraryError
-                groups.append(RecipeGroup(group["group_digest"], group["label"], tuple(group["option_digests"]), tuple(group["option_labels"])))
-            items.append(RecipeItem(item["product_digest"], item["label"], item["quantity"], tuple(groups)))
-        packages.append(
-            PackageRecord(
-                row["package_ref"], row["revision"], row["name"], tuple(row["aliases"]),
-                row["address_ref"], row["address_revision"], row["store_slug"],
-                row["store_digest"], row["store_label"], tuple(items),
+        raw_addresses = root["address_aliases"]
+        if not isinstance(raw_addresses, list):
+            raise PackageLibraryError
+        # Validate all obsolete aliases before discarding them. A malformed v1 image
+        # still fails closed rather than partially recovering useful-looking rows.
+        addresses: list[AddressAlias] = []
+        for raw in raw_addresses:
+            row = _exact_mapping(
+                raw, {"alias_ref", "revision", "name", "match_digest"}
             )
+            addresses.append(
+                AddressAlias(
+                    row["alias_ref"],
+                    row["revision"],
+                    row["name"],
+                    row["match_digest"],
+                )
+            )
+        if (
+            len(addresses) > MAX_ADDRESSES
+            or len({item.alias_ref for item in addresses}) != len(addresses)
+            or len({normalize_lookup_key(item.name) for item in addresses})
+            != len(addresses)
+            or (addresses and root["account_digest"] is None)
+        ):
+            raise PackageLibraryError
+        packages = _parse_package_rows(root["packages"], legacy=True)
+        address_refs = {item.alias_ref for item in addresses}
+        for raw_package in root["packages"]:
+            address_ref = raw_package["address_ref"]
+            if (
+                not isinstance(address_ref, str)
+                or _ADDRESS_REF_RE.fullmatch(address_ref) is None
+                or address_ref not in address_refs
+            ):
+                raise PackageLibraryError
+            _strict_int(raw_package["address_revision"], minimum=1)
+    else:
+        root = _exact_mapping(
+            value,
+            {"version", "schema_version", "revision", "account_digest", "packages"},
         )
-    return LibraryImage(root["revision"], root["account_digest"], tuple(addresses), tuple(packages))
+        if (
+            root["version"] != STORE_VERSION
+            or isinstance(root["version"], bool)
+            or root["schema_version"] != SCHEMA_VERSION
+            or isinstance(root["schema_version"], bool)
+        ):
+            raise PackageLibraryError
+        packages = _parse_package_rows(root["packages"], legacy=False)
+    return LibraryImage(root["revision"], root["account_digest"], packages)
 
 
 class PackageLibrary:
@@ -568,7 +588,7 @@ class PackageLibrary:
             try:
                 raw = await self._storage.async_load()
                 candidate = LibraryImage() if raw is None else parse_library_image(raw)
-                if raw is None:
+                if raw is None or "schema_version" not in raw:
                     saving_initial_image = True
                     await self._async_save_candidate(candidate)
             except asyncio.CancelledError:
@@ -621,72 +641,12 @@ class PackageLibrary:
     async def async_list(self) -> dict[str, Any]:
         async with self._lock:
             self._guard()
-            # Safe summaries remain visible after reauthentication so an admin can
-            # explicitly delete the old account-bound records. Reconciliation and
-            # every save/rebind still require the exact account digest.
-            addresses = {item.alias_ref: item for item in self._image.addresses}
+            # Safe package summaries remain visible after reauthentication so an
+            # admin can explicitly delete old account-bound records.
             return {
                 "storeRevision": self._image.revision,
-                "addresses": [item.public_dict() for item in self._image.addresses],
-                "packages": [item.public_dict(addresses[item.address_ref]) for item in self._image.packages],
+                "packages": [item.public_dict() for item in self._image.packages],
             }
-
-    async def async_save_address(
-        self,
-        *,
-        expected_store_revision: int,
-        address_ref: str,
-        expected_revision: int,
-        name: str,
-        match_digest: str,
-        current_account_digest: str,
-    ) -> AddressAlias:
-        async with self._lock:
-            self._write_guard(expected_store_revision)
-            name = normalize_address_name(name)
-            match_digest = _digest(match_digest)
-            account = self._bind_account(self._image, current_account_digest)
-            records = list(self._image.addresses)
-            if any(
-                normalize_lookup_key(item.name) == normalize_lookup_key(name)
-                and item.alias_ref != address_ref
-                for item in records
-            ):
-                raise PackageLibraryError
-            if address_ref == "":
-                if _strict_int(expected_revision, minimum=0) != 0 or len(records) >= MAX_ADDRESSES:
-                    raise PackageLibraryError
-                ref = self._new_ref("addr", {item.alias_ref for item in records})
-                record = AddressAlias(ref, 1, name, match_digest)
-                records.append(record)
-            else:
-                expected_revision = _strict_int(expected_revision, minimum=1)
-                matches = [index for index, item in enumerate(records) if item.alias_ref == address_ref]
-                if len(matches) != 1 or records[matches[0]].revision != expected_revision or expected_revision >= MAX_REVISION:
-                    raise PackageLibraryError
-                record = AddressAlias(address_ref, expected_revision + 1, name, match_digest)
-                records[matches[0]] = record
-            candidate = LibraryImage(self._image.revision + 1, account, tuple(records), self._image.packages)
-            await self._async_save_candidate(candidate)
-            return record
-
-    async def async_delete_address(
-        self, *, expected_store_revision: int, address_ref: str, expected_revision: int
-    ) -> None:
-        async with self._lock:
-            self._write_guard(expected_store_revision)
-            expected_revision = _strict_int(expected_revision, minimum=1)
-            if any(item.address_ref == address_ref for item in self._image.packages):
-                raise PackageLibraryError
-            records = list(self._image.addresses)
-            matches = [index for index, item in enumerate(records) if item.alias_ref == address_ref]
-            if len(matches) != 1 or records[matches[0]].revision != expected_revision:
-                raise PackageLibraryError
-            records.pop(matches[0])
-            account = self._image.account_digest if records or self._image.packages else None
-            await self._async_save_candidate(
-                LibraryImage(self._image.revision + 1, account, tuple(records), self._image.packages)
-            )
 
     async def async_save_package(
         self,
@@ -696,8 +656,6 @@ class PackageLibrary:
         expected_revision: int,
         name: str,
         aliases: Sequence[str],
-        address_ref: str,
-        address_revision: int,
         store: LiveStore,
         items: tuple[RecipeItem, ...],
         current_account_digest: str,
@@ -707,10 +665,6 @@ class PackageLibrary:
             name = normalize_package_name(name)
             aliases = normalize_aliases(aliases, package_name=name)
             account = self._bind_account(self._image, current_account_digest)
-            address_matches = [item for item in self._image.addresses if item.alias_ref == address_ref]
-            address_revision = _strict_int(address_revision, minimum=1)
-            if len(address_matches) != 1 or address_matches[0].revision != address_revision:
-                raise PackageLibraryError
             records = list(self._image.packages)
             new_tokens = {
                 normalize_lookup_key(name),
@@ -739,15 +693,15 @@ class PackageLibrary:
                 revision = expected_revision + 1
                 index = matches[0]
             record = PackageRecord(
-                ref, revision, name, tuple(aliases), address_ref, address_revision,
-                store.slug, store_digest(store), store.name, items,
+                ref, revision, name, tuple(aliases), store.slug,
+                store_digest(store), store.name, items,
             )
             if index is None:
                 records.append(record)
             else:
                 records[index] = record
             await self._async_save_candidate(
-                LibraryImage(self._image.revision + 1, account, self._image.addresses, tuple(records))
+                LibraryImage(self._image.revision + 1, account, tuple(records))
             )
             return record
 
@@ -762,29 +716,10 @@ class PackageLibrary:
             if len(matches) != 1 or records[matches[0]].revision != expected_revision:
                 raise PackageLibraryError
             records.pop(matches[0])
-            account = self._image.account_digest if records or self._image.addresses else None
+            account = self._image.account_digest if records else None
             await self._async_save_candidate(
-                LibraryImage(self._image.revision + 1, account, self._image.addresses, tuple(records))
+                LibraryImage(self._image.revision + 1, account, tuple(records))
             )
-
-    async def async_address_record(
-        self,
-        *,
-        address_ref: str,
-        address_revision: int,
-        current_account_digest: str,
-    ) -> AddressAlias:
-        async with self._lock:
-            self._guard()
-            self._bind_account(self._image, current_account_digest)
-            matches = [
-                item
-                for item in self._image.addresses
-                if item.alias_ref == address_ref and item.revision == address_revision
-            ]
-            if len(matches) != 1:
-                raise PackageLibraryError
-            return matches[0]
 
     async def async_assert_account(self, current_account_digest: str) -> None:
         async with self._lock:
@@ -792,8 +727,8 @@ class PackageLibrary:
             self._bind_account(self._image, current_account_digest)
 
     async def async_prepare_records(
-        self, *, package_key: str, address_key: str
-    ) -> tuple[PackageRecord, AddressAlias, int]:
+        self, *, package_key: str
+    ) -> tuple[PackageRecord, int]:
         async with self._lock:
             self._guard()
             package_lookup = normalize_lookup_key(package_key)
@@ -809,19 +744,7 @@ class PackageLibrary:
             ]
             if len(packages) != 1:
                 raise PackageLibraryError
-            package = packages[0]
-            if address_key == "":
-                addresses = [item for item in self._image.addresses if item.alias_ref == package.address_ref]
-            else:
-                address_lookup = normalize_lookup_key(address_key)
-                addresses = [
-                    item for item in self._image.addresses
-                    if address_lookup
-                    in {item.alias_ref.casefold(), normalize_lookup_key(item.name)}
-                ]
-            if len(addresses) != 1:
-                raise PackageLibraryError
-            return package, addresses[0], self._image.revision
+            return packages[0], self._image.revision
 
     async def async_assert_current(
         self,
@@ -829,16 +752,12 @@ class PackageLibrary:
         store_revision: int,
         package_ref: str,
         package_revision: int,
-        address_ref: str,
-        address_revision: int,
     ) -> None:
         async with self._lock:
             self._guard()
             if self._image.revision != store_revision:
                 raise PackageLibraryError
             if not any(item.package_ref == package_ref and item.revision == package_revision for item in self._image.packages):
-                raise PackageLibraryError
-            if not any(item.alias_ref == address_ref and item.revision == address_revision for item in self._image.addresses):
                 raise PackageLibraryError
 
 

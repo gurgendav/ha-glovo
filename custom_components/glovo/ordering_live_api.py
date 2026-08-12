@@ -33,7 +33,6 @@ from .ordering_packages import (
     PackageLibraryError,
     PackageStale,
     account_digest,
-    address_digest,
     recipe_items_from_capture,
     reconcile_recipe,
     store_digest,
@@ -64,8 +63,8 @@ PUBLIC_OPERATIONS: Final = (
     "state", "live/addresses", "live/stores", "live/store_menu", "live/payment_methods",
     "live/basket", "live/basket_set", "live/basket_clear", "live/basket_reconcile",
     "live/create_quote", "live/prepare_confirmation", "live/execute_checkout", "live/checkout_status",
-    "library/list", "library/address_save", "library/address_delete",
-    "library/package_save", "library/package_delete", "library/package_prepare",
+    "library/list", "library/package_save", "library/package_delete",
+    "library/package_prepare",
 )
 # These are schemas, not permissive examples: unknown keys are rejected exactly.
 OPERATION_REQUEST_FIELDS: Final = {
@@ -84,26 +83,18 @@ OPERATION_REQUEST_FIELDS: Final = {
     "live/execute_checkout": frozenset({"generation", "challenge", "acknowledged"}),
     "live/checkout_status": frozenset({"generation"}),
     "library/list": frozenset({"generation"}),
-    "library/address_save": frozenset(
-        {
-            "generation", "expectedStoreRevision", "addressRef",
-            "expectedRevision", "name", "addressHandle",
-        }
-    ),
-    "library/address_delete": frozenset(
-        {"generation", "expectedStoreRevision", "addressRef", "expectedRevision"}
-    ),
     "library/package_save": frozenset(
         {
             "generation", "expectedStoreRevision", "packageRef",
-            "expectedRevision", "name", "aliases", "addressRef",
-            "addressRevision", "storeHandle", "products",
+            "expectedRevision", "name", "aliases", "storeHandle", "products",
         }
     ),
     "library/package_delete": frozenset(
         {"generation", "expectedStoreRevision", "packageRef", "expectedRevision"}
     ),
-    "library/package_prepare": frozenset({"generation", "packageKey", "addressKey"}),
+    "library/package_prepare": frozenset(
+        {"generation", "packageKey", "addressHandle"}
+    ),
 }
 
 
@@ -414,76 +405,22 @@ class LiveOrderingFacade:
                     raise PublicContractError
                 if operation == "library/list":
                     return await library.async_list()
-                if operation == "library/address_save":
-                    customer = await self._account.async_customer()
-                    current_account_digest = account_digest(customer)
-                    address_ref = request["addressRef"]
-                    name = request["name"]
-                    if (
-                        not isinstance(address_ref, str)
-                        or len(address_ref) > 64
-                        or not isinstance(name, str)
-                    ):
-                        raise PublicContractError
-                    address = self._account.resolve_address(
-                        _handle(request["addressHandle"]),
-                        owner_key=owner,
-                        generation=generation,
-                    )
-                    record = await library.async_save_address(
-                        expected_store_revision=_revision(request["expectedStoreRevision"]),
-                        address_ref=address_ref,
-                        expected_revision=_revision(request["expectedRevision"]),
-                        name=name,
-                        match_digest=address_digest(address),
-                        current_account_digest=current_account_digest,
-                    )
-                    return {
-                        "storeRevision": library.revision,
-                        "address": record.public_dict(),
-                    }
-                if operation == "library/address_delete":
-                    address_ref = request["addressRef"]
-                    if not isinstance(address_ref, str) or len(address_ref) > 64:
-                        raise PublicContractError
-                    await library.async_delete_address(
-                        expected_store_revision=_revision(request["expectedStoreRevision"]),
-                        address_ref=address_ref,
-                        expected_revision=_revision(request["expectedRevision"]),
-                    )
-                    return {"deleted": True, "storeRevision": library.revision}
                 if operation == "library/package_save":
                     customer = await self._account.async_customer()
                     current_account_digest = account_digest(customer)
                     package_ref = request["packageRef"]
-                    address_ref = request["addressRef"]
                     aliases = request["aliases"]
                     if (
                         not isinstance(package_ref, str)
                         or len(package_ref) > 64
-                        or not isinstance(address_ref, str)
-                        or len(address_ref) > 64
                         or not isinstance(request["name"], str)
                         or not isinstance(aliases, list)
                     ):
                         raise PublicContractError
-                    address_revision = _revision(request["addressRevision"])
-                    address_record = await library.async_address_record(
-                        address_ref=address_ref,
-                        address_revision=address_revision,
-                        current_account_digest=current_account_digest,
-                    )
                     store_handle = _handle(request["storeHandle"])
                     parent_address_handle = self._selections.store_address_handle(
                         store_handle, owner=owner, generation=generation
                     )
-                    parent_address = self._account.resolve_address(
-                        parent_address_handle,
-                        owner_key=owner,
-                        generation=generation,
-                    )
-                    if address_digest(parent_address) != address_record.match_digest:
-                        raise PublicContractError
                     store = self._selections.resolve_store(
                         store_handle,
                         owner=owner,
@@ -503,15 +440,13 @@ class LiveOrderingFacade:
                         expected_revision=_revision(request["expectedRevision"]),
                         name=request["name"],
                         aliases=aliases,
-                        address_ref=address_ref,
-                        address_revision=address_revision,
                         store=store,
                         items=recipe_items_from_capture(captured),
                         current_account_digest=current_account_digest,
                     )
                     return {
                         "storeRevision": library.revision,
-                        "package": record.public_dict(address_record),
+                        "package": record.public_dict(),
                     }
                 if operation == "library/package_delete":
                     package_ref = request["packageRef"]
@@ -527,21 +462,12 @@ class LiveOrderingFacade:
                     customer = await self._account.async_customer()
                     current_account_digest = account_digest(customer)
                     package_key = request["packageKey"]
-                    address_key = request["addressKey"]
-                    if not isinstance(package_key, str) or not isinstance(address_key, str):
+                    if not isinstance(package_key, str):
                         raise PublicContractError
-                    package, address_record, store_revision = (
-                        await library.async_prepare_records(
-                            package_key=package_key, address_key=address_key
-                        )
+                    address_handle = _handle(request["addressHandle"])
+                    package, store_revision = await library.async_prepare_records(
+                        package_key=package_key
                     )
-                    if address_key == "" and address_record.revision != package.address_revision:
-                        return {
-                            "status": "stale",
-                            "packageRef": package.package_ref,
-                            "packageRevision": package.revision,
-                            "reason": "address_missing_or_changed",
-                        }
                     try:
                         await library.async_assert_account(current_account_digest)
                     except PackageStale:
@@ -551,20 +477,11 @@ class LiveOrderingFacade:
                             "packageRevision": package.revision,
                             "reason": "account_changed",
                         }
-                    addresses = await self._account.async_fresh_saved_addresses()
-                    address_matches = [
-                        item
-                        for item in addresses
-                        if address_digest(item) == address_record.match_digest
-                    ]
-                    if len(address_matches) != 1:
-                        return {
-                            "status": "stale",
-                            "packageRef": package.package_ref,
-                            "packageRevision": package.revision,
-                            "reason": "address_missing_or_changed",
-                        }
-                    fresh_address = address_matches[0]
+                    fresh_address = self._account.resolve_address(
+                        address_handle,
+                        owner_key=owner,
+                        generation=generation,
+                    )
                     try:
                         store = await self._catalog.async_store(
                             package.store_slug, fresh_address
@@ -597,12 +514,11 @@ class LiveOrderingFacade:
                             "packageRevision": package.revision,
                             "reason": err.reason,
                         }
-                    address_public = self._account.issue_saved_address(
-                        fresh_address,
-                        owner_key=owner,
-                        generation=generation,
-                        label=f"{address_record.name} ••••",
-                    ).public_dict()
+                    address_public = {
+                        "key": address_handle,
+                        "label": "Saved destination ••••",
+                        "fullAddress": fresh_address.address_line,
+                    }
                     store_public, menu_public, selection = (
                         self._selections.issue_reconciled_selection(
                             store=store,
@@ -617,17 +533,8 @@ class LiveOrderingFacade:
                         store_revision=store_revision,
                         package_ref=package.package_ref,
                         package_revision=package.revision,
-                        address_ref=address_record.alias_ref,
-                        address_revision=address_record.revision,
                     )
-                    address_public.update(
-                        {
-                            "addressRef": address_record.alias_ref,
-                            "revision": address_record.revision,
-                            "name": address_record.name,
-                        }
-                    )
-                    package_public = package.public_dict(address_record)
+                    package_public = package.public_dict()
                     package_public["storeLabel"] = store.name
                     package_public["items"] = [
                         {

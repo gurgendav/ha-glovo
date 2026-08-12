@@ -165,8 +165,8 @@ def test_public_operation_names_match_frozen_facade_contract(
         "state", "live/addresses", "live/stores", "live/store_menu", "live/payment_methods",
         "live/basket", "live/basket_set", "live/basket_clear", "live/basket_reconcile",
         "live/create_quote", "live/prepare_confirmation", "live/execute_checkout", "live/checkout_status",
-        "library/list", "library/address_save", "library/address_delete", "library/package_save",
-        "library/package_delete", "library/package_prepare",
+        "library/list", "library/package_save", "library/package_delete",
+        "library/package_prepare",
     }
     assert all(f'"{name}"' in source for name in frozen)
     assert set(surface_module.PUBLIC_OPERATION_COMMANDS) == frozen

@@ -38,25 +38,26 @@ compile or synchronize a basket, request a quote, prepare confirmation, check ou
 or order. Basket synchronization also performs one fresh GET-only store eligibility
 check immediately before its single provider mutation attempt.
 
-### Durable packages and address aliases
+### Durable packages
 
-The admin panel also stores private, account-bound address aliases and reusable
-package recipes in Home Assistant storage. Names and aliases use deterministic exact
-normalization and compare-and-swap revisions. Browser storage is never authoritative.
-Packages retain stable product and option intent rather than ephemeral session or
-basket handles.
+The admin panel stores private, account-bound reusable package recipes in Home
+Assistant storage. A package is one named or aliased, one-store, multi-item configured
+cart. Names and aliases use deterministic exact normalization and compare-and-swap
+revisions. Browser storage is never authoritative. Packages retain stable product and
+option intent rather than ephemeral session or basket handles, and never own or pin a
+delivery address.
 
-Loading a package performs fresh, GET-only reconciliation of the saved address,
-explicit store, products, option groups, and options. Removed, ambiguous, or changed
-catalog selections return an explicit stale result and perform **zero basket writes**.
-A successfully reconciled package is loaded into the local draft; **Sync basket** is
-still a separate explicit action.
+Loading a package requires the admin to choose a fresh current saved Glovo address,
+then performs GET-only reconciliation of the explicit store, products, option groups,
+and options. Removed, ambiguous, or changed catalog selections return an explicit
+stale result and perform **zero basket writes**. A successfully reconciled package is
+loaded into the local draft; **Sync basket** is still a separate explicit action.
 
-The authenticated `library/package_prepare` operation accepts only a package alias
-and an optional saved-address alias. It is a preparation boundary for a possible
-future assistant or automation integration, not purchase authority. This release
-registers no Home Assistant ordering service, intent, event, webhook, MQTT command,
-or entity action. Package and address aliases cannot confirm, pay for, submit, or
+The authenticated `library/package_prepare` operation accepts only a package key and
+a fresh address handle from the current saved-address read. It is a preparation
+boundary for a possible future assistant or automation integration, not purchase
+authority. This release registers no Home Assistant ordering service, intent, event,
+webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
 ### Ordering safety and release posture

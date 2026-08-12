@@ -1,4 +1,4 @@
-"""Deterministic tests for durable package recipes and address aliases."""
+"""Deterministic tests for durable address-independent package recipes."""
 from __future__ import annotations
 
 import asyncio
@@ -121,22 +121,15 @@ def domain_objects(contracts: ModuleType) -> dict[str, Any]:
     }
 
 
-async def populated_library(modules: dict[str, ModuleType]) -> tuple[Any, Any, dict[str, Any], Any, Any]:
+async def populated_library(modules: dict[str, ModuleType]) -> tuple[Any, Any, dict[str, Any], Any]:
     packages = modules["ordering_packages"]
     objects = domain_objects(modules["ordering_contracts"])
-    refs = iter(("addr-" + "a" * 32, "pkg-" + "b" * 32))
     storage = packages.MemoryPackageLibraryStorage()
-    library = packages.PackageLibrary(storage, ref_source=lambda _prefix: next(refs))
+    library = packages.PackageLibrary(
+        storage, ref_source=lambda _prefix: "pkg-" + "b" * 32
+    )
     await library.async_load()
     account = packages.account_digest(objects["customer"])
-    address = await library.async_save_address(
-        expected_store_revision=0,
-        address_ref="",
-        expected_revision=0,
-        name="Home 2",
-        match_digest=packages.address_digest(objects["address"]),
-        current_account_digest=account,
-    )
     items = packages.recipe_items_from_capture(
         (
             (
@@ -147,124 +140,82 @@ async def populated_library(modules: dict[str, ModuleType]) -> tuple[Any, Any, d
         )
     )
     package = await library.async_save_package(
-        expected_store_revision=1,
+        expected_store_revision=0,
         package_ref="",
         expected_revision=0,
         name="KFC Lunch",
         aliases=("usual_kfc", "work meal"),
-        address_ref=address.alias_ref,
-        address_revision=address.revision,
         store=objects["store"],
         items=items,
         current_account_digest=account,
     )
-    return library, storage, objects, address, package
+    return library, storage, objects, package
 
 
 def test_round_trip_cas_alias_lookup_and_privacy(modules: dict[str, ModuleType]) -> None:
     async def scenario() -> None:
         packages = modules["ordering_packages"]
-        library, storage, objects, address, package = await populated_library(modules)
+        library, storage, _objects, package = await populated_library(modules)
 
         public = await library.async_list()
-        assert public["storeRevision"] == 2
-        assert public["addresses"] == [
-            {"addressRef": address.alias_ref, "revision": 1, "name": "Home 2"}
-        ]
+        assert public["storeRevision"] == 1
+        assert set(public) == {"storeRevision", "packages"}
         assert public["packages"][0]["name"] == "KFC Lunch"
         assert public["packages"][0]["aliases"] == ["usual_kfc", "work meal"]
         assert public["packages"][0]["items"] == [
             {"label": "Meal", "quantity": 2, "options": ["Standard"]}
         ]
+        assert not ({"addressRef", "addressRevision", "addressName"} & public["packages"][0].keys())
 
         public_text = json.dumps(public, sort_keys=True)
         for forbidden in (
-            "private-slug",
-            "product-private",
-            "option-private",
-            "Private Street",
-            "40.177",
-            "44.513",
-            "match_digest",
-            "store_digest",
+            "private-slug", "product-private", "option-private", "Private Street",
+            "40.177", "44.513", "match_digest", "store_digest",
         ):
             assert forbidden not in public_text
 
         private_text = json.dumps(storage.value, sort_keys=True)
+        assert storage.value["version"] == 1
+        assert storage.value["schema_version"] == 2
         assert "kitchen-private-slug" in private_text
+        assert "address" not in private_text.casefold()
         for forbidden in (
-            "product-private",
-            "product-external-private",
-            "store-product-private",
-            "option-private",
-            "option-external-private",
-            "group-private",
-            "Private Street 10",
-            "Private details",
-            "Home private tag",
-            "private-floor",
-            "40.177",
-            "44.513",
-            '"generation"',
-            '"price"',
-            '"basket"',
+            "product-private", "product-external-private", "store-product-private",
+            "option-private", "option-external-private", "group-private",
+            "Private Street 10", "Private details", "Home private tag", "private-floor",
+            "40.177", "44.513", '"generation"', '"price"', '"basket"',
         ):
             assert forbidden not in private_text
 
         reloaded = packages.PackageLibrary(storage)
         await reloaded.async_load()
         assert await reloaded.async_list() == public
-        found_package, found_address, revision = await reloaded.async_prepare_records(
-            package_key="USUAL KFC", address_key="home_2"
+        found_package, revision = await reloaded.async_prepare_records(
+            package_key="USUAL KFC"
         )
         assert found_package.package_ref == package.package_ref
-        assert found_address.alias_ref == address.alias_ref
-        assert revision == 2
+        assert revision == 1
 
         with pytest.raises(packages.PackageLibraryUnavailable):
             await reloaded.async_delete_package(
-                expected_store_revision=1,
+                expected_store_revision=0,
                 package_ref=package.package_ref,
                 expected_revision=package.revision,
-            )
-        with pytest.raises(packages.PackageLibraryError):
-            await reloaded.async_save_address(
-                expected_store_revision=2,
-                address_ref="",
-                expected_revision=0,
-                name="HOME-2",
-                match_digest=packages.address_digest(objects["address"]),
-                current_account_digest=packages.account_digest(objects["customer"]),
             )
 
     asyncio.run(scenario())
 
 
-def test_address_rebind_invalidates_pinned_default_and_referenced_delete(modules: dict[str, ModuleType]) -> None:
+def test_package_has_no_address_binding_or_alias_dependency(modules: dict[str, ModuleType]) -> None:
     async def scenario() -> None:
-        packages = modules["ordering_packages"]
-        library, _storage, objects, address, package = await populated_library(modules)
-        changed = replace(objects["address"], address_line="Different destination")
-        rebound = await library.async_save_address(
-            expected_store_revision=2,
-            address_ref=address.alias_ref,
-            expected_revision=address.revision,
-            name="Home 2",
-            match_digest=packages.address_digest(changed),
-            current_account_digest=packages.account_digest(objects["customer"]),
+        library, storage, _objects, package = await populated_library(modules)
+        prepared, revision = await library.async_prepare_records(
+            package_key=package.package_ref
         )
-        assert rebound.revision == 2
-        pinned_package, current_address, _ = await library.async_prepare_records(
-            package_key=package.package_ref, address_key=""
-        )
-        assert pinned_package.address_revision == 1
-        assert current_address.revision == 2
-        with pytest.raises(packages.PackageLibraryError):
-            await library.async_delete_address(
-                expected_store_revision=3,
-                address_ref=address.alias_ref,
-                expected_revision=2,
-            )
+        assert prepared == package
+        assert revision == 1
+        assert not hasattr(package, "address_ref")
+        assert "address" not in json.dumps(storage.value, sort_keys=True).casefold()
 
     asyncio.run(scenario())
 
@@ -280,8 +231,6 @@ def test_exact_recipe_reconciliation_and_closed_drift(modules: dict[str, ModuleT
         1,
         "KFC Lunch",
         ("usual",),
-        "addr-" + "d" * 32,
-        1,
         objects["store"].slug,
         packages.store_digest(objects["store"]),
         objects["store"].name,
@@ -361,7 +310,7 @@ def test_exact_recipe_reconciliation_and_closed_drift(modules: dict[str, ModuleT
 def test_strict_parser_and_storage_failure_is_library_local(modules: dict[str, ModuleType]) -> None:
     async def scenario() -> None:
         packages = modules["ordering_packages"]
-        library, storage, objects, _address, _package = await populated_library(modules)
+        library, storage, objects, _package = await populated_library(modules)
         raw = json.loads(json.dumps(storage.value))
         raw["unknown"] = True
         with pytest.raises(packages.PackageLibraryError):
@@ -382,7 +331,7 @@ def test_strict_parser_and_storage_failure_is_library_local(modules: dict[str, M
         await failing.async_load()
         with pytest.raises(packages.PackageLibraryUnavailable, match="unavailable or invalid"):
             await failing.async_delete_package(
-                expected_store_revision=2,
+                expected_store_revision=1,
                 package_ref="pkg-" + "b" * 32,
                 expected_revision=1,
             )
@@ -392,6 +341,149 @@ def test_strict_parser_and_storage_failure_is_library_local(modules: dict[str, M
         assert objects["address"].address_line not in str(packages.PackageLibraryUnavailable())
 
     asyncio.run(scenario())
+
+
+def test_v1_migrates_bundle_losslessly_and_discards_obsolete_addresses(
+    modules: dict[str, ModuleType],
+) -> None:
+    async def scenario() -> None:
+        packages = modules["ordering_packages"]
+        _library, storage, _objects, package = await populated_library(modules)
+        legacy = json.loads(json.dumps(storage.value))
+        legacy.pop("schema_version")
+        legacy["address_aliases"] = [
+            {
+                "alias_ref": "addr-" + "a" * 32,
+                "revision": 7,
+                "name": "Synthetic destination",
+                "match_digest": "d" * 64,
+            }
+        ]
+        legacy["packages"][0]["address_ref"] = "addr-" + "a" * 32
+        legacy["packages"][0]["address_revision"] = 7
+
+        migrated_storage = packages.MemoryPackageLibraryStorage(legacy)
+        migrated = packages.PackageLibrary(migrated_storage)
+        await migrated.async_load()
+        public = await migrated.async_list()
+        assert public["packages"][0]["packageRef"] == package.package_ref
+        assert public["packages"][0]["items"] == [
+            {"label": "Meal", "quantity": 2, "options": ["Standard"]}
+        ]
+        assert migrated_storage.value["schema_version"] == 2
+        assert "address_aliases" not in migrated_storage.value
+        assert "address_ref" not in migrated_storage.value["packages"][0]
+
+    asyncio.run(scenario())
+
+
+def test_malformed_v1_never_partially_migrates_useful_packages(
+    modules: dict[str, ModuleType],
+) -> None:
+    async def scenario() -> None:
+        packages = modules["ordering_packages"]
+        _library, storage, _objects, _package = await populated_library(modules)
+        valid = json.loads(json.dumps(storage.value))
+        valid.pop("schema_version")
+        valid["address_aliases"] = [
+            {
+                "alias_ref": "addr-" + "a" * 32,
+                "revision": 1,
+                "name": "Synthetic destination",
+                "match_digest": "d" * 64,
+            }
+        ]
+        valid["packages"][0].update(
+            address_ref="addr-" + "a" * 32,
+            address_revision=1,
+        )
+        malformed_images = []
+        missing_address = json.loads(json.dumps(valid))
+        missing_address["packages"][0]["address_ref"] = "addr-" + "f" * 32
+        malformed_images.append(missing_address)
+        duplicate_address = json.loads(json.dumps(valid))
+        duplicate_address["address_aliases"].append(
+            json.loads(json.dumps(duplicate_address["address_aliases"][0]))
+        )
+        malformed_images.append(duplicate_address)
+        malformed_alias = json.loads(json.dumps(valid))
+        malformed_alias["address_aliases"][0]["unknown"] = True
+        malformed_images.append(malformed_alias)
+        for raw in malformed_images:
+            target = packages.MemoryPackageLibraryStorage(raw)
+            library = packages.PackageLibrary(target)
+            with pytest.raises(packages.PackageLibraryUnavailable):
+                await library.async_load()
+            assert library.loaded is False
+            assert library.writable is False
+            assert target.value == raw
+
+    asyncio.run(scenario())
+
+
+def test_unknown_or_malformed_v2_schema_fails_closed(modules: dict[str, ModuleType]) -> None:
+    packages = modules["ordering_packages"]
+    valid = {
+        "version": 1,
+        "schema_version": 2,
+        "revision": 0,
+        "account_digest": None,
+        "packages": [],
+    }
+    assert packages.parse_library_image(valid).revision == 0
+    for mutate in (
+        lambda value: value.update(schema_version=3),
+        lambda value: value.update(schema_version=True),
+        lambda value: value.update(address_aliases=[]),
+        lambda value: value.update(packages={}),
+    ):
+        malformed = json.loads(json.dumps(valid))
+        mutate(malformed)
+        with pytest.raises(packages.PackageLibraryError):
+            packages.parse_library_image(malformed)
+
+
+def test_home_assistant_store_envelope_stays_v1_while_payload_is_schema_v2(
+    modules: dict[str, ModuleType], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packages = modules["ordering_packages"]
+    calls: dict[str, Any] = {}
+
+    class FakeStore:
+        def __init__(self, hass: Any, version: int, key: str) -> None:
+            calls.update(hass=hass, version=version, key=key)
+
+        async def async_load(self) -> dict[str, Any]:
+            return {
+                "version": 1,
+                "schema_version": 2,
+                "revision": 0,
+                "account_digest": None,
+                "packages": [],
+            }
+
+        async def async_save(self, value: dict[str, Any]) -> None:
+            calls["saved"] = value
+
+    homeassistant = ModuleType("homeassistant")
+    helpers = ModuleType("homeassistant.helpers")
+    storage_module = ModuleType("homeassistant.helpers.storage")
+    setattr(storage_module, "Store", FakeStore)
+    monkeypatch.setitem(sys.modules, "homeassistant", homeassistant)
+    monkeypatch.setitem(sys.modules, "homeassistant.helpers", helpers)
+    monkeypatch.setitem(sys.modules, "homeassistant.helpers.storage", storage_module)
+
+    hass = object()
+    storage = packages.HomeAssistantPackageLibraryStorage(hass, "entry-synthetic")
+    assert calls == {
+        "hass": hass,
+        "version": 1,
+        "key": "glovo.ordering_packages_v1.entry-synthetic",
+    }
+    loaded = asyncio.run(storage.async_load())
+    assert loaded["schema_version"] == 2
+    asyncio.run(storage.async_save(loaded))
+    assert calls["saved"] == loaded
 
 
 def test_cancelled_save_finishes_persistence_before_publish(modules: dict[str, ModuleType]) -> None:
@@ -414,17 +506,21 @@ def test_cancelled_save_finishes_persistence_before_publish(modules: dict[str, M
 
         storage = BarrierStorage()
         library = packages.PackageLibrary(
-            storage, ref_source=lambda _prefix: "addr-" + "e" * 32
+            storage, ref_source=lambda _prefix: "pkg-" + "e" * 32
         )
         await library.async_load()
         storage.block = True
         task = asyncio.create_task(
-            library.async_save_address(
+            library.async_save_package(
                 expected_store_revision=0,
-                address_ref="",
+                package_ref="",
                 expected_revision=0,
-                name="Home 2",
-                match_digest=packages.address_digest(objects["address"]),
+                name="Saved bundle",
+                aliases=(),
+                store=objects["store"],
+                items=packages.recipe_items_from_capture(
+                    ((objects["product"], 1, ()),)
+                ),
                 current_account_digest=packages.account_digest(objects["customer"]),
             )
         )
@@ -437,7 +533,7 @@ def test_cancelled_save_finishes_persistence_before_publish(modules: dict[str, M
             await task
         assert library.revision == 1
         assert storage.value["revision"] == 1
-        assert (await library.async_list())["addresses"][0]["name"] == "Home 2"
+        assert (await library.async_list())["packages"][0]["name"] == "Saved bundle"
 
     asyncio.run(scenario())
 
@@ -490,29 +586,19 @@ def test_package_prepare_is_get_only_and_rematerializes_fresh_handles(
     async def scenario() -> None:
         contracts = modules["ordering_contracts"]
         api = modules["ordering_live_api"]
-        library, _storage, objects, _address, package = await populated_library(modules)
+        library, _storage, objects, package = await populated_library(modules)
         calls: list[str] = []
-
-        class PublicAddress:
-            def public_dict(self) -> dict[str, Any]:
-                return {
-                    "key": "fresh-address-handle",
-                    "label": "Home 2 ••••",
-                    "fullAddress": "Private Street 10",
-                }
 
         class Account:
             async def async_customer(self) -> Any:
                 calls.append("customer_get")
                 return objects["customer"]
 
-            async def async_fresh_saved_addresses(self) -> tuple[Any, ...]:
-                calls.append("addresses_get")
-                return (objects["address"],)
-
-            def issue_saved_address(self, *_args: Any, **_kwargs: Any) -> PublicAddress:
-                calls.append("address_handle_issue")
-                return PublicAddress()
+            def resolve_address(self, handle: str, **kwargs: Any) -> Any:
+                calls.append("address_handle_resolve")
+                assert handle == "fresh-address-handle"
+                assert kwargs == {"owner_key": "admin-owner", "generation": 1}
+                return objects["address"]
 
         class Catalog:
             async def async_store(self, slug: str, address: Any) -> Any:
@@ -576,7 +662,7 @@ def test_package_prepare_is_get_only_and_rematerializes_fresh_handles(
             request={
                 "generation": 1,
                 "packageKey": package.package_ref,
-                "addressKey": "",
+                "addressHandle": "fresh-address-handle",
             },
         )
         assert result["status"] == "ready"
@@ -585,10 +671,9 @@ def test_package_prepare_is_get_only_and_rematerializes_fresh_handles(
         assert result["address"]["fullAddress"] == "Private Street 10"
         assert calls == [
             "customer_get",
-            "addresses_get",
+            "address_handle_resolve",
             "store_get",
             "menu_get",
-            "address_handle_issue",
             "fresh_handle_issue",
         ]
 
@@ -619,7 +704,7 @@ def test_package_prepare_is_get_only_and_rematerializes_fresh_handles(
             request={
                 "generation": 1,
                 "packageKey": package.package_ref,
-                "addressKey": "",
+                "addressHandle": "fresh-address-handle",
             },
         )
         assert missing == {
@@ -628,7 +713,7 @@ def test_package_prepare_is_get_only_and_rematerializes_fresh_handles(
             "packageRevision": package.revision,
             "reason": "store_missing_or_changed",
         }
-        assert calls == ["customer_get", "addresses_get", "store_get"]
+        assert calls == ["customer_get", "address_handle_resolve", "store_get"]
 
         calls.clear()
 
@@ -658,7 +743,7 @@ def test_package_prepare_is_get_only_and_rematerializes_fresh_handles(
             request={
                 "generation": 1,
                 "packageKey": package.package_ref,
-                "addressKey": "",
+                "addressHandle": "fresh-address-handle",
             },
         )
         assert closed == {
@@ -667,7 +752,7 @@ def test_package_prepare_is_get_only_and_rematerializes_fresh_handles(
             "packageRevision": package.revision,
             "reason": "store_closed",
         }
-        assert calls == ["customer_get", "addresses_get", "store_get"]
+        assert calls == ["customer_get", "address_handle_resolve", "store_get"]
 
     asyncio.run(scenario())
 

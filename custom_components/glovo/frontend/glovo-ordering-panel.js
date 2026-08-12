@@ -22,7 +22,7 @@ class GlovoOrderingPanel extends HTMLElement {
       payments: { status: "idle", items: [], selected: "" },
       quote: null,
       overlay: null,
-      library: { status: "idle", storeRevision: 0, addresses: [], packages: [], aliasEditor: null, packageEditor: null, error: "" },
+      library: { status: "idle", storeRevision: 0, packages: [], packageEditor: null, activeView: "packages", error: "" },
       recovery: null,
     };
   }
@@ -147,6 +147,8 @@ class GlovoOrderingPanel extends HTMLElement {
         .section-head h2 { margin: 0; font-size: 1.15rem; }
         .library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
         .library-card { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--divider-color); border-radius: 11px; background: var(--card-background-color); }
+        .package-items { display: grid; gap: 5px; margin: 0; padding-inline-start: 20px; }
+        .package-address { inline-size: 100%; min-inline-size: 0; border: 1px solid var(--divider-color); border-radius: 8px; padding: 9px 11px; background: var(--card-background-color); }
         .library-actions { display: flex; flex-wrap: wrap; gap: 6px; }
         .form-grid { display: grid; gap: 12px; }
         .form-grid input, .form-grid select, .form-grid textarea { inline-size: 100%; border: 1px solid var(--divider-color); border-radius: 8px; padding: 9px 11px; background: var(--card-background-color); }
@@ -172,6 +174,9 @@ class GlovoOrderingPanel extends HTMLElement {
           .dialog-frame { max-block-size: 96vh; min-block-size: min(88vh, 760px); }
           #package-dialog { max-block-size: 100vh; border-radius: 0; }
           #package-dialog .dialog-frame { min-block-size: 100vh; max-block-size: 100vh; }
+          .field-row, .search-row, .card-actions, .library-actions, .dialog-foot { display: grid; grid-template-columns: 1fr; inline-size: 100%; }
+          .field-row > *, .search-row > *, .card-actions > *, .library-actions > *, .dialog-foot > *, .package-address { inline-size: 100%; max-inline-size: 100%; min-inline-size: 0; }
+          .library-grid { grid-template-columns: minmax(0, 1fr); }
           .recovery-actions { grid-template-columns: 1fr; }
         }
         @media (prefers-reduced-motion: reduce) {
@@ -329,7 +334,7 @@ class GlovoOrderingPanel extends HTMLElement {
     this._model.draft = { lines: [], dirty: false };
     this._model.basket = { status: "empty", revision: 0, itemCount: 0, currency: "", providerTotal: null, linesAvailable: true };
     this._model.payments = { status: "idle", items: [], selected: "" };
-    this._model.library = { status: "idle", storeRevision: 0, addresses: [], packages: [], aliasEditor: null, packageEditor: null, error: "" };
+    this._model.library = { status: "idle", storeRevision: 0, packages: [], packageEditor: null, activeView: "packages", error: "" };
     if (reason) this._model.lifecycle = { status: "ready", message: reason, kind: "warning" };
   }
 
@@ -409,7 +414,7 @@ class GlovoOrderingPanel extends HTMLElement {
     const contextLocked = this._model.basket.itemCount > 0;
     const address = this._el("select"); address.id = "address-select"; address.setAttribute("aria-label", "Saved delivery address"); address.disabled = contextLocked;
     address.add(new Option(this._model.context.addresses.length ? "Select a saved address" : "No saved addresses", ""));
-    this._model.context.addresses.forEach((item) => address.add(new Option(item.fullAddress || item.label || "Saved address", item.key || item.addressHandle)));
+    this._model.context.addresses.forEach((item) => address.add(new Option(this._addressDisplay(item), item.key || item.addressHandle)));
     address.value = this._model.context.addressHandle;
     const refresh = this._button("Refresh", "refresh-addresses"); refresh.setAttribute("aria-label", "Refresh saved addresses");
     addressRow.append(address, refresh); addressField.append(addressRow);
@@ -541,6 +546,8 @@ class GlovoOrderingPanel extends HTMLElement {
     stepper.append(minus, output, plus); return stepper;
   }
 
+  _addressDisplay(address) { return address?.fullAddress || address?.label || "Saved address"; }
+
   _formatMinor(amountMinor, currency) {
     if (!Number.isInteger(Number(amountMinor)) || !currency) return "Price unavailable";
     try { return new Intl.NumberFormat(this._locale || "en", { style: "currency", currency: String(currency) }).format(Number(amountMinor) / 100); }
@@ -559,6 +566,7 @@ class GlovoOrderingPanel extends HTMLElement {
         this._model.context.addressHandle = ""; this._model.context.addressLabel = ""; this._resetCatalog();
       }
       this._renderContext();
+      if (this._model.library.activeView === "packages") this._renderPackages();
     } catch (_error) {
       if (this._isLatestRead("addresses", token, capturedGeneration)) this._setLifecycle("ready", "Saved addresses are unavailable. Use Refresh to recover manually.", "error");
     }
@@ -815,6 +823,7 @@ class GlovoOrderingPanel extends HTMLElement {
     if (this._model.basket.providerTotal !== null) { const provider = this._el("div", "total-row"); provider.append(this._el("span", "", "Authoritative provider total"), this._el("strong", "", this._formatMinor(this._model.basket.providerTotal, this._model.basket.currency))); totals.append(provider); }
     host.append(totals);
     const actions = this._el("div", "basket-actions");
+    if (this._model.draft.lines.length) actions.append(this._button("Save as package", "new-package"));
     const sync = this._button(this._model.basket.status === "syncing" ? "Syncing…" : "Sync basket", "sync-basket", "primary"); sync.disabled = !this._model.draft.lines.length || this._model.basket.status === "syncing" || !this._model.context.store || !this._model.context.addressHandle || !this._storeAllowsOrdering(); actions.append(sync);
     if (this._model.basket.revision > 0 || this._model.basket.itemCount > 0) actions.append(this._button("Clear provider basket", "ask-clear-basket", "danger"));
     actions.append(this._button("Refresh provider status", "refresh-basket"));
@@ -917,7 +926,6 @@ class GlovoOrderingPanel extends HTMLElement {
     const kind = this._confirmation?.kind; const payload = this._confirmation?.payload;
     this._closeDialog("confirm-dialog"); this._confirmation = null;
     if (kind === "clear-basket") await this._clearBasket();
-    else if (kind === "delete-address") await this._deleteAddressAlias(payload);
     else if (kind === "delete-package") await this._deletePackage(payload);
   }
 
@@ -1040,84 +1048,43 @@ class GlovoOrderingPanel extends HTMLElement {
     try {
       const response = await this._request("library/list", this._withGeneration());
       if (!this._isLatestRead("library", token, capturedGeneration)) return;
-      this._model.library.status = "ready"; this._model.library.storeRevision = Number(response?.storeRevision) || 0; this._model.library.addresses = Array.isArray(response?.addresses) ? response.addresses : []; this._model.library.packages = Array.isArray(response?.packages) ? response.packages : []; this._model.library.error = "";
+      this._model.library.status = "ready"; this._model.library.storeRevision = Number(response?.storeRevision) || 0; this._model.library.packages = Array.isArray(response?.packages) ? response.packages : []; this._model.library.error = "";
       if (this._model.library.activeView === "packages") this._renderPackages();
     } catch (_error) { if (this._isLatestRead("library", token, capturedGeneration)) { this._model.library.status = "error"; this._model.library.error = "Package library is unavailable. Ordering and local drafts remain separate."; if (this._model.library.activeView === "packages") this._renderPackages(); } }
   }
 
   _renderPackages() {
     const host = this.shadowRoot.querySelector("#main-content"); host.replaceChildren();
-    if (this._model.library.status === "loading") { const box = this._emptyState("Loading package library", "Reading versioned aliases and packages…"); box.setAttribute("aria-busy", "true"); host.append(box); return; }
+    if (this._model.library.status === "loading") { const box = this._emptyState("Loading package library", "Reading saved packages…"); box.setAttribute("aria-busy", "true"); host.append(box); return; }
     if (this._model.library.status === "error") { host.append(this._emptyState("Package library unavailable", this._model.library.error, "Try library again", "reload-library")); return; }
     const layout = this._el("div", "library-layout");
-    const addressSection = this._el("section", "library-section"); const addressHead = this._el("div", "section-head"); addressHead.append(this._el("h2", "", "Address aliases"), this._button("Create address alias", "new-address-alias", "primary")); addressSection.append(addressHead);
-    if (!this._model.library.addresses.length) addressSection.append(this._el("p", "quiet", "No address aliases yet. Bind an alias to the currently selected saved address."));
-    else {
-      const grid = this._el("div", "library-grid"); this._model.library.addresses.forEach((address) => {
-        const card = this._el("article", "library-card"); card.append(this._el("h3", "", address.name || "Address alias"), this._el("div", "quiet", `Version ${address.revision}`));
-        const actions = this._el("div", "library-actions"); const edit = this._button("Update alias", "edit-address-alias"); edit.dataset.addressRef = address.addressRef; const remove = this._button("Delete alias", "ask-delete-address", "danger"); remove.dataset.addressRef = address.addressRef; actions.append(edit, remove); card.append(actions); grid.append(card);
-      }); addressSection.append(grid);
-    }
-    if (this._model.library.aliasEditor) addressSection.append(this._renderAddressEditor());
-    const packageSection = this._el("section", "library-section"); const packageHead = this._el("div", "section-head"); packageHead.append(this._el("h2", "", "Package library"), this._button("Create package", "new-package", "primary")); packageSection.append(packageHead);
+    const packageSection = this._el("section", "library-section"); const packageHead = this._el("div", "section-head"); packageHead.append(this._el("h2", "", "Package library"));
+    if (this._model.draft.lines.length) packageHead.append(this._button("Save current draft as package", "new-package", "primary"));
+    packageSection.append(packageHead);
     if (!this._model.library.packages.length) packageSection.append(this._el("p", "quiet", "No packages yet. Build a menu draft, then save it as a versioned package with multiple aliases."));
     else {
       const grid = this._el("div", "library-grid"); this._model.library.packages.forEach((item) => grid.append(this._renderPackageCard(item))); packageSection.append(grid);
     }
-    layout.append(addressSection, packageSection); host.append(layout);
-  }
-
-  _renderAddressEditor() {
-    const editor = this._model.library.aliasEditor; const form = this._el("div", "panel-card form-grid");
-    form.append(this._el("h3", "", editor.addressRef ? "Update address alias" : "Create address alias"));
-    const nameLabel = this._el("label", "field"); nameLabel.append(this._el("span", "", "Alias name")); const input = this._el("input"); input.dataset.libraryField = "alias-name"; input.value = editor.name; nameLabel.append(input); form.append(nameLabel);
-    const addressLabel = this._el("label", "field"); addressLabel.append(this._el("span", "", "Bind to current saved address (versioned)")); const select = this._el("select"); select.dataset.libraryField = "alias-handle"; select.add(new Option("Select saved address", "")); this._model.context.addresses.forEach((item) => select.add(new Option(item.fullAddress || item.label || "Saved address", item.key || item.addressHandle))); select.value = editor.addressHandle || this._model.context.addressHandle; addressLabel.append(select); form.append(addressLabel);
-    const actions = this._el("div", "library-actions"); actions.append(this._button("Cancel", "cancel-address-alias"), this._button(editor.addressRef ? "Update alias" : "Create address alias", "save-address-alias", "primary")); form.append(actions); return form;
+    layout.append(packageSection); host.append(layout);
   }
 
   _renderPackageCard(item) {
     const card = this._el("article", "library-card"); card.append(this._el("h3", "", item.name || "Package"));
     const aliases = Array.isArray(item.aliases) && item.aliases.length ? item.aliases.join(", ") : "No alternate aliases";
-    card.append(this._el("div", "quiet", aliases), this._el("div", "", `${item.itemCount || 0} item(s) · ${item.storeLabel || "Store unavailable"}`), this._el("div", "quiet", `Address: ${item.addressName || "Unbound"} · version ${item.revision}`));
-    const override = this._el("select"); override.setAttribute("aria-label", `Address override for ${item.name || "package"}`); override.dataset.packageAddress = item.packageRef; override.add(new Option("Pinned versioned address", "")); this._model.library.addresses.forEach((address) => override.add(new Option(address.name, address.addressRef))); card.append(override);
+    card.append(this._el("div", "quiet", aliases), this._el("div", "", `${item.itemCount || 0} item(s) · ${item.storeLabel || "Store unavailable"} · version ${item.revision}`));
+    const items = this._el("ul", "package-items");
+    (Array.isArray(item.items) ? item.items : []).forEach((line) => { const options = Array.isArray(line.options) && line.options.length ? ` — ${line.options.join(", ")}` : ""; items.append(this._el("li", "", `${line.quantity || 0} × ${line.label || "Item"}${options}`)); });
+    card.append(items);
+    const addressLabel = this._el("label", "field"); addressLabel.append(this._el("span", "", "Delivery address for this order"));
+    const address = this._el("select", "package-address"); address.setAttribute("aria-label", `Delivery address for ${item.name || "package"}`); address.dataset.packageAddressHandle = item.packageRef; address.add(new Option("Choose a current saved address", "")); this._model.context.addresses.forEach((entry) => address.add(new Option(this._addressDisplay(entry), entry.key || entry.addressHandle))); addressLabel.append(address); card.append(addressLabel);
     const actions = this._el("div", "library-actions");
-    [["Load into draft", "load-package"], ["Edit", "edit-package"], ["Duplicate", "duplicate-package"], ["Delete package", "ask-delete-package"]].forEach(([copy, action]) => { const button = this._button(copy, action, action.includes("delete") ? "danger" : ""); button.dataset.packageRef = item.packageRef; actions.append(button); });
+    [["Order this package", "order-package"], ["Edit", "edit-package"], ["Duplicate", "duplicate-package"], ["Delete package", "ask-delete-package"]].forEach(([copy, action]) => { const button = this._button(copy, action, action === "order-package" ? "primary" : (action.includes("delete") ? "danger" : "")); button.dataset.packageRef = item.packageRef; actions.append(button); });
     card.append(actions); return card;
-  }
-
-  _openAddressEditor(addressRef = "") {
-    const address = this._model.library.addresses.find((item) => item.addressRef === addressRef);
-    this._model.library.aliasEditor = { addressRef: address?.addressRef || "", expectedRevision: address?.revision || 0, name: address?.name || "", addressHandle: this._model.context.addressHandle };
-    this._renderPackages();
-  }
-
-  async _saveAddressAlias() {
-    const editor = this._model.library.aliasEditor; if (!editor) return;
-    const name = editor.name.trim(); const addressHandle = editor.addressHandle || this._model.context.addressHandle;
-    if (!name || !addressHandle) { this._setLifecycle("ready", "Alias name and an exact current saved address are required.", "warning"); return; }
-    return this._runSingleFlight("library-write", async () => {
-      const capturedGeneration = this._generation;
-      try {
-        await this._request("library/address_save", { ...this._withGeneration(), expectedStoreRevision: this._model.library.storeRevision, addressRef: editor.addressRef, expectedRevision: editor.expectedRevision, name, addressHandle });
-        if (capturedGeneration !== this._generation) return;
-        this._model.library.aliasEditor = null; this._setLifecycle("ready", "Address alias saved with an exact versioned binding."); await this._loadLibrary(); this._renderAll();
-      } catch (_error) { if (capturedGeneration !== this._generation) return; this._setLifecycle("ready", "Address alias was not saved. Refresh the library before retrying manually.", "error"); }
-    });
-  }
-
-  async _deleteAddressAlias(addressRef) {
-    const address = this._model.library.addresses.find((item) => item.addressRef === addressRef); if (!address) return;
-    return this._runSingleFlight("library-write", async () => {
-      const capturedGeneration = this._generation;
-      try { await this._request("library/address_delete", { ...this._withGeneration(), expectedStoreRevision: this._model.library.storeRevision, addressRef, expectedRevision: address.revision }); if (capturedGeneration !== this._generation) return; this._setLifecycle("ready", "Address alias deleted."); await this._loadLibrary(); this._renderAll(); }
-      catch (_error) { if (capturedGeneration !== this._generation) return; this._setLifecycle("ready", "Address alias could not be deleted. It may still be referenced or have a newer revision.", "error"); }
-    });
   }
 
   _openPackageEditor(packageRef = "", duplicate = false, trigger) {
     const item = this._model.library.packages.find((entry) => entry.packageRef === packageRef);
-    const address = this._model.library.addresses.find((entry) => entry.addressRef === item?.addressRef);
-    this._model.library.packageEditor = { packageRef: duplicate ? "" : (item?.packageRef || ""), expectedRevision: duplicate ? 0 : (item?.revision || 0), name: item ? `${item.name}${duplicate ? " copy" : ""}` : "", aliases: item?.aliases ? [...item.aliases] : [], addressRef: item?.addressRef || "", addressRevision: address?.revision || 0 };
+    this._model.library.packageEditor = { packageRef: duplicate ? "" : (item?.packageRef || ""), expectedRevision: duplicate ? 0 : (item?.revision || 0), name: item ? `${item.name}${duplicate ? " copy" : ""}` : "", aliases: item?.aliases ? [...item.aliases] : [] };
     this._renderPackageEditor(); this._openDialog("package-dialog", trigger);
   }
 
@@ -1125,9 +1092,11 @@ class GlovoOrderingPanel extends HTMLElement {
     const editor = this._model.library.packageEditor; if (!editor) return;
     const host = this.shadowRoot.querySelector("#package-editor-content"); host.replaceChildren(); const form = this._el("div", "form-grid");
     const name = this._el("label", "field"); name.append(this._el("span", "", "Package name")); const nameInput = this._el("input"); nameInput.dataset.libraryField = "package-name"; nameInput.value = editor.name; name.append(nameInput); form.append(name);
-    const aliases = this._el("label", "field"); aliases.append(this._el("span", "", "Aliases (comma separated, multiple allowed)")); const aliasInput = this._el("input"); aliasInput.dataset.libraryField = "package-aliases"; aliasInput.value = editor.aliases.join(", "); aliases.append(aliasInput); form.append(aliases);
-    const address = this._el("label", "field"); address.append(this._el("span", "", "Versioned address alias")); const select = this._el("select"); select.dataset.libraryField = "package-address"; select.add(new Option("Select address alias", "")); this._model.library.addresses.forEach((item) => select.add(new Option(`${item.name} · v${item.revision}`, item.addressRef))); select.value = editor.addressRef; address.append(select); form.append(address);
-    form.append(this._el("p", "quiet", `${this._model.draft.lines.length} current draft line(s) will be saved. Loading or preparing a package never syncs the provider basket.`));
+    const advanced = this._el("details"); advanced.append(this._el("summary", "touch-target", "Alternate aliases (optional)")); const aliases = this._el("label", "field"); aliases.append(this._el("span", "", "Comma-separated aliases")); const aliasInput = this._el("input"); aliasInput.dataset.libraryField = "package-aliases"; aliasInput.value = editor.aliases.join(", "); aliases.append(aliasInput); advanced.append(aliases); form.append(advanced);
+    form.append(this._el("p", "quiet", `${this._model.draft.lines.length} current draft line(s) will be saved. Packages never save a delivery address, and saving never syncs the provider basket.`));
+    const summary = this._el("ul", "package-items");
+    this._model.draft.lines.forEach((line) => { const options = line.options.flatMap((group) => group.optionLabels || []); summary.append(this._el("li", "", `${line.quantity} × ${line.label}${options.length ? ` — ${options.join(", ")}` : ""}`)); });
+    form.append(summary);
     if (!this._model.context.store) form.append(this._el("p", "field-error", "Select an explicit store and load its menu before saving a package."));
     else if (!this._storeAllowsOrdering()) form.append(this._el("p", "field-error", "Closed-store menus are browse-only and cannot be saved as prepared packages."));
     host.append(form);
@@ -1135,14 +1104,14 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   async _savePackage() {
-    const editor = this._model.library.packageEditor; const address = this._model.library.addresses.find((item) => item.addressRef === editor?.addressRef);
+    const editor = this._model.library.packageEditor;
     if (!this._storeAllowsOrdering()) { this._setLifecycle("ready", "Closed-store menus are browse-only. No package or provider state was changed.", "warning"); return; }
-    if (!editor || !editor.name.trim() || !address || !this._model.context.store || !this._model.draft.lines.length) { this._setLifecycle("ready", "Package name, versioned address alias, loaded store, and draft items are required.", "warning"); return; }
+    if (!editor || !editor.name.trim() || !this._model.context.store || !this._model.draft.lines.length) { this._setLifecycle("ready", "Package name, loaded store, and draft items are required.", "warning"); return; }
     const aliases = editor.aliases.map((item) => item.trim()).filter(Boolean);
     return this._runSingleFlight("library-write", async () => {
       const capturedGeneration = this._generation;
       try {
-        await this._request("library/package_save", { ...this._withGeneration(), expectedStoreRevision: this._model.library.storeRevision, packageRef: editor.packageRef, expectedRevision: editor.expectedRevision, name: editor.name.trim(), aliases, addressRef: address.addressRef, addressRevision: address.revision, storeHandle: this._model.context.store.storeHandle, products: this._serializeBasket() });
+        await this._request("library/package_save", { ...this._withGeneration(), expectedStoreRevision: this._model.library.storeRevision, packageRef: editor.packageRef, expectedRevision: editor.expectedRevision, name: editor.name.trim(), aliases, storeHandle: this._model.context.store.storeHandle, products: this._serializeBasket() });
         if (capturedGeneration !== this._generation) return;
         this._model.library.packageEditor = null; this._closeDialog("package-dialog"); this._setLifecycle("ready", "Package saved. This changed only the local versioned library; provider basket was not mutated."); await this._loadLibrary(); this._renderAll();
       } catch (_error) { if (capturedGeneration !== this._generation) return; this._setLifecycle("ready", "Package was not saved. Refresh the library before retrying manually.", "error"); }
@@ -1158,21 +1127,27 @@ class GlovoOrderingPanel extends HTMLElement {
     });
   }
 
-  async _preparePackage(packageRef, addressKey = "", editorRequest = null) {
+  async _preparePackage(packageRef, addressHandle = "", editorRequest = null) {
+    if (!addressHandle) { this._setLifecycle("ready", "Choose a current saved delivery address for this package. Nothing was requested.", "warning"); return; }
     return this._runSingleFlight("package-prepare", async () => {
       const capturedGeneration = this._generation;
       this._setLifecycle("ready", "Preparing the package with fresh GET-only reconciliation…");
       try {
-        const response = await this._request("library/package_prepare", { ...this._withGeneration(), packageKey: packageRef, addressKey });
+        const response = await this._request("library/package_prepare", { ...this._withGeneration(), packageKey: packageRef, addressHandle });
         if (capturedGeneration !== this._generation) return;
         if (response?.status !== "ready" || response?.selectionComplete !== true) { this._setLifecycle("ready", `Package needs review: ${this._safeStaleReason(response?.reason)}. No basket write occurred.`, "warning"); return; }
         const menu = response.menu || { products: [] };
         this._model.context.addressHandle = response.address?.key || "";
-        this._model.context.addressLabel = response.address?.fullAddress || response.address?.label || response.address?.name || "";
-        this._model.context.addresses = response.address?.key ? [{ ...response.address }] : [];
+        this._model.context.addressLabel = response.address?.fullAddress || response.address?.label || "";
+        if (response.address?.key) {
+          const currentAddresses = this._model.context.addresses;
+          this._model.context.addresses = currentAddresses.some((item) => (item.key || item.addressHandle) === response.address.key)
+            ? currentAddresses.map((item) => (item.key || item.addressHandle) === response.address.key ? { ...item, ...response.address } : item)
+            : [...currentAddresses, { ...response.address }];
+        }
         this._model.context.store = response.store || null; this._model.context.stores = response.store ? [response.store] : []; this._model.menu = { status: "ready", products: Array.isArray(menu.products) ? menu.products : [], query: "", filter: "all", error: "" };
         this._model.draft.lines = (response.selection?.products || []).map((selection) => this._lineFromSelection(selection)).filter(Boolean); this._model.draft.dirty = true; this._model.basket.status = this._model.draft.lines.length ? "draft" : "empty"; this._invalidateAuthority("");
-        this._model.library.activeView = editorRequest ? "packages" : "menu";
+        this._model.library.activeView = "menu";
         this._setLifecycle("ready", editorRequest ? "Package reconciled for editing. Saving updates only the versioned library." : "Package loaded into the local draft after exact reconciliation. Choose Sync basket separately."); this._renderAll();
         if (editorRequest) {
           const action = editorRequest.duplicate ? "duplicate-package" : "edit-package";
@@ -1181,6 +1156,10 @@ class GlovoOrderingPanel extends HTMLElement {
         }
       } catch (_error) { if (capturedGeneration !== this._generation) return; this._setLifecycle("ready", "Package preparation failed safely. No provider mutation or automatic retry occurred.", "error"); }
     });
+  }
+
+  _selectedPackageAddress(packageRef) {
+    return this.shadowRoot.querySelector(`select[data-package-address-handle='${CSS.escape(packageRef)}']`)?.value || "";
   }
 
   _lineFromSelection(selection) {
@@ -1195,7 +1174,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   _safeStaleReason(reason) {
-    const safe = { account_changed: "provider account changed", address_missing_or_changed: "address missing or changed", store_missing_or_changed: "store missing or changed", store_closed: "store is currently closed", product_missing_or_changed: "product missing or changed", option_missing_or_changed: "option missing or changed", selection_constraints_changed: "selection constraints changed" };
+    const safe = { account_changed: "provider account changed", store_missing_or_changed: "store missing or changed", store_closed: "store is currently closed", product_missing_or_changed: "product missing or changed", option_missing_or_changed: "option missing or changed", selection_constraints_changed: "selection constraints changed" };
     return safe[reason] || "saved package is stale";
   }
 
@@ -1267,17 +1246,12 @@ class GlovoOrderingPanel extends HTMLElement {
     else if (action === "check-checkout-status") this._checkCheckoutStatus();
     else if (action === "resolve-manual") this._resolveManual(button.dataset.resolution);
     else if (action === "reload-library") this._loadLibrary();
-    else if (action === "new-address-alias") this._openAddressEditor();
-    else if (action === "edit-address-alias") this._openAddressEditor(button.dataset.addressRef);
-    else if (action === "cancel-address-alias") { this._model.library.aliasEditor = null; this._renderPackages(); }
-    else if (action === "save-address-alias") this._saveAddressAlias();
-    else if (action === "ask-delete-address") { this._confirmation = { kind: "delete-address", payload: button.dataset.addressRef }; this._askConfirmation("Delete address alias?", "Referenced aliases cannot be deleted. No provider address will be changed.", "delete-address", button); this._confirmation.payload = button.dataset.addressRef; }
     else if (action === "new-package") this._openPackageEditor("", false, button);
-    else if (action === "edit-package") this._preparePackage(button.dataset.packageRef, "", { duplicate: false });
-    else if (action === "duplicate-package") this._preparePackage(button.dataset.packageRef, "", { duplicate: true });
+    else if (action === "edit-package") this._preparePackage(button.dataset.packageRef, this._selectedPackageAddress(button.dataset.packageRef), { duplicate: false });
+    else if (action === "duplicate-package") this._preparePackage(button.dataset.packageRef, this._selectedPackageAddress(button.dataset.packageRef), { duplicate: true });
     else if (action === "save-package") this._savePackage();
     else if (action === "ask-delete-package") { this._askConfirmation("Delete package?", "This removes only the local versioned package. It never changes the provider basket.", "delete-package", button); this._confirmation.payload = button.dataset.packageRef; }
-    else if (action === "load-package") { const select = this.shadowRoot.querySelector(`select[data-package-address='${CSS.escape(button.dataset.packageRef)}']`); this._preparePackage(button.dataset.packageRef, select?.value || ""); }
+    else if (action === "order-package") this._preparePackage(button.dataset.packageRef, this._selectedPackageAddress(button.dataset.packageRef));
   }
 
   _onInput(event) {
@@ -1286,7 +1260,6 @@ class GlovoOrderingPanel extends HTMLElement {
     else if (target.id === "store-input") this._model.context.storeInput = target.value;
     else if (target.id === "custom-quantity" && this._model.overlay?.type === "customizer") this._model.overlay.quantity = Number(target.value);
     else if (target.dataset.role === "typed-ack" && this._model.quote) { this._model.quote.typed = target.value; this.shadowRoot.querySelectorAll("[data-action='submit-checkout']").forEach((button) => { button.disabled = target.value !== this._model.quote.ackText || this._singleFlights.has("checkout"); }); }
-    else if (target.dataset.libraryField === "alias-name" && this._model.library.aliasEditor) this._model.library.aliasEditor.name = target.value;
     else if (target.dataset.libraryField === "package-name" && this._model.library.packageEditor) this._model.library.packageEditor.name = target.value;
     else if (target.dataset.libraryField === "package-aliases" && this._model.library.packageEditor) this._model.library.packageEditor.aliases = target.value.split(",");
   }
@@ -1303,8 +1276,6 @@ class GlovoOrderingPanel extends HTMLElement {
       else if (target.checked) selected.add(target.dataset.optionHandle); else selected.delete(target.dataset.optionHandle);
       this._model.overlay.selections.set(target.dataset.groupHandle, selected); this._model.overlay.errors.delete(target.dataset.groupHandle); this._renderCustomizer();
     } else if (target.dataset.role === "payment-select") { this._model.payments.selected = target.value; this._invalidateAuthority("Payment selection changed; quote authority was discarded."); this._renderAll(); }
-    else if (target.dataset.libraryField === "alias-handle" && this._model.library.aliasEditor) this._model.library.aliasEditor.addressHandle = target.value;
-    else if (target.dataset.libraryField === "package-address" && this._model.library.packageEditor) { const address = this._model.library.addresses.find((item) => item.addressRef === target.value); this._model.library.packageEditor.addressRef = target.value; this._model.library.packageEditor.addressRevision = address?.revision || 0; }
   }
 
   _onKeydown(event) {
