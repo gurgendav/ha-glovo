@@ -60,19 +60,25 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
-### Guarded live paid checkout
+### Guarded live paid checkout remains unavailable in home.7
 
-Release `1.1.0+home.6` includes an experimental administrator-only paid checkout path.
-It remains default-off behind **separate** preparation and paid-spending switches and
-acknowledgements. Enabling paid checkout requires preparation consent as well. Migration
-and reauthentication reset all four values, and capability becomes false on unload,
-options change, unresolved outcome, or integrity fault.
+Release `1.1.0+home.7` does **not** compose a final checkout adapter or request factory,
+reports final checkout unavailable, and does not register the final-submit command.
+The reviewed paid-checkout seam remains isolated for offline tests only. The retained
+paid-spending options do not grant runtime purchase authority in this release.
 
 Home.6 conservatively classifies preparatory post-dispatch failures. Only a closed
 `provider_rejection` with an explicitly allowlisted deterministic HTTP status becomes
 terminal provider failure. Missing or unapproved status, transport/5xx/cancellation,
 malformed success, parser mismatch, and every other unknown outcome durably require
 reconciliation and block later ordering; exception class names carry no authority.
+
+Home.7 keeps unresolved preparatory writes visibly recoverable while every normal
+mutation and final submission remains blocked. An administrator may record one local,
+challenge-bound observation; this performs no provider request and never re-submits the
+original write. The authority record, exact account binding, and durable generation are
+updated in fail-closed order. Manual paid-checkout recovery remains independently visible
+when both recovery kinds coexist, and no private preparation identity is exposed.
 
 Release `1.1.0+home.3` was withdrawn after its stop-before-submit canary detected
 provider basket-contract drift. No final checkout was dispatched. This release restores

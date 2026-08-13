@@ -37,6 +37,9 @@ class PreparationState(StrEnum):
     RECONCILED = "RECONCILED"
     PROVIDER_SUCCEEDED = "PROVIDER_SUCCEEDED"
     PROVIDER_FAILED = "PROVIDER_FAILED"
+    OPERATOR_ATTESTED_SUCCEEDED = "OPERATOR_ATTESTED_SUCCEEDED"
+    OPERATOR_ATTESTED_FAILED = "OPERATOR_ATTESTED_FAILED"
+    OPERATOR_ATTESTED_UNKNOWN = "OPERATOR_ATTESTED_UNKNOWN"
     INTEGRITY_FAULT = "INTEGRITY_FAULT"
 
 
@@ -181,7 +184,10 @@ class PreparationAttempt:
         ):
             raise PreparationAuthorityFault("private checkout reference is invalid")
         outcome = raw["outcome_category"]
-        if outcome is not None and outcome not in {"ambiguous", "provider_success", "provider_failure"}:
+        if outcome is not None and outcome not in {
+            "ambiguous", "provider_success", "provider_failure",
+            "operator_succeeded", "operator_failed_or_cancelled", "operator_unknown",
+        }:
             raise PreparationAuthorityFault("preparation outcome category is invalid")
         evidence = raw["provider_evidence_hash"]
         record = cls(
@@ -213,6 +219,8 @@ def _validate(record: PreparationAttempt) -> None:
         PreparationState.RECONCILED,
         PreparationState.PROVIDER_SUCCEEDED,
         PreparationState.PROVIDER_FAILED,
+        PreparationState.OPERATOR_ATTESTED_SUCCEEDED,
+        PreparationState.OPERATOR_ATTESTED_FAILED,
     }
     if pre_dispatch and (
         record.dispatch_started_at is not None or record.outcome_category is not None
@@ -244,6 +252,19 @@ def _validate(record: PreparationAttempt) -> None:
         or (record.state is PreparationState.PROVIDER_SUCCEEDED) != (record.outcome_category == "provider_success")
     ):
         raise PreparationAuthorityFault("provider terminal preparation evidence is contradictory")
+    operator_states = {
+        PreparationState.OPERATOR_ATTESTED_SUCCEEDED: "operator_succeeded",
+        PreparationState.OPERATOR_ATTESTED_FAILED: "operator_failed_or_cancelled",
+        PreparationState.OPERATOR_ATTESTED_UNKNOWN: "operator_unknown",
+    }
+    if record.state in operator_states and (
+        record.dispatch_started_at is None
+        or record.outcome_category != operator_states[record.state]
+        or record.provider_evidence_hash is not None
+        or record.private_checkout_reference is not None
+        or record.reconciliation_get_used
+    ):
+        raise PreparationAuthorityFault("operator preparation attestation is contradictory")
     if record.state is PreparationState.INTEGRITY_FAULT and terminal:
         raise PreparationAuthorityFault("integrity preparation metadata is contradictory")
 
@@ -272,9 +293,27 @@ class PreparationMutationAuthority:
 
     @property
     def unresolved(self) -> tuple[PreparationAttempt, ...]:
+        binding = (
+            self._durable_state.preparation_binding
+            if self._durable_state is not None
+            else None
+        )
         return tuple(
             record for record in self._records
-            if record.state in {PreparationState.DISPATCHING, PreparationState.RECONCILIATION_REQUIRED}
+            if record.state in {
+                PreparationState.DISPATCHING,
+                PreparationState.RECONCILIATION_REQUIRED,
+                PreparationState.OPERATOR_ATTESTED_UNKNOWN,
+            }
+            or (
+                record.state
+                in {
+                    PreparationState.OPERATOR_ATTESTED_SUCCEEDED,
+                    PreparationState.OPERATOR_ATTESTED_FAILED,
+                }
+                and binding is not None
+                and binding.attempt_id == record.attempt_id
+            )
         )
 
     def _now(self) -> float:
@@ -300,11 +339,11 @@ class PreparationMutationAuthority:
                 cancelled = True
         return task.result(), cancelled
 
-    async def _latch_reconciliation(self, record: PreparationAttempt) -> None:
+    async def _latch_reconciliation(self, record: PreparationAttempt) -> bool:
         if self._durable_state is None:
-            return
+            return False
         try:
-            await self._cancel_resistant(
+            _, cancelled = await self._cancel_resistant(
                 self._durable_state.async_latch_preparation_reconciliation(
                     attempt_id=record.attempt_id,
                     record_revision=record.record_revision,
@@ -312,6 +351,7 @@ class PreparationMutationAuthority:
                     expectation_hash=record.expectation_hash,
                 )
             )
+            return cancelled
         except BaseException:
             # A second independent durable layer must never be skipped.  If it
             # cannot bind the block, latch permanent integrity before returning.
@@ -320,6 +360,24 @@ class PreparationMutationAuthority:
             except BaseException:
                 self.integrity_fault = True
             raise
+
+    async def _refresh_reconciliation_binding(
+        self, record: PreparationAttempt
+    ) -> bool:
+        """Update an existing exact block without escalating a transient recovery write."""
+        if self._durable_state is None:
+            raise PreparationAuthorityFault(
+                "preparation reconciliation binding is unavailable"
+            )
+        _, cancelled = await self._cancel_resistant(
+            self._durable_state.async_latch_preparation_reconciliation(
+                attempt_id=record.attempt_id,
+                record_revision=record.record_revision,
+                purpose=record.purpose.value,
+                expectation_hash=record.expectation_hash,
+            )
+        )
+        return cancelled
 
     async def async_load(self) -> tuple[PreparationAttempt, ...]:
         async with self._lock:
@@ -338,7 +396,14 @@ class PreparationMutationAuthority:
                 records = [PreparationAttempt.from_raw(item) for item in raw["records"]]
                 if len({item.attempt_id for item in records}) != len(records):
                     raise PreparationAuthorityFault("preparation attempt identities are not unique")
-                if len([item for item in records if item.state in {PreparationState.DISPATCHING, PreparationState.RECONCILIATION_REQUIRED}]) > 1:
+                if len([
+                    item for item in records
+                    if item.state in {
+                        PreparationState.DISPATCHING,
+                        PreparationState.RECONCILIATION_REQUIRED,
+                        PreparationState.OPERATOR_ATTESTED_UNKNOWN,
+                    }
+                ]) > 1:
                     raise PreparationAuthorityFault("multiple unresolved preparation attempts")
                 changed = False
                 recovered: PreparationAttempt | None = None
@@ -351,15 +416,52 @@ class PreparationMutationAuthority:
                             record_revision=item.record_revision + 1,
                         )
                         changed = True
-                    if item.state is PreparationState.RECONCILIATION_REQUIRED:
+                    if item.state in {
+                        PreparationState.RECONCILIATION_REQUIRED,
+                        PreparationState.OPERATOR_ATTESTED_UNKNOWN,
+                    } or (
+                        item.state
+                        in {
+                            PreparationState.OPERATOR_ATTESTED_SUCCEEDED,
+                            PreparationState.OPERATOR_ATTESTED_FAILED,
+                        }
+                        and self._durable_state is not None
+                        and self._durable_state.preparation_binding is not None
+                        and self._durable_state.preparation_binding.attempt_id
+                        == item.attempt_id
+                    ):
                         recovered = item
                     normalized.append(PreparationAttempt.from_raw(item.to_raw()))
+                binding = (
+                    self._durable_state.preparation_binding
+                    if self._durable_state is not None
+                    else None
+                )
+                if binding is not None and not any(
+                    item.attempt_id == binding.attempt_id
+                    and item.purpose.value == binding.purpose
+                    and item.expectation_hash == binding.expectation_hash
+                    and item.state
+                    in {
+                        PreparationState.DISPATCHING,
+                        PreparationState.RECONCILIATION_REQUIRED,
+                        PreparationState.OPERATOR_ATTESTED_UNKNOWN,
+                        PreparationState.OPERATOR_ATTESTED_SUCCEEDED,
+                        PreparationState.OPERATOR_ATTESTED_FAILED,
+                    }
+                    for item in normalized
+                ):
+                    raise PreparationAuthorityFault(
+                        "preparation reconciliation binding is contradictory"
+                    )
                 if changed:
                     await self._save(normalized)
                 self._records = normalized
                 self.loaded = True
                 if recovered is not None:
-                    await self._latch_reconciliation(recovered)
+                    cancelled = await self._latch_reconciliation(recovered)
+                    if cancelled:
+                        raise asyncio.CancelledError
                 return self.records
             except (PreparationAuthorityFault, OrderingStateFault):
                 self.integrity_fault = True
@@ -443,7 +545,7 @@ class PreparationMutationAuthority:
                 raise
             self._records = candidate
             if state is PreparationState.RECONCILIATION_REQUIRED:
-                await self._latch_reconciliation(updated)
+                cancelled = await self._latch_reconciliation(updated) or cancelled
             if cancelled:
                 raise asyncio.CancelledError
             return updated
@@ -472,16 +574,122 @@ class PreparationMutationAuthority:
                 record_revision=current.record_revision + 1,
             ).to_raw())
             candidate = [updated if item.attempt_id == attempt_id else item for item in self._records]
-            await self._cancel_resistant(self._save(candidate))
+            _, cancelled = await self._cancel_resistant(self._save(candidate))
             self._records = candidate
             if exact and self._durable_state is not None:
-                await self._cancel_resistant(
+                _, clear_cancelled = await self._cancel_resistant(
                     self._durable_state.async_clear_preparation_reconciliation(
                         attempt_id=updated.attempt_id,
                         purpose=updated.purpose.value,
                         expectation_hash=updated.expectation_hash,
                     )
                 )
+                cancelled = cancelled or clear_cancelled
             if not exact:
-                await self._latch_reconciliation(updated)
+                cancelled = await self._latch_reconciliation(updated) or cancelled
+            if cancelled:
+                raise asyncio.CancelledError
+            return updated
+
+    async def async_operator_attest_once(
+        self,
+        *,
+        expected_revision: int,
+        expected_state: str,
+        resolution: str,
+    ) -> PreparationAttempt:
+        """Record one explicit local operator conclusion; this performs no GET."""
+        async with self._lock:
+            binding = (
+                self._durable_state.preparation_binding
+                if self._durable_state is not None
+                else None
+            )
+            current = next(
+                (
+                    item
+                    for item in self._records
+                    if binding is not None and item.attempt_id == binding.attempt_id
+                ),
+                None,
+            )
+            if (
+                binding is None
+                or current is None
+                or current.record_revision != expected_revision
+                or current.state.value != expected_state
+                or binding.purpose != current.purpose.value
+                or binding.expectation_hash != current.expectation_hash
+            ):
+                raise PreparationReplayDenied("preparation attestation identity changed")
+            terminal = {
+                "found_succeeded": (
+                    PreparationState.OPERATOR_ATTESTED_SUCCEEDED,
+                    "operator_succeeded",
+                ),
+                "found_failed_or_cancelled": (
+                    PreparationState.OPERATOR_ATTESTED_FAILED,
+                    "operator_failed_or_cancelled",
+                ),
+            }
+            historical = {
+                PreparationState.OPERATOR_ATTESTED_SUCCEEDED: "found_succeeded",
+                PreparationState.OPERATOR_ATTESTED_FAILED: "found_failed_or_cancelled",
+            }
+            cancelled = False
+            if current.state in historical:
+                if historical[current.state] != resolution:
+                    raise PreparationReplayDenied(
+                        "preparation attestation conflicts with history"
+                    )
+                updated = current
+            elif current.state is PreparationState.RECONCILIATION_REQUIRED:
+                if resolution == "still_unknown":
+                    next_state = PreparationState.OPERATOR_ATTESTED_UNKNOWN
+                    outcome = "operator_unknown"
+                elif resolution in terminal:
+                    next_state, outcome = terminal[resolution]
+                else:
+                    raise PreparationAuthorityFault("preparation attestation is invalid")
+                updated = PreparationAttempt.from_raw(
+                    replace(
+                        current,
+                        state=next_state,
+                        updated_at=self._now(),
+                        outcome_category=outcome,
+                        record_revision=current.record_revision + 1,
+                    ).to_raw()
+                )
+                candidate = [
+                    updated if item.attempt_id == current.attempt_id else item
+                    for item in self._records
+                ]
+                _, cancelled = await self._cancel_resistant(self._save(candidate))
+                self._records = candidate
+            else:
+                raise PreparationReplayDenied("preparation attestation is unavailable")
+
+            # Update the paired binding to the new revision before trying to clear
+            # it. A failed or cancelled clear then remains exactly resumable after
+            # restart instead of detaching terminal history from an old binding.
+            cancelled = (
+                await self._refresh_reconciliation_binding(updated) or cancelled
+            )
+            if updated.state is PreparationState.OPERATOR_ATTESTED_UNKNOWN:
+                if cancelled:
+                    raise asyncio.CancelledError
+                return updated
+            if self._durable_state is None:
+                raise PreparationAuthorityFault(
+                    "preparation attestation binding is unavailable"
+                )
+            _, clear_cancelled = await self._cancel_resistant(
+                self._durable_state.async_clear_preparation_reconciliation(
+                    attempt_id=updated.attempt_id,
+                    purpose=updated.purpose.value,
+                    expectation_hash=updated.expectation_hash,
+                )
+            )
+            if cancelled or clear_cancelled:
+                raise asyncio.CancelledError
             return updated

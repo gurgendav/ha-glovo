@@ -45,6 +45,12 @@ RECOVERY_COMMANDS: tuple[str, ...] = (
     "glovo/ordering/resolve_manual_check",
 )
 
+PREPARATION_RECOVERY_COMMANDS: tuple[str, ...] = (
+    "glovo/ordering/preparation_check",
+    "glovo/ordering/prepare_preparation_resolution",
+    "glovo/ordering/resolve_preparation_check",
+)
+
 
 class OrderingSurfaceAdapter(Protocol):
     """Small Home Assistant frontend/WebSocket adapter boundary."""
@@ -95,22 +101,53 @@ class OrderingSurface:
         # runtime are left callback-free by async_unload and fail closed.
         handlers: dict[str, Handler] = {
             PUBLIC_OPERATION_COMMANDS["state"]: self._state,
-            PUBLIC_OPERATION_COMMANDS["live/checkout_status"]: self._operation_handler(
-                "live/checkout_status"
-            ),
-            "glovo/ordering/manual_checks": self._manual_checks,
-            "glovo/ordering/manual_check": self._manual_check,
-            "glovo/ordering/prepare_manual_resolution": self._prepare_manual_resolution,
-            "glovo/ordering/resolve_manual_check": self._resolve_manual_check,
         }
+        preparation_recovery = bool(
+            getattr(self._manager, "preparation_recovery_required", False)
+        )
+        integrity_fault = bool(getattr(self._manager, "integrity_fault", False))
+        manual_recovery = bool(
+            getattr(self._manager, "manual_check_required", False) or integrity_fault
+        )
+        if preparation_recovery and not integrity_fault:
+            handlers.update(
+                {
+                    "glovo/ordering/preparation_check": self._preparation_check,
+                    "glovo/ordering/prepare_preparation_resolution": (
+                        self._prepare_preparation_resolution
+                    ),
+                    "glovo/ordering/resolve_preparation_check": (
+                        self._resolve_preparation_check
+                    ),
+                }
+            )
+        if manual_recovery or not preparation_recovery:
+            handlers.update(
+                {
+                    PUBLIC_OPERATION_COMMANDS["live/checkout_status"]: (
+                        self._operation_handler("live/checkout_status")
+                    ),
+                    "glovo/ordering/manual_checks": self._manual_checks,
+                    "glovo/ordering/manual_check": self._manual_check,
+                    "glovo/ordering/prepare_manual_resolution": (
+                        self._prepare_manual_resolution
+                    ),
+                    "glovo/ordering/resolve_manual_check": self._resolve_manual_check,
+                }
+            )
         if self._manager.live_ordering_available:
             handlers.update(
                 {
                     command: self._operation_handler(operation)
                     for operation, command in PUBLIC_OPERATION_COMMANDS.items()
-                    if operation not in {"state", "live/checkout_status"}
+                    if operation
+                    not in {"state", "live/checkout_status", "live/execute_checkout"}
                 }
             )
+            if bool(getattr(self._manager, "live_checkout_available", False)):
+                handlers[PUBLIC_OPERATION_COMMANDS["live/execute_checkout"]] = (
+                    self._operation_handler("live/execute_checkout")
+                )
         try:
             for name, handler in handlers.items():
                 await self._adapter.async_register_handler(name, handler)
@@ -162,6 +199,35 @@ class OrderingSurface:
         self, user: OrderingUser, _message: Mapping[str, Any]
     ) -> dict[str, Any]:
         return await self._manager.async_list_manual_checks(user)
+
+    async def _preparation_check(
+        self, user: OrderingUser, _message: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return await self._manager.async_get_preparation_check(user)
+
+    async def _prepare_preparation_resolution(
+        self, user: OrderingUser, message: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return await self._manager.async_prepare_preparation_resolution(
+            user,
+            expected_generation=message["expectedGeneration"],
+            expected_revision=message["expectedRecordRevision"],
+            expected_state=message["expectedState"],
+            resolution=message["resolution"],
+        )
+
+    async def _resolve_preparation_check(
+        self, user: OrderingUser, message: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return await self._manager.async_resolve_preparation_check(
+            user,
+            expected_generation=message["expectedGeneration"],
+            expected_revision=message["expectedRecordRevision"],
+            expected_state=message["expectedState"],
+            resolution=message["resolution"],
+            challenge=message["challenge"],
+            acknowledged=message["acknowledged"],
+        )
 
     async def _manual_check(
         self, user: OrderingUser, message: Mapping[str, Any]

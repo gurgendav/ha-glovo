@@ -509,11 +509,14 @@ class DurableOrderingState:
                     self.storage_fault = True
                     raise OrderingStateFault("preparation reconciliation binding changed unexpectedly")
             next_generation = max(self._snapshot.generation, durable.generation) + 1
+            manual_binding = durable.manual_binding
+            if manual_binding is not None:
+                manual_binding = replace(manual_binding, generation=next_generation)
             candidate = OrderingStateSnapshot(
                 next_generation,
                 durable.manual_check_required,
                 durable.integrity_fault,
-                durable.manual_binding,
+                manual_binding,
                 replace(requested, generation=next_generation),
             )
             await self._async_save_candidate(candidate)
@@ -537,11 +540,17 @@ class DurableOrderingState:
                 or binding.expectation_hash != expectation_hash
             ):
                 raise OrderingStateFault("preparation reconciliation clear binding mismatch")
+            next_generation = max(self._snapshot.generation, durable.generation) + 1
+            manual_binding = durable.manual_binding
+            if manual_binding is not None:
+                manual_binding = replace(
+                    manual_binding, generation=next_generation
+                )
             candidate = OrderingStateSnapshot(
-                durable.generation,
+                next_generation,
                 durable.manual_check_required,
                 durable.integrity_fault,
-                durable.manual_binding,
+                manual_binding,
                 None,
             )
             await self._async_save_candidate(candidate, permanent_on_failure=False)

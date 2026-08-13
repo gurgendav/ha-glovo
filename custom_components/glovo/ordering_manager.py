@@ -64,6 +64,10 @@ class InvalidManualResolution(OrderingError):
     """Manual resolution schema, state, revision, or challenge is invalid."""
 
 
+class InvalidPreparationResolution(OrderingError):
+    """Preparation attestation state, generation, or challenge is invalid."""
+
+
 class OrderingRecoveryWriteFailed(OrderingError):
     """Recovery persistence failed and ordering remains blocked."""
 
@@ -120,6 +124,20 @@ class _ManualResolutionChallenge:
         return "_ManualResolutionChallenge(<redacted>)"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _PreparationResolutionChallenge:
+    owner_key: str
+    record_revision: int
+    expected_state: str
+    resolution: str
+    generation: int
+    challenge: str
+    expires_at: float
+
+    def __repr__(self) -> str:
+        return "_PreparationResolutionChallenge(<redacted>)"
+
+
 class OrderingManager:
     """Account-scoped gate, state, serialization, and mock checkout orchestration."""
 
@@ -141,6 +159,7 @@ class OrderingManager:
         execution_mode: str = MOCK_MODE,
         live_dispatcher: Callable[[str, str, Mapping[str, Any]], Any] | None = None,
         live_availability: Callable[[], bool] | None = None,
+        live_checkout_availability: Callable[[], bool] | None = None,
         preparation_authority: Any | None = None,
     ) -> None:
         if execution_mode not in {MOCK_MODE, "live"}:
@@ -159,6 +178,7 @@ class OrderingManager:
         # mock adapter remains isolated from this capability.
         self._live_dispatcher = live_dispatcher
         self._live_availability = live_availability
+        self._live_checkout_availability = live_checkout_availability
         self._final_status_adapter: Any | None = None
         self._preparation_authority = preparation_authority
         self._clock = clock
@@ -170,6 +190,7 @@ class OrderingManager:
         self._quotes: dict[str, _QuoteContext] = {}
         self._confirmations: dict[str, _Confirmation] = {}
         self._manual_challenges: dict[str, _ManualResolutionChallenge] = {}
+        self._preparation_challenges: dict[str, _PreparationResolutionChallenge] = {}
         self._security_fault = self._durable_state.integrity_fault
         self._manual_check = self._durable_state.manual_check_required
         self._initialized = False
@@ -195,7 +216,12 @@ class OrderingManager:
 
     @property
     def integrity_fault(self) -> bool:
-        return self._security_fault or self._durable_state.integrity_fault
+        authority = self._preparation_authority
+        return bool(
+            self._security_fault
+            or self._durable_state.integrity_fault
+            or (authority is not None and authority.integrity_fault)
+        )
 
     @property
     def legacy_repair_status(self) -> str:
@@ -208,7 +234,26 @@ class OrderingManager:
 
     @property
     def recovery_required(self) -> bool:
-        return self.manual_check_required or self.integrity_fault
+        return (
+            self.manual_check_required
+            or self.preparation_recovery_required
+            or self.integrity_fault
+        )
+
+    @property
+    def preparation_recovery_required(self) -> bool:
+        authority = self._preparation_authority
+        try:
+            return bool(
+                authority is not None
+                and authority.loaded is True
+                and (
+                    authority.unresolved
+                    or self._durable_state.preparation_binding is not None
+                )
+            )
+        except Exception:
+            return False
 
     @property
     def basket_ttl_seconds(self) -> int | float:
@@ -234,6 +279,16 @@ class OrderingManager:
     def production_facade_active(self) -> bool:
         """Whether this manager owns a production facade rather than mock-only state."""
         return self._live_dispatcher is not None and self._live_availability is not None
+
+    @property
+    def live_checkout_available(self) -> bool:
+        availability = self._live_checkout_availability
+        if availability is None or not self.live_ordering_available:
+            return False
+        try:
+            return availability() is True and self._checkout_gate()
+        except Exception:
+            return False
 
     def _live_gate(self) -> bool:
         try:
@@ -549,6 +604,7 @@ class OrderingManager:
         self._quotes.clear()
         self._confirmations.clear()
         self._manual_challenges.clear()
+        self._preparation_challenges.clear()
 
     def _invalidate_user_checkout(self, owner_key: str) -> None:
         self._quotes.pop(owner_key, None)
@@ -613,10 +669,11 @@ class OrderingManager:
                 "mockOnly": not self.production_facade_active,
                 "liveOrderingAvailable": self.live_ordering_available,
                 "manualCheckRequired": self.manual_check_required,
+                "preparationRecoveryRequired": self.preparation_recovery_required,
                 "integrityFault": self.integrity_fault,
                 "orderingBlocked": self.recovery_required,
                 "liveCheckoutAvailable": bool(
-                    self.live_ordering_available and self._checkout_gate()
+                    self.live_checkout_available
                 ),
             }
 
@@ -949,6 +1006,210 @@ class OrderingManager:
                 else [self._bound_manual_record()]
             )
             return {"attempts": [record.recovery_dict() for record in records]}
+
+    def _bound_preparation_record(self) -> Any:
+        binding = self._durable_state.preparation_binding
+        authority = self._preparation_authority
+        if binding is None or authority is None or authority.loaded is not True:
+            raise OrderingSecurityFault("preparation recovery binding is unavailable")
+        records = [
+            item for item in authority.unresolved if item.attempt_id == binding.attempt_id
+        ]
+        if len(records) != 1:
+            raise OrderingSecurityFault("preparation recovery binding changed")
+        record = records[0]
+        if (
+            record.record_revision != binding.record_revision
+            or record.purpose.value != binding.purpose
+            or record.expectation_hash != binding.expectation_hash
+        ):
+            raise OrderingSecurityFault("preparation recovery binding changed")
+        return record
+
+    async def async_get_preparation_check(self, user: OrderingUser) -> dict[str, Any]:
+        """Return only a closed, privacy-safe category for the bound preparation."""
+        async with self._lock:
+            self._admin_guard(user)
+            if self.integrity_fault or not self.preparation_recovery_required:
+                raise OrderingDisabled("preparation recovery is unavailable")
+            record = self._bound_preparation_record()
+            purpose = (
+                "quote_template"
+                if record.purpose.value == "quote_template_create"
+                else "basket"
+            )
+            return {
+                "state": record.state.value,
+                "recordRevision": record.record_revision,
+                "generation": self.generation,
+                "purposeCategory": purpose,
+                "operatorObservationRequired": True,
+            }
+
+    @staticmethod
+    def _validate_preparation_resolution_request(
+        expected_generation: object,
+        expected_revision: object,
+        expected_state: object,
+        resolution: object,
+    ) -> tuple[int, int, str, str]:
+        if (
+            isinstance(expected_generation, bool)
+            or not isinstance(expected_generation, int)
+            or expected_generation < 1
+            or isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 1
+            or expected_state
+            not in {
+                "RECONCILIATION_REQUIRED",
+                "OPERATOR_ATTESTED_SUCCEEDED",
+                "OPERATOR_ATTESTED_FAILED",
+            }
+            or resolution
+            not in {
+                "found_succeeded",
+                "found_failed_or_cancelled",
+                "still_unknown",
+            }
+        ):
+            raise InvalidPreparationResolution(
+                "preparation resolution request is invalid"
+            )
+        return expected_generation, expected_revision, str(expected_state), str(resolution)
+
+    async def async_prepare_preparation_resolution(
+        self,
+        user: OrderingUser,
+        *,
+        expected_generation: int,
+        expected_revision: int,
+        expected_state: str,
+        resolution: str,
+    ) -> dict[str, Any]:
+        """Issue a same-admin challenge for one exact local attestation."""
+        async with self._lock:
+            self._admin_guard(user)
+            if self.integrity_fault or not self.preparation_recovery_required:
+                raise OrderingDisabled("preparation recovery is unavailable")
+            expected_generation, expected_revision, expected_state, resolution = (
+                self._validate_preparation_resolution_request(
+                    expected_generation, expected_revision, expected_state, resolution
+                )
+            )
+            record = self._bound_preparation_record()
+            historical = {
+                "OPERATOR_ATTESTED_SUCCEEDED": "found_succeeded",
+                "OPERATOR_ATTESTED_FAILED": "found_failed_or_cancelled",
+            }
+            if (
+                expected_generation != self.generation
+                or record.record_revision != expected_revision
+                or record.state.value != expected_state
+                or (
+                    expected_state in historical
+                    and historical[expected_state] != resolution
+                )
+            ):
+                raise InvalidPreparationResolution(
+                    "preparation state or generation changed"
+                )
+            challenge = self._challenge_source()
+            if not isinstance(challenge, str) or len(challenge) < 24:
+                raise OrderingSecurityFault("preparation challenge source failed")
+            expires_at = self._now() + MANUAL_RESOLUTION_TTL_SECONDS
+            if not math.isfinite(expires_at):
+                raise OrderingSecurityFault("preparation challenge expiry is invalid")
+            for key, value in tuple(self._preparation_challenges.items()):
+                if value.owner_key == user.user_id:
+                    self._preparation_challenges.pop(key, None)
+            self._preparation_challenges[challenge] = _PreparationResolutionChallenge(
+                owner_key=user.user_id,
+                record_revision=expected_revision,
+                expected_state=expected_state,
+                resolution=resolution,
+                generation=expected_generation,
+                challenge=challenge,
+                expires_at=expires_at,
+            )
+            return {
+                "challenge": challenge,
+                "recordRevision": expected_revision,
+                "generation": expected_generation,
+                "resolution": resolution,
+                "expiresAt": expires_at,
+                "acknowledgementRequired": True,
+            }
+
+    async def async_resolve_preparation_check(
+        self,
+        user: OrderingUser,
+        *,
+        expected_generation: int,
+        expected_revision: int,
+        expected_state: str,
+        resolution: str,
+        challenge: str,
+        acknowledged: object,
+    ) -> dict[str, Any]:
+        """Persist one local attestation without transport or provider claims."""
+        async with self._lock:
+            self._admin_guard(user)
+            if acknowledged is not True or not isinstance(challenge, str):
+                raise InvalidPreparationResolution("literal acknowledgement is required")
+            expected_generation, expected_revision, expected_state, resolution = (
+                self._validate_preparation_resolution_request(
+                    expected_generation, expected_revision, expected_state, resolution
+                )
+            )
+            prepared = self._preparation_challenges.pop(challenge, None)
+            if (
+                prepared is None
+                or prepared.owner_key != user.user_id
+                or prepared.record_revision != expected_revision
+                or prepared.expected_state != expected_state
+                or prepared.resolution != resolution
+                or prepared.generation != expected_generation
+                or expected_generation != self.generation
+                or self._now() >= prepared.expires_at
+                or not hmac.compare_digest(prepared.challenge, challenge)
+            ):
+                raise InvalidPreparationResolution(
+                    "preparation resolution challenge is invalid"
+                )
+            record = self._bound_preparation_record()
+            historical = {
+                "OPERATOR_ATTESTED_SUCCEEDED": "found_succeeded",
+                "OPERATOR_ATTESTED_FAILED": "found_failed_or_cancelled",
+            }
+            if (
+                record.record_revision != expected_revision
+                or record.state.value != expected_state
+                or (
+                    expected_state in historical
+                    and historical[expected_state] != resolution
+                )
+            ):
+                raise InvalidPreparationResolution("preparation state changed")
+            try:
+                updated = await self._preparation_authority.async_operator_attest_once(
+                    expected_revision=expected_revision,
+                    expected_state=expected_state,
+                    resolution=resolution,
+                )
+            except Exception as err:
+                if isinstance(err, (InvalidPreparationResolution, OrderingSecurityFault)):
+                    raise
+                raise OrderingRecoveryWriteFailed(
+                    "preparation attestation remains blocked"
+                ) from err
+            unresolved = updated.state.value == "OPERATOR_ATTESTED_UNKNOWN"
+            self._invalidate_all_ephemeral()
+            return {
+                "resolved": not unresolved,
+                "preparationRecoveryRequired": unresolved,
+                "reloadRequired": not unresolved,
+            }
 
     async def async_get_manual_check(
         self, user: OrderingUser, attempt_id: str

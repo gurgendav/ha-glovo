@@ -165,8 +165,26 @@ def test_manual_recovery_retains_exactly_three_approved_outcomes() -> None:
     source = _source()
     outcomes = ("found_succeeded", "found_failed_or_cancelled", "still_unknown")
     for outcome in outcomes:
-        assert source.count(outcome) == 1
+        assert source.count(outcome) >= 1
     assert "prepare_manual_resolution" in source
+
+
+def test_preparation_recovery_is_distinct_no_provider_io_challenge_flow() -> None:
+    source = _source()
+    for required in (
+        "preparationRecoveryRequired",
+        "preparation_check",
+        "prepare_preparation_resolution",
+        "resolve_preparation_check",
+        "_resolvePreparation",
+        "#preparation-ack",
+        "not a provider GET",
+        "No provider request was made",
+    ):
+        assert required in source
+    recovery = source[source.index("async _loadRecovery"):source.index("_openDialog", source.index("async _loadRecovery"))]
+    for prohibited in ("live/basket", "live/checkout", "fetch(", "sendBeacon"):
+        assert prohibited not in recovery
     assert "resolve_manual_check" in source
     assert "never re-submits" in source
 

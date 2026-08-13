@@ -1,6 +1,6 @@
 # Reviewed production final-checkout protocol evidence
 
-**Verdict:** `productionFinalCheckoutSupported: true` under the explicit guarded, one-POST/manual-reconciliation policy in this document.
+**Home.7 verdict:** `productionFinalCheckoutSupported: false`. The reviewed one-POST/manual-reconciliation seam remains isolated and covered offline, but home.7 composes no final adapter or request factory, publishes final checkout unavailable, and registers no final-submit command.
 
 This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. No authenticated request and no basket, quote, status, checkout, order, completion, cancellation, or payment call was made while collecting or applying this evidence.
 
@@ -57,7 +57,7 @@ Pending, authentication, `PROCESS_PAYMENT`, malformed data, transport failure, c
 
 ## Safety consequence
 
-Production adapter support is limited to this policy:
+Any future release that composes the reviewed production adapter is limited to this policy:
 
 1. two fresh, default-off administrator controls (preparation consent and separate paid-checkout consent), each explicitly acknowledged;
 2. a fresh authoritative quote, exact store/items/options/full admin-only ephemeral address/masked saved card/price lines/total/currency/ETA/expiry display, and amount-bound acknowledgement;
@@ -67,7 +67,7 @@ Production adapter support is limited to this policy:
 6. at most one explicit known-ID status GET per administrator action, with no polling;
 7. provider identifiers and the full address excluded from public/recovery projections and durable privacy-safe summaries.
 
-This verdict does **not** establish provider idempotency. It says the adapter can be enabled only because it never retries an ambiguous paid POST and blocks every later checkout until the outcome is manually or provider-status reconciled.
+This evidence does **not** establish provider idempotency and does not enable home.7. A later release may compose the adapter only if it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
 
 ## Principal static sources
 

@@ -1,6 +1,6 @@
 # Guarded live paid-checkout operator runbook
 
-> **Release policy:** production final checkout is supported only through the reviewed one-POST, no-retry adapter and manual-reconciliation policy in [protocol evidence](live-ordering-protocol-evidence.md). This runbook does not authorize unattended ordering, deployment, or a live test.
+> **Home.7 release policy:** final checkout is unavailable. Home.7 composes no final adapter or request factory and registers no final-submit command. The reviewed one-POST/no-retry seam in [protocol evidence](live-ordering-protocol-evidence.md) is future-only and this runbook authorizes no deployment or live test.
 
 ## Non-negotiable operating model
 
@@ -16,25 +16,23 @@
 
 ## Preflight
 
-- [ ] Artifact is release `1.1.0+home.6` with the reviewed trust identity and all release gates green from a clean tracked archive.
+- [ ] Artifact is release `1.1.0+home.7` with the reviewed trust identity and all release gates green from a clean tracked archive.
 - [ ] Journal and safety state are coherent, with no unresolved/manual/integrity record.
-- [ ] Both preparation controls and both separate paid controls were freshly enabled by the named administrator.
+- [ ] Final checkout state is unavailable and no final-submit command is registered, regardless of paid-option values.
 - [ ] Provider app shows no conflicting order or payment.
 - [ ] Selected payment is a saved card and no interactive continuation is anticipated.
 - [ ] Exact quote facts and expiry are visible; operator can manually inspect the provider app immediately.
 - [ ] No private data capture is enabled.
 
-## No-payment canary
+## Future no-payment canary (not authorized in home.7)
 
-1. Verify release/trust identity and every preflight item.
-2. Exercise only approved address/store/menu/basket/template reads or preparation actions.
-3. Stop before **Submit paid order**. Verify no final attempt exists.
-4. Inspect provider app for unexpected basket/order/payment state.
-5. Disable both consent groups. Preserve any unexpected durable state.
+Do not perform a live canary, quote request, basket mutation, or final submission as part
+of home.7 release preparation. These steps require a later release and separate explicit
+authorization.
 
 Abort on changed identity, stale quote, unexpected mutation, private-data exposure, journal residue, or provider-app conflict.
 
-## Deliberately authorized one-payment validation
+## Deliberately authorized one-payment validation (future release only)
 
 1. Repeat preflight and obtain explicit human authorization for the displayed store, items/options, full destination, saved card, exact amount, and currency.
 2. Confirm the amount-bound acknowledgement exactly and invoke the paid control once.
@@ -45,6 +43,7 @@ Abort on changed identity, stale quote, unexpected mutation, private-data exposu
 
 ## Recovery
 
+- An unresolved preparation write exposes a separate local-observation recovery. It does not issue a provider GET, retry, clear a basket, or submit an order. Record only what was directly observed; `still_unknown` preserves the block.
 - `MANUAL_CHECK_REQUIRED` blocks further ordering across restart, browser, and administrator.
 - Use privacy-safe recovery facts and `hasCheckoutId`; never copy provider IDs into public channels.
 - Provider-confirmed terminal status can durably clear the manual latch only after coherent journal and safety persistence.

@@ -303,7 +303,7 @@ class GlovoOrderingPanel extends HTMLElement {
       return;
     }
     if (this._stateRequiresRecovery(state)) {
-      await this._loadRecovery();
+      await this._loadRecovery(state);
       return;
     }
     if (!this._model.capability.liveOrderingAvailable) {
@@ -396,6 +396,22 @@ class GlovoOrderingPanel extends HTMLElement {
       }
       const status = this._button("Check safe checkout status", "check-checkout-status");
       host.append(status);
+      return;
+    }
+    if (this._model.recovery?.kind === "preparation") {
+      host.append(this._el("h1", "", "PREPARATION_RECONCILIATION_REQUIRED"));
+      host.append(this._el("p", "", "A preparation write has an unknown outcome. Check Glovo manually. This panel performs no network reconciliation and will not retry the write."));
+      if (this._model.recovery.check) {
+        const check = this._model.recovery.check;
+        host.append(this._el("p", "quiet", `Affected category: ${check.purposeCategory === "quote_template" ? "checkout template" : "basket"}.`));
+        const label = this._el("label", "choice");
+        const checkbox = this._el("input"); checkbox.type = "checkbox"; checkbox.id = "preparation-ack";
+        label.append(checkbox, this._el("span", "choice-label", "I checked Glovo manually and understand this records only a local operator conclusion; it is not a provider GET and never re-submits."));
+        host.append(label);
+        host.append(this.shadowRoot.querySelector("#recovery-actions-template").content.cloneNode(true));
+      } else {
+        host.append(this._el("p", "quiet", "Preparation recovery details are unavailable. Ordering remains blocked."));
+      }
       return;
     }
     const title = this._model.recovery?.kind === "integrity" ? "Ordering blocked" : "Ordering unavailable";
@@ -1196,15 +1212,30 @@ class GlovoOrderingPanel extends HTMLElement {
     return safe[reason] || "saved package is stale";
   }
 
-  async _loadRecovery() {
-    this._model.lifecycle = { status: "blocked", message: "MANUAL_CHECK_REQUIRED — check Glovo manually. This panel will not retry.", kind: "error" };
-    try {
-      const response = await this._hass.callWS({ type: "glovo/ordering/manual_checks" }); const attempt = (response?.attempts || [])[0];
-      this._model.recovery = { kind: "manual", attempt: attempt || null }; this._renderAll();
-    } catch (_error) { this._model.recovery = { kind: "manual", attempt: null }; this._renderAll(); }
+  async _loadRecovery(state = {}) {
+    if (state?.manualCheckRequired === true) {
+      this._model.lifecycle = { status: "blocked", message: "MANUAL_CHECK_REQUIRED — check Glovo manually. This panel will not retry.", kind: "error" };
+      try {
+        const response = await this._hass.callWS({ type: "glovo/ordering/manual_checks" }); const attempt = (response?.attempts || [])[0];
+        this._model.recovery = { kind: "manual", attempt: attempt || null }; this._renderAll();
+      } catch (_error) { this._model.recovery = { kind: "manual", attempt: null }; this._renderAll(); }
+      return;
+    }
+    if (state?.preparationRecoveryRequired === true) {
+      this._model.lifecycle = { status: "blocked", message: "PREPARATION_RECONCILIATION_REQUIRED — check Glovo manually. This panel performs no provider GET or retry.", kind: "error" };
+      try {
+        const check = await this._hass.callWS({ type: "glovo/ordering/preparation_check" });
+        this._model.recovery = { kind: "preparation", check }; this._renderAll();
+      } catch (_error) { this._model.recovery = { kind: "preparation", check: null }; this._renderAll(); }
+      return;
+    }
+    this._model.lifecycle = { status: "blocked", message: "Ordering remains safely blocked.", kind: "error" };
+    this._model.recovery = { kind: "integrity" };
+    this._renderAll();
   }
 
   async _resolveManual(resolution) {
+    if (this._model.recovery?.kind === "preparation") return this._resolvePreparation(resolution);
     const attempt = this._model.recovery?.attempt; const acknowledgement = this.shadowRoot.querySelector("#manual-ack");
     if (!attempt || acknowledgement?.checked !== true) { this._setLifecycle("blocked", "Explicit manual-review acknowledgement is required.", "warning"); return; }
     return this._runSingleFlight("manual-resolution", async () => {
@@ -1213,6 +1244,24 @@ class GlovoOrderingPanel extends HTMLElement {
         await this._hass.callWS({ type: "glovo/ordering/resolve_manual_check", attemptRef: attempt.attemptRef, expectedRecordRevision: attempt.recordRevision, expectedState: attempt.state, resolution, challenge: prepared.challenge, acknowledged: true });
         this._invalidateAuthority(""); await this._bootstrap();
       } catch (_error) { this._setLifecycle("blocked", "Resolution was rejected or not persisted; ordering remains blocked. It was not retried.", "error"); }
+    });
+  }
+
+  async _resolvePreparation(resolution) {
+    const check = this._model.recovery?.check; const acknowledgement = this.shadowRoot.querySelector("#preparation-ack");
+    if (!check || acknowledgement?.checked !== true) { this._setLifecycle("blocked", "Explicit preparation-review acknowledgement is required.", "warning"); return; }
+    return this._runSingleFlight("preparation-resolution", async () => {
+      const exact = {
+        expectedGeneration: check.generation,
+        expectedRecordRevision: check.recordRevision,
+        expectedState: check.state,
+        resolution,
+      };
+      try {
+        const prepared = await this._hass.callWS({ type: "glovo/ordering/prepare_preparation_resolution", ...exact });
+        await this._hass.callWS({ type: "glovo/ordering/resolve_preparation_check", ...exact, challenge: prepared.challenge, acknowledged: true });
+        this._invalidateAuthority(""); await this._bootstrap();
+      } catch (_error) { this._setLifecycle("blocked", "Preparation conclusion was rejected or not persisted; ordering remains blocked. No provider request was made.", "error"); }
     });
   }
 

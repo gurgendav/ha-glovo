@@ -397,6 +397,59 @@ await addressRacePanel._loadAddresses();
 assert.deepEqual(addressRaceEvents, [["context", 1], ["packages", 1]]);
 assert.equal(addressRacePanel._addressDisplay(addressRacePanel._model.context.addresses[0]), "456 Synthetic Boulevard");
 
+// Preparation recovery is a separate admin-only, no-provider-I/O challenge flow.
+const recoveryPanel = new Panel();
+recoveryPanel._renderAll = () => {};
+recoveryPanel._invalidateAuthority = () => {};
+recoveryPanel.shadowRoot = {
+  querySelector(selector) {
+    if (selector === "#preparation-ack") return { checked: true };
+    return null;
+  },
+};
+const recoveryRequests = [];
+recoveryPanel._hass = {
+  async callWS(request) {
+    recoveryRequests.push(request);
+    if (request.type === "glovo/ordering/preparation_check") {
+      return { generation: 21, recordRevision: 3, state: "RECONCILIATION_REQUIRED", purposeCategory: "basket" };
+    }
+    if (request.type === "glovo/ordering/prepare_preparation_resolution") {
+      return { challenge: "operator-challenge" };
+    }
+    if (request.type === "glovo/ordering/resolve_preparation_check") {
+      return { resolved: true, preparationRecoveryRequired: false, reloadRequired: true };
+    }
+    if (request.type === "glovo/ordering/state") {
+      return { generation: 22, runtimeEpoch: "reloaded", liveOrderingAvailable: false };
+    }
+    throw new Error(`unexpected operation: ${request.type}`);
+  },
+};
+await recoveryPanel._loadRecovery({ preparationRecoveryRequired: true });
+assert.equal(recoveryPanel._model.recovery.kind, "preparation");
+await recoveryPanel._resolvePreparation("found_failed_or_cancelled");
+assert.deepEqual(recoveryRequests.map((request) => request.type), [
+  "glovo/ordering/preparation_check",
+  "glovo/ordering/prepare_preparation_resolution",
+  "glovo/ordering/resolve_preparation_check",
+  "glovo/ordering/state",
+]);
+assert.deepEqual(recoveryRequests[1], {
+  type: "glovo/ordering/prepare_preparation_resolution",
+  expectedGeneration: 21,
+  expectedRecordRevision: 3,
+  expectedState: "RECONCILIATION_REQUIRED",
+  resolution: "found_failed_or_cancelled",
+});
+assert.deepEqual(recoveryRequests[2], {
+  ...recoveryRequests[1],
+  type: "glovo/ordering/resolve_preparation_check",
+  challenge: "operator-challenge",
+  acknowledged: true,
+});
+assert.equal(recoveryRequests.some((request) => request.type.startsWith("glovo/ordering/live/")), false);
+
 panel._rendered = false;
 panel._invalidateAuthority = Panel.prototype._invalidateAuthority.bind(panel);
 panel._model.overlay = { type: "customizer" };

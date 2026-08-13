@@ -28,7 +28,6 @@ from .ordering_runtime import OrderingRuntime
 from .ordering_manager import OrderingManager
 from .ordering_account import AccountClient
 from .ordering_live_catalog import LiveCatalogClient
-from .ordering_live_checkout import FinalCheckoutRequest, ProductionFinalCheckoutAdapter
 from .ordering_live_api import LiveOrderingFacade
 from .ordering_live_quote import (
     AuthoritativeConfirmationManager,
@@ -192,14 +191,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         preparation_authority=preparation_authority,
         live_options=lambda: entry.options,
         facade=facade,
-        # Status reconciliation is GET-only and must survive the manual latch
-        # that closes all mutation authority after an ambiguous final submit.
-        final_adapter=ProductionFinalCheckoutAdapter(api_session),
-        final_request_factory=(
-            (lambda quote: FinalCheckoutRequest.from_quote(quote, now=time.monotonic()))
-            if mutation_ready
-            else None
-        ),
+        # Home.7 deliberately composes no final-submit or provider-status adapter.
+        # The isolated reviewed seam remains testable, but this release candidate
+        # cannot dispatch checkout, payment, or status GET operations.
+        final_adapter=None,
+        final_request_factory=None,
     )
     try:
         await ordering_runtime.async_initialize()

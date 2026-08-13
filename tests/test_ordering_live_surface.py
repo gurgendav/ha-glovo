@@ -74,6 +74,7 @@ class Adapter:
 
 class Manager:
     recovery_required = False
+    live_checkout_available = False
 
     def __init__(self, *, enabled: bool = False) -> None:
         self.enabled = enabled
@@ -126,7 +127,10 @@ def test_enabled_surface_registers_all_frozen_operations(
 ) -> None:
     manager, adapter = Manager(enabled=True), Adapter()
     run(surface_module.OrderingSurface(manager, adapter).async_setup())
-    assert set(adapter.handlers) == set(surface_module.PUBLIC_OPERATION_COMMANDS.values()) | set(surface_module.RECOVERY_COMMANDS)
+    assert set(adapter.handlers) == (
+        set(surface_module.PUBLIC_OPERATION_COMMANDS.values())
+        - {surface_module.PUBLIC_OPERATION_COMMANDS["live/execute_checkout"]}
+    ) | set(surface_module.RECOVERY_COMMANDS)
 
 
 def test_state_exposes_stable_per_runtime_epoch(surface_module: ModuleType) -> None:

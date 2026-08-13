@@ -19,6 +19,7 @@ from .const import DOMAIN
 from .ordering_manager import (
     InvalidConfirmation,
     InvalidManualResolution,
+    InvalidPreparationResolution,
     OrderingAdminRequired,
     OrderingDisabled,
     OrderingError,
@@ -55,6 +56,13 @@ _MANUAL_STATES = vol.In(
 )
 _MANUAL_RESOLUTIONS = vol.In(
     {"found_succeeded", "found_failed_or_cancelled", "still_unknown"}
+)
+_PREPARATION_STATES = vol.In(
+    {
+        "RECONCILIATION_REQUIRED",
+        "OPERATOR_ATTESTED_SUCCEEDED",
+        "OPERATOR_ATTESTED_FAILED",
+    }
 )
 
 # Schema dicts intentionally enumerate every frozen request field.  HA's schema
@@ -154,6 +162,25 @@ _COMMAND_SCHEMAS.update(
             vol.Required("challenge"): str,
             vol.Required("acknowledged"): vol.All(bool, vol.In([True])),
         },
+        "glovo/ordering/preparation_check": {
+            vol.Required("type"): "glovo/ordering/preparation_check",
+        },
+        "glovo/ordering/prepare_preparation_resolution": {
+            vol.Required("type"): "glovo/ordering/prepare_preparation_resolution",
+            vol.Required("expectedGeneration"): _strict_positive_int,
+            vol.Required("expectedRecordRevision"): _strict_positive_int,
+            vol.Required("expectedState"): _PREPARATION_STATES,
+            vol.Required("resolution"): _MANUAL_RESOLUTIONS,
+        },
+        "glovo/ordering/resolve_preparation_check": {
+            vol.Required("type"): "glovo/ordering/resolve_preparation_check",
+            vol.Required("expectedGeneration"): _strict_positive_int,
+            vol.Required("expectedRecordRevision"): _strict_positive_int,
+            vol.Required("expectedState"): _PREPARATION_STATES,
+            vol.Required("resolution"): _MANUAL_RESOLUTIONS,
+            vol.Required("challenge"): str,
+            vol.Required("acknowledged"): vol.All(bool, vol.In([True])),
+        },
     }
 )
 
@@ -168,6 +195,11 @@ def _error_code(error: Exception) -> tuple[str, str]:
         return "ordering_integrity_fault", "Ordering is blocked by an integrity fault"
     if isinstance(error, InvalidManualResolution):
         return "invalid_manual_resolution", "Manual resolution request is invalid"
+    if isinstance(error, InvalidPreparationResolution):
+        return (
+            "invalid_preparation_resolution",
+            "Preparation resolution request is invalid",
+        )
     if isinstance(error, OrderingRecoveryWriteFailed):
         return "recovery_write_failed", "Recovery was not persisted; ordering remains blocked"
     if isinstance(error, StaleOrderingGeneration):

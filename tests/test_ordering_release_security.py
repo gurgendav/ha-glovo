@@ -49,13 +49,15 @@ def test_privacy_scanner_allows_public_checkout_operation_but_catches_private_re
         path.read_text(encoding="utf-8")
         for path in (COMPONENT / "__init__.py", COMPONENT / "coordinator.py", COMPONENT / "ordering_manager.py")
     )
-    assert "ProductionFinalCheckoutAdapter" in runtime
-    assert "FinalCheckoutRequest.from_quote" in runtime
+    init_source = (COMPONENT / "__init__.py").read_text(encoding="utf-8")
+    assert "ProductionFinalCheckoutAdapter" not in init_source
+    assert "FinalCheckoutRequest" not in init_source
+    assert "async_execute_live_final" in runtime
 
 
-def test_release_evidence_reviews_guarded_production_seam_without_idempotency_claim() -> None:
+def test_release_evidence_keeps_reviewed_final_seam_uncomposed_without_idempotency_claim() -> None:
     evidence = (ROOT / "docs" / "live-ordering-protocol-evidence.md").read_text(encoding="utf-8")
-    assert "productionFinalCheckoutSupported: true" in evidence
+    assert "productionFinalCheckoutSupported: false" in evidence
     for required in (
         "POST /v3/checkouts/order/1",
         "GET /v3/checkouts/order/{checkoutId}",

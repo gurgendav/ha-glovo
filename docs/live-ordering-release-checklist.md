@@ -1,11 +1,11 @@
 # Guarded live paid-checkout release checklist
 
-**No deployment or provider call is performed by this checklist.** Production final checkout is supported only under the reviewed one-POST/manual-reconciliation policy; provider idempotency is not claimed.
+**No deployment or provider call is performed by this checklist.** Home.7 composes no final adapter or request factory and does not register final submit. The isolated reviewed seam is not runtime purchase authority; provider idempotency is not claimed.
 
 ## Repository and release identity
 
 - [ ] Work from a clean tracked candidate; run the explicit staged archive suite and `python scripts/verify_clean_checkout.py` after commit.
-- [ ] Manifest is `1.1.0+home.6`; trust ID matches the documented canonical descriptor.
+- [ ] Manifest is `1.1.0+home.7`; trust ID matches the documented canonical descriptor.
 - [ ] Inspect staged names, stat, and full diff; all intended tests are tracked and no private/credential material is present.
 - [ ] Run focused paid/status/cancellation tests twice and the full suite twice after the last edit.
 - [ ] Run Ruff, compileall, Node syntax, frontend harness, privacy scanner, every release/security verifier, JSON parsing/key parity, and `git diff --check`.
@@ -15,6 +15,7 @@
 - [ ] Fresh options expose separate preparation and paid controls with separate acknowledgements; paid consent implies preparation consent.
 - [ ] Migration minor version 4 and reauthentication reset all four controls to literal false.
 - [ ] Capability is true only with every gate, adapter/factory, durable authority, and facade healthy; it becomes false on unload, options change, reauth, unresolved state, or integrity fault.
+- [ ] Home.7 always publishes final checkout unavailable and omits `live/execute_checkout`, regardless of paid-option values.
 - [ ] No public service/entity/event/automation/intent/webhook/MQTT purchase seam exists; only the admin WebSocket workspace is available.
 
 ## Exact checkout and frontend contract
@@ -26,6 +27,9 @@
 
 ## Dispatch and reconciliation safety
 
+- [ ] Unresolved preparation authority exposes only the admin state and local-attestation recovery controls; normal mutation and final-submit controls remain absent.
+- [ ] Preparation attestation is challenge/revision/state/generation/administrator bound, short-lived, one-shot, privacy-safe, makes no provider request, and never retries the original write.
+- [ ] Terminal operator resolution persists authority history, refreshes the exact paired binding, then atomically clears it while advancing generation; simultaneous manual recovery remains visible and independently blocked.
 - [ ] A preparatory post-dispatch exception becomes terminal provider failure only with `category=provider_rejection` and exact status in `{400,401,403,404,405,406,409,410,415,422,429}`; all other exceptions durably require reconciliation.
 - [ ] Class names, missing/unallowlisted status, 5xx, transport/cancellation, and malformed/mismatched success cannot bypass the preparation reconciliation latch; outcome-persistence failure remains an integrity fault.
 - [ ] Exactly one `POST /v3/checkouts/order/1`; no automatic retry, token refresh/replay, fallback, or duplicate dispatch.
@@ -44,8 +48,8 @@
 - [ ] Verify the [operator runbook](live-ordering-operator-runbook.md) no-payment canary, one-payment authorization, stop criteria, status action, and rollback-preserves-uncertainty procedure.
 - [ ] Any changed source asset, contract, route, schema, action, or continuation requirement blocks release until reviewed.
 
-## Controlled validation (separate human authorization required)
+## Future controlled validation (not available or authorized in home.7)
 
-- [ ] Run a no-payment canary and stop before final submit.
-- [ ] A single real-payment attempt is permitted only after every gate above is green, provider-app conflict check is clean, and a named operator authorizes the exact displayed purchase.
-- [ ] On any ambiguity, stop: no retry, no completion/cancel/payment mutation, preserve journal state, and reconcile in the provider app.
+- [ ] Do not run a live canary, request a quote, or attempt payment from home.7.
+- [ ] A later release must separately compose and verify the final adapter/factory before any named operator can authorize an exact displayed purchase.
+- [ ] Any future ambiguity must stop without retry, completion/cancel/payment mutation, while preserving durable state for provider-app reconciliation.

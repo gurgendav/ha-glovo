@@ -56,6 +56,9 @@ class OrderingRuntime:
             self.manager._live_availability = (  # noqa: SLF001
                 lambda: self.live_ordering_available
             )
+            self.manager._live_checkout_availability = (  # noqa: SLF001
+                lambda: self.live_checkout_available
+            )
 
 
     @property
@@ -97,4 +100,5 @@ class OrderingRuntime:
         # production facade after reload/unload.
         self.manager._live_dispatcher = None  # noqa: SLF001
         self.manager._live_availability = None  # noqa: SLF001
+        self.manager._live_checkout_availability = None  # noqa: SLF001
         self.manager._final_status_adapter = None  # noqa: SLF001
