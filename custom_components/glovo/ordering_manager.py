@@ -683,8 +683,12 @@ class OrderingManager:
                         quote.basket_id.encode()
                     ).hexdigest(),
                     store_display_name=quote.store_display_name,
-                    item_count=sum(item.quantity for item in quote.exact_products),
-                    item_summary=f"{sum(item.quantity for item in quote.exact_products)} item(s)",
+                    item_count=sum(
+                        item.quantity.increments for item in quote.exact_products
+                    ),
+                    item_summary=(
+                        f"{sum(item.quantity.increments for item in quote.exact_products)} item(s)"
+                    ),
                     masked_payment_label=quote.masked_payment,
                     masked_address_alias="Saved destination ••••",
                 )

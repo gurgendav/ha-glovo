@@ -58,10 +58,48 @@ def live() -> dict[str, ModuleType]:
 def quote(live: dict[str, ModuleType], **overrides: Any) -> Any:
     remote = live["ordering_remote_basket"]
     quote_module = live["ordering_live_quote"]
-    product = remote.RemoteBasketProduct(
-        product_id="product-fixture-1", external_id="external-fixture-1", legacy_id=None,
-        store_product_id="store-product-fixture-1", basket_product_id="basket-product-fixture-1",
-        quantity=2, quantity_limit=10, customizations=(),
+    product_projection = {
+        "ids": {
+            "id": "product-fixture-1",
+            "externalId": "external-fixture-1",
+            "storeProductId": "store-product-fixture-1",
+            "basketProductId": "basket-product-fixture-1",
+        },
+        "quantity": {"increments": 2, "incrementsLimit": 10, "limitType": None},
+        "price": {
+            "totalFormatted": "5,500 AMD",
+            "final": {"minor": 550000, "major": 5500, "formatted": "5,500 AMD"},
+            "unitaryBasePrice": {"minor": 275000, "major": 2750, "formatted": "2,750 AMD"},
+            "unitaryTotalPrice": {"minor": 275000, "major": 2750, "formatted": "2,750 AMD"},
+            "productTotalDiscount": None,
+        },
+        "name": "Fixture item",
+        "productName": "Fixture item",
+        "description": "Fixture description",
+        "isCustomizable": False,
+        "productReplacement": None,
+        "weighableInfo": None,
+        "packaging": None,
+    }
+    product = remote.RemoteBasketResponseProduct(
+        product_id="product-fixture-1",
+        external_id="external-fixture-1",
+        legacy_id=None,
+        store_product_id="store-product-fixture-1",
+        basket_product_id="basket-product-fixture-1",
+        quantity=remote.StructuredQuantity(
+            2,
+            increments_limit=10,
+            limit_type=None,
+            include_increments_limit=True,
+            include_limit_type=True,
+        ),
+        customizations=(),
+        name="Fixture item",
+        product_name="Fixture item",
+        provider_projection_bytes=json.dumps(
+            product_projection, sort_keys=True, separators=(",", ":")
+        ).encode(),
     )
     projection = {
         "orderDetails": {

@@ -23,7 +23,10 @@ from .ordering_models import (
     SavedAddressSummary,
     StoreDisplayName,
 )
-from .ordering_remote_basket import RemoteBasketProduct, RemoteBasketSnapshot
+from .ordering_remote_basket import (
+    RemoteBasketResponseProduct,
+    RemoteBasketSnapshot,
+)
 
 QUOTE_MAX_AGE: Final = 45.0
 MAX_TEMPLATE_BYTES: Final = 512_000
@@ -375,13 +378,13 @@ class AuthoritativeQuote:
     template_id: int | None = field(repr=False)
     basket_id: str = field(repr=False)
     basket_version: str = field(repr=False)
-    customer_id: int = field(repr=False)
+    customer_id: str = field(repr=False)
     store_id: int = field(repr=False)
     store_address_id: int = field(repr=False)
     store_category_id: int = field(repr=False)
     city_code: str = field(repr=False)
     handling_strategy: str = field(repr=False)
-    exact_products: tuple[RemoteBasketProduct, ...] = field(repr=False)
+    exact_products: tuple[RemoteBasketResponseProduct, ...] = field(repr=False)
     address_fingerprint: str = field(repr=False)
     payment_fingerprint: str = field(repr=False)
     capability_fingerprint: str = field(repr=False)
@@ -468,7 +471,7 @@ class AuthoritativeQuote:
         return 0 <= age < QUOTE_MAX_AGE
 
     def public_confirmation(self) -> dict[str, Any]:
-        count = sum(item.quantity for item in self.exact_products)
+        count = sum(item.quantity.increments for item in self.exact_products)
         return {
             "store": self.store_display_name,
             "itemSummary": f"{count} item(s)",

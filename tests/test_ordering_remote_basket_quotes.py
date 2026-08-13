@@ -129,24 +129,63 @@ def session(live: dict[str, ModuleType], transport: FixtureTransport, **override
 
 def product(quantity: int = 2) -> dict[str, Any]:
     return {
-        "id": "product-1",
-        "externalId": "external-1",
-        "legacyId": None,
-        "storeProductId": "store-product-1",
-        "basketProductId": "basket-product-1",
-        "quantity": quantity,
-        "quantityLimit": 10,
+        "ids": {
+            "id": "product-1",
+            "legacyId": "product-1",
+            "externalId": "external-1",
+            "storeProductId": "store-product-1",
+        },
+        "quantity": {"increments": quantity},
         "customizations": [
             {
-                "groupId": "group-1",
+                "ids": {
+                    "groupLegacyId": "group-1",
+                    "groupId": "group-1",
+                    "groupExternalId": "group-ext-1",
+                    "groupPosition": 0,
+                    "legacyId": "attribute-1",
+                    "externalId": "attribute-ext-1",
+                },
+                "name": "Preparation",
+                "quantity": {"increments": 1},
+                "customizationName": "Standard",
                 "groupName": "Preparation",
-                "groupPosition": 0,
-                "attributeId": "attribute-1",
-                "attributeName": "Standard",
-                "quantity": 1,
             }
         ],
     }
+
+
+def rich_product(quantity: int = 2, *, sponsored: bool | None = None) -> dict[str, Any]:
+    result = product(quantity)
+    result["ids"]["basketProductId"] = "basket-product-1"
+    result["quantity"] = {
+        "increments": quantity,
+        "incrementsLimit": 10,
+        "limitType": "MAX_SALES_QUANTITY",
+    }
+    result.update(
+        {
+            "price": {
+                "totalFormatted": "5,500.00 AMD",
+                "final": {"minor": 550000, "major": 5500.0, "formatted": "5,500.00 AMD"},
+                "unitaryBasePrice": {"minor": 275000, "major": 2750.0, "formatted": "2,750.00 AMD"},
+                "unitaryTotalPrice": {"minor": 275000, "major": 2750.0, "formatted": "2,750.00 AMD"},
+                "productTotalDiscount": None,
+            },
+            "name": "Fixture meal",
+            "productName": "Fixture meal",
+            "description": "Sanitized fixture product",
+            "imageUrl": None,
+            "isCustomizable": True,
+            "discounts": [],
+            "productReplacement": None,
+            "weighableInfo": None,
+            "packaging": None,
+        }
+    )
+    if sponsored is not None:
+        result["sponsored"] = sponsored
+    return result
 
 
 def intent_payload() -> dict[str, Any]:
@@ -169,13 +208,25 @@ def basket_payload(*, version: str = "basket-v1", quantity: int = 2) -> dict[str
         "storeAddressId": 81,
         "storeCategoryId": 4,
         "handlingStrategy": "DELIVERY",
-        "products": [product(quantity)],
+        "products": [rich_product(quantity)],
         "basketPrice": {
             "totalFormatted": "5,500.00 AMD",
             "final": {"minor": 550000, "major": 5500.0, "formatted": "5,500.00 AMD"},
         },
-        "suggestions": [],
-        "mbs": None,
+        "productSuggestions": [],
+        "mbs": {
+            "surchargePrice": "0 AMD",
+            "savedSurchargePrice": "0 AMD",
+            "barThreshold": {
+                "totalFormatted": "5,000 AMD",
+                "final": {"minor": 500000, "major": 5000.0, "formatted": "5,000 AMD"},
+            },
+            "currentPrice": {
+                "totalFormatted": "5,500 AMD",
+                "final": {"minor": 550000, "major": 5500.0, "formatted": "5,500 AMD"},
+            },
+            "currentThreshold": "5,000 AMD",
+        },
         "isPrimeSubscriptionSimulated": False,
         "cityCode": "YRV",
         "usingDhBasket": False,
@@ -513,12 +564,11 @@ def test_cancellation_during_rotating_token_persistence_is_pre_dispatch(
         (("customerId",), True),
         (("storeId",), 0),
         (("handlingStrategy",), "PICKUP"),
-        (("products", 0, "quantity"), True),
-        (("products", 0, "quantity"), 0),
-        (("products", 0, "quantityLimit"), 0),
-        (("products", 0, "id"), ""),
-        (("products", 0, "customizations", 0, "groupPosition"), True),
-        (("products", 0, "customizations", 0, "quantity"), 0),
+        (("products", 0, "quantity", "increments"), True),
+        (("products", 0, "quantity", "increments"), 0),
+        (("products", 0, "ids", "id"), ""),
+        (("products", 0, "customizations", 0, "ids", "groupPosition"), True),
+        (("products", 0, "customizations", 0, "quantity", "increments"), 0),
     ],
 )
 def test_basket_intent_strict_type_strategy_bounds_matrix(
@@ -551,7 +601,7 @@ def test_basket_intent_rejects_unknown_restricted_duplicate_oversized_and_deep(
     duplicate_customization["products"][0]["customizations"] *= 2
     mutations.append(duplicate_customization)
     oversized = intent_payload()
-    oversized["products"][0]["id"] = "x" * 200
+    oversized["products"][0]["ids"]["id"] = "x" * 200
     mutations.append(oversized)
     deep = intent_payload()
     deep["extra"] = {"x": {"x": {"x": {"x": {"x": {"x": {"x": {}}}}}}}}
@@ -599,6 +649,151 @@ def test_strict_basket_response_exact_match_types_privacy_and_price_contract(
             remote.parse_remote_basket(payload, intent)
 
 
+def test_response_accepts_first_party_partial_products_but_keeps_safety_fields_required(
+    live: dict[str, ModuleType],
+) -> None:
+    remote = live["ordering_remote_basket"]
+    intent = remote.parse_basket_intent(intent_payload())
+    sparse = basket_payload()
+    sparse_product = sparse["products"][0]
+    for key in (
+        "price",
+        "name",
+        "productName",
+        "description",
+        "imageUrl",
+        "isCustomizable",
+        "discounts",
+        "productReplacement",
+        "weighableInfo",
+        "packaging",
+    ):
+        sparse_product.pop(key, None)
+    parsed = remote.parse_remote_basket(sparse, intent)
+    assert parsed.products[0].canonical_dict() == sparse_product
+    assert parsed.products[0].name is None
+    assert parsed.products[0].product_name is None
+
+    for key in ("ids", "quantity", "customizations"):
+        missing = copy.deepcopy(sparse)
+        missing["products"][0].pop(key)
+        with pytest.raises(remote.BasketContractError):
+            remote.parse_remote_basket(missing, intent)
+
+    malformed_optional = copy.deepcopy(sparse)
+    malformed_optional["products"][0]["price"] = {"arbitrary": True}
+    with pytest.raises(remote.BasketContractError):
+        remote.parse_remote_basket(malformed_optional, intent)
+
+
+def test_create_serialization_exact_current_shapes_and_optional_provider_ids(
+    live: dict[str, ModuleType],
+) -> None:
+    remote = live["ordering_remote_basket"]
+    plain = remote.RemoteBasketProduct(product_id="plain-1", quantity=1)
+    customized = remote.RemoteBasketProduct(
+        product_id="product-1",
+        external_id="external-1",
+        legacy_id="product-1",
+        store_product_id="store-product-1",
+        quantity=3,
+        customizations=(
+            remote.RemoteCustomization(
+                group_id="group-1",
+                group_external_id="group-ext-1",
+                group_position=0,
+                attribute_id="attribute-1",
+                attribute_external_id="attribute-ext-1",
+                group_name="Preparation",
+                attribute_name="Standard",
+                quantity=remote.StructuredQuantity(2),
+            ),
+        ),
+    )
+    intent = remote.BasketIntent(
+        "42", 71, 81, 4, "DELIVERY", (plain, customized)
+    )
+    assert intent.create_body() == {
+        "products": [
+            {
+                "ids": {"id": "plain-1"},
+                "quantity": {"increments": 1},
+            },
+            {
+                "ids": {
+                    "id": "product-1",
+                    "legacyId": "product-1",
+                    "externalId": "external-1",
+                    "storeProductId": "store-product-1",
+                },
+                "quantity": {"increments": 3},
+                "customizations": [
+                    {
+                        "ids": {
+                            "groupLegacyId": "group-1",
+                            "groupId": "group-1",
+                            "groupExternalId": "group-ext-1",
+                            "groupPosition": 0,
+                            "legacyId": "attribute-1",
+                            "externalId": "attribute-ext-1",
+                        },
+                        "name": "Preparation",
+                        "quantity": {"increments": 2},
+                        "customizationName": "Standard",
+                        "groupName": "Preparation",
+                    }
+                ],
+            },
+        ],
+        "storeId": 71,
+        "storeAddressId": 81,
+        "storeCategoryId": 4,
+        "handlingStrategy": "DELIVERY",
+    }
+
+
+def test_response_rejects_obsolete_flat_products_and_stale_root_fields(
+    live: dict[str, ModuleType],
+) -> None:
+    remote = live["ordering_remote_basket"]
+    intent = remote.parse_basket_intent(intent_payload())
+    stale_flat = basket_payload()
+    stale_flat["products"] = [
+        {
+            "productId": "product-1",
+            "externalId": "external-1",
+            "storeProductId": "store-product-1",
+            "quantity": 2,
+            "customizations": [],
+        }
+    ]
+    stale_suggestions = basket_payload()
+    stale_suggestions["suggestions"] = stale_suggestions.pop("productSuggestions")
+    missing_dh = basket_payload()
+    missing_dh.pop("usingDhBasket")
+    for payload in (stale_flat, stale_suggestions, missing_dh):
+        with pytest.raises(remote.BasketContractError):
+            remote.parse_remote_basket(payload, intent)
+
+
+def test_response_current_nullable_fields_and_customer_union_are_typed(
+    live: dict[str, ModuleType],
+) -> None:
+    remote = live["ordering_remote_basket"]
+    intent = remote.parse_basket_intent(intent_payload())
+    nullable = basket_payload()
+    nullable["mbs"] = None
+    nullable["isPrimeSubscriptionSimulated"] = None
+    nullable["customerId"] = "42"
+    parsed = remote.parse_remote_basket(nullable, intent)
+    assert parsed.customer_id == "42"
+    assert parsed.is_prime_subscription_simulated is None
+    bad_mbs = basket_payload()
+    bad_mbs["mbs"] = {"arbitrary": "shape"}
+    with pytest.raises(remote.BasketContractError):
+        remote.parse_remote_basket(bad_mbs, intent)
+
+
 def test_remote_client_create_replace_quantity_delete_are_one_call_and_version_bound(
     live: dict[str, ModuleType],
 ) -> None:
@@ -608,7 +803,7 @@ def test_remote_client_create_replace_quantity_delete_are_one_call_and_version_b
         basket_payload(version="v1"),
         basket_payload(version="v2"),
         basket_payload(version="v3", quantity=3),
-        {"deleted": True},
+        None,
     ]
     invalidations: list[str] = []
     client = remote.RemoteBasketClient(
@@ -616,7 +811,7 @@ def test_remote_client_create_replace_quantity_delete_are_one_call_and_version_b
     )
     intent = remote.parse_basket_intent(intent_payload())
     created = run(client.async_create(intent))
-    replaced = run(client.async_replace(created, created.products))
+    replaced = run(client.async_replace(created, intent.products))
     changed = run(
         client.async_change_quantity(
             replaced, basket_product_id="basket-product-1", increment=1, limit=10
@@ -624,11 +819,76 @@ def test_remote_client_create_replace_quantity_delete_are_one_call_and_version_b
     )
     run(client.async_delete(changed, explicit_user_intent=True))
     assert [item[0] for item in fixture.calls] == ["POST", "PUT", "PATCH", "DELETE"]
-    assert [item[3].get("basketVersion") for item in fixture.calls[1:]] == ["v1", "v2", "v3"]
+    assert fixture.calls[0][3] == intent.create_body()
+    expected_put = basket_payload(version="v1")
+    expected_put["customerId"] = "42"
+    assert fixture.calls[1][3] == expected_put
+    assert fixture.calls[2][3] == {
+        "handlingStrategy": "DELIVERY",
+        "basketVersion": "v2",
+        "products": [
+            {"basketProductId": "basket-product-1", "quantity": 3}
+        ],
+    }
+    assert fixture.calls[3][3] is None
     assert len(invalidations) == 4
     with pytest.raises(remote.BasketContractError):
         run(client.async_delete(changed, explicit_user_intent=False))
     assert len(fixture.calls) == 4
+
+
+def test_replace_put_accepts_changed_request_product_without_fabricating_rich_fields(
+    live: dict[str, ModuleType],
+) -> None:
+    remote = live["ordering_remote_basket"]
+    intent = remote.parse_basket_intent(intent_payload())
+    current = remote.parse_remote_basket(basket_payload(), intent)
+    proposed = (replace(intent.products[0], quantity=3),)
+    fixture = FixtureTransport()
+    fixture.responses = [basket_payload(version="basket-v2", quantity=3)]
+    client = remote.RemoteBasketClient(session(live, fixture))
+
+    changed = run(client.async_replace(current, proposed))
+
+    assert changed.basket_version == "basket-v2"
+    assert len(fixture.calls) == 1
+    assert fixture.calls[0][0:2] == (
+        "PUT",
+        "/v1/authenticated/customers/42/baskets/basket-private-1/products",
+    )
+    expected = basket_payload()
+    expected["customerId"] = "42"
+    expected["products"] = [proposed[0].canonical_dict()]
+    assert fixture.calls[0][3] == expected
+    assert set(fixture.calls[0][3]["products"][0]) == {
+        "ids",
+        "quantity",
+        "customizations",
+    }
+    assert "price" not in fixture.calls[0][3]["products"][0]
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422, 429])
+def test_remote_4xx_is_provider_rejection_without_response_parser(
+    live: dict[str, ModuleType], status: int
+) -> None:
+    remote = live["ordering_remote_basket"]
+    api = live["api_session"]
+    fixture = FixtureTransport()
+    fixture.responses = [
+        api.ApiSessionError(
+            category="http",
+            endpoint_family="basket",
+            status=status,
+            purpose=api.MutationPurpose.CREATE_BASKET,
+        )
+    ]
+    client = remote.RemoteBasketClient(session(live, fixture))
+    with pytest.raises(remote.RemoteBasketRejected) as raised:
+        run(client.async_create(remote.parse_basket_intent(intent_payload())))
+    assert raised.value.status == status
+    assert raised.value.category == "provider_rejection"
+    assert len(fixture.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -653,7 +913,7 @@ def test_every_remote_mutation_malformed_outcome_is_one_call_ambiguous(
         if operation == "create":
             run(client.async_create(intent))
         elif operation == "replace":
-            run(client.async_replace(current, current.products))
+            run(client.async_replace(current, intent.products))
         elif operation == "quantity":
             run(
                 client.async_change_quantity(
@@ -745,7 +1005,7 @@ def test_quote_request_is_exact_private_and_uses_canonical_basket_address_paymen
     assert set(checkout) == {"orderDetails", "components", "analytics", "basketDetails"}
     assert checkout["orderDetails"]["basketId"] == "basket-private-1"
     assert checkout["orderDetails"]["handlingStrategy"] == {"type": "DELIVERY"}
-    assert checkout["components"]["productList"] == [product()]
+    assert checkout["components"]["productList"] == [rich_product()]
     assert checkout["components"]["deliveryAddress"]["id"] == 17
     assert checkout["components"]["paymentMethod"]["paymentInstrumentId"] == "instrument-private"
     assert checkout["analytics"] == {"templateReceived": None}

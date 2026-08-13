@@ -224,7 +224,10 @@ def test_private_dtos_revalidate_direct_fabrication_and_duplicate_identity(live:
     remote = live["ordering_remote_basket"]
     with pytest.raises(contracts.ContractError):
         contracts.AddressSnapshot(1, "line", "", float("nan"), 1.0, "AM", "YRV", "Yerevan", "APARTMENT", None, ())
-    customization = remote.RemoteCustomization("g", "Group", 0, "o", "Option", 1)
+    customization = remote.RemoteCustomization(
+        "g", "group-ext", 0, "o", "option-ext", "Group", "Option",
+        remote.StructuredQuantity(1),
+    )
     product = remote.RemoteBasketProduct("p", quantity=1, customizations=(customization,))
     with pytest.raises(remote.BasketContractError):
         remote.BasketIntent(1, 2, 3, 4, "DELIVERY", (product, product))

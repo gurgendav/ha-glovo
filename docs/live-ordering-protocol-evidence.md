@@ -4,7 +4,22 @@
 
 This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. No authenticated request and no basket, quote, status, checkout, order, completion, cancellation, or payment call was made while collecting or applying this evidence.
 
-## Frozen evidence (2026-08-13)
+## Frozen basket evidence (2026-08-13)
+
+The withdrawn home.3 stop-before-submit canary reached basket creation but received a deterministic provider rejection. No checkout or payment was dispatched. Anonymous first-party static recovery pinned the replacement contract to:
+
+- route `https://glovoapp.com/en/am/yerevan/stores/rena-restaurant-complex`, fetched `2026-08-13T11:03:05Z`, SHA-256 `899301f3c06619ac2b37af09be4c83337878c2b8fd13c839f75dd0b3aab4ec11`;
+- basket chunk `https://glovoapp.com/_next/static/chunks/86937-d352ebf5782090c3.js`, fetched `2026-08-13T11:03:08Z`, SHA-256 `5830b8a8e5a98a9de1233eb165bc771822970d2665cc088c4ccf2a63006af0cc`;
+- API/client module `52500` (module offset `3866`, `addProduct` offset `12483`, authenticated create offset `20830`);
+- response validators module `80621` (module offset `36412`, basket schema around `38546–39513`).
+
+The evidenced create root remains `{products, storeId, storeAddressId, storeCategoryId, handlingStrategy}`. Each product uses nested `ids`, structured `quantity`, and, when selected, nested customizations with provider group/option identities and structured quantities. Optionless quick-add products omit `customizations`; optional customization groups are omitted rather than fabricated. No basket-specific headers are evidenced beyond the generic authenticated web client.
+
+The common basket response requires basket/customer/store identities, `products`, `basketPrice`, typed nullable `mbs`, nullable `isPrimeSubscriptionSimulated`, and boolean `usingDhBasket`; `productSuggestions` and `cityCode` are optional. The first-party validator declares basket products as `productSchema.partial()`. The adapter therefore requires the nested product IDs and quantity needed to prove exact selection, requires selected customizations to match exactly, and strictly validates and preserves every optional current product field when it appears. Sponsored suggestions retain the full rich product schema.
+
+Replacement follows the first-party clone-current-basket/change-products PUT behavior. Quantity PATCH is exactly `{handlingStrategy, basketVersion, products:[{basketProductId, quantity}]}`. Whole-basket DELETE is bodyless. Deterministic 4xx responses remain provider rejection; transport, 5xx, or malformed/mismatched successful responses remain ambiguous and are never replayed.
+
+## Frozen final-checkout evidence (2026-08-13)
 
 | Area | Reviewed first-party static evidence | Adapter policy |
 | --- | --- | --- |

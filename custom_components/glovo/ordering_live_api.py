@@ -274,7 +274,9 @@ class LiveOrderingFacade:
             "revision": state.revision,
             "storeHandle": state.store_handle,
             "storeLabel": state.store_label,
-            "itemCount": sum(item.quantity for item in state.snapshot.products),
+            "itemCount": sum(
+                item.quantity.increments for item in state.snapshot.products
+            ),
             "currency": state.currency,
             "providerTotal": provider_total,
             "lines": [dict(line) for line in state.lines],

@@ -937,7 +937,9 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
         def snapshot(total: int | None) -> Any:
             return SimpleNamespace(
                 basket_price=SimpleNamespace(minor=total),
-                products=(SimpleNamespace(quantity=1),),
+                products=(
+                    SimpleNamespace(quantity=SimpleNamespace(increments=1)),
+                ),
             )
 
         class Baskets:

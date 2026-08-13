@@ -22,6 +22,7 @@ from .ordering_remote_basket import (
     BasketIntent,
     RemoteBasketProduct,
     RemoteCustomization,
+    StructuredQuantity,
 )
 
 LIVE_SELECTION_TTL_SECONDS: Final = 300.0
@@ -564,7 +565,16 @@ class LiveSelectionRegistry:
         for selected in selections:
             product = self._resolve(selected.product_handle, owner=owner, generation=generation, expected=CatalogProduct, parent=store_handle)
             customizations = self._compile_customizations(owner, generation, selected, product)
-            remote.append(RemoteBasketProduct(product.product_id, product.external_id, None, product.store_product_id, None, selected.quantity, None, customizations))
+            remote.append(
+                RemoteBasketProduct(
+                    product_id=product.product_id,
+                    external_id=product.external_id,
+                    legacy_id=product.product_id,
+                    store_product_id=product.store_product_id,
+                    quantity=selected.quantity,
+                    customizations=customizations,
+                )
+            )
         if len({item.identity for item in remote}) != len(remote):
             raise LiveSelectionError
         try:
@@ -595,7 +605,18 @@ class LiveSelectionRegistry:
             for option in chosen:
                 if not isinstance(option.price, ExactMoney) or option.price.currency != product.price.currency or option.price.amount_minor < 0:
                     raise LiveSelectionError
-                result.append(RemoteCustomization(group.key, group.label, group.position, option.key, option.label, 1))
+                result.append(
+                    RemoteCustomization(
+                        group_id=group.key,
+                        group_external_id=group.external_id,
+                        group_position=group.position,
+                        attribute_id=option.key,
+                        attribute_external_id=option.external_id,
+                        group_name=group.label,
+                        attribute_name=option.label,
+                        quantity=StructuredQuantity(1),
+                    )
+                )
         if provided:
             raise LiveSelectionError
         return tuple(sorted(result, key=lambda item: (item.group_position, item.group_id, item.attribute_id)))
