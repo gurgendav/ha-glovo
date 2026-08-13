@@ -41,6 +41,9 @@ from .ordering_packages import (
 from .ordering_remote_basket import RemoteBasketClient, RemoteBasketSnapshot
 
 _LOGGER = logging.getLogger(__name__)
+_DETERMINISTIC_REJECTION_STATUSES: Final = frozenset(
+    {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}
+)
 
 
 @contextmanager
@@ -50,7 +53,7 @@ def _basket_sync_stage(name: str):
         yield
     except Exception as err:
         status = getattr(err, "status", None)
-        if status not in {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}:
+        if status not in _DETERMINISTIC_REJECTION_STATUSES:
             status = None
         _LOGGER.warning(
             "Glovo basket sync rejected at stage=%s class=%s category=%s status=%s",
@@ -119,7 +122,7 @@ class PreparationMutationRejected(PublicContractError):
     def __init__(self, status: int | None) -> None:
         self.status = (
             status
-            if status in {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}
+            if status in _DETERMINISTIC_REJECTION_STATUSES
             else None
         )
         super().__init__()
@@ -333,6 +336,39 @@ class LiveOrderingFacade:
             raise PublicContractError from None
         return hashlib.sha256(encoded).hexdigest()
 
+    @staticmethod
+    def _deterministic_provider_rejection(error: BaseException) -> int | None:
+        """Return a status only for the exact closed provider-rejection proof."""
+        try:
+            category = getattr(error, "category", None)
+            status = getattr(error, "status", None)
+        except BaseException:
+            return None
+        if (
+            category == "provider_rejection"
+            and type(status) is int
+            and status in _DETERMINISTIC_REJECTION_STATUSES
+        ):
+            return status
+        return None
+
+    @staticmethod
+    def _provider_rejection_evidence(
+        *, purpose_name: str, error: BaseException, status: int
+    ) -> str:
+        """Hash only closed classification fields, never provider material."""
+        encoded = json.dumps(
+            {
+                "category": "provider_rejection",
+                "class": type(error).__name__,
+                "purpose": purpose_name,
+                "status": status,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
     async def _async_preparation_mutation(
         self,
         *,
@@ -368,45 +404,34 @@ class LiveOrderingFacade:
         try:
             # The sole mutation syntax. Do not add retry/fallback/refresh here.
             result = await invoke()
-        except Exception as err:
-            ambiguous = "Ambiguous" in type(err).__name__ or isinstance(err, asyncio.CancelledError)
-            try:
-                if ambiguous:
-                    await authority.async_record_outcome(
-                        attempt_id=attempt.attempt_id,
-                        expected_revision=attempt.record_revision,
-                        outcome_category="ambiguous",
-                    )
-                else:
-                    evidence = hashlib.sha256(
-                        f"{purpose_name}:{type(err).__name__}".encode()
-                    ).hexdigest()
-                    await authority.async_record_outcome(
-                        attempt_id=attempt.attempt_id,
-                        expected_revision=attempt.record_revision,
-                        outcome_category="provider_failure",
-                        provider_evidence_hash=evidence,
-                    )
-            except Exception:
-                # Authority failure is fail closed; it must never make another call.
-                pass
-            if (
-                getattr(err, "category", None) == "provider_rejection"
-                and getattr(err, "status", None)
-                in {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}
-            ):
-                raise PreparationMutationRejected(getattr(err, "status", None)) from None
+        except BaseException as err:
+            status = self._deterministic_provider_rejection(err)
+            if status is None:
+                await authority.async_record_outcome(
+                    attempt_id=attempt.attempt_id,
+                    expected_revision=attempt.record_revision,
+                    outcome_category="ambiguous",
+                )
+            else:
+                await authority.async_record_outcome(
+                    attempt_id=attempt.attempt_id,
+                    expected_revision=attempt.record_revision,
+                    outcome_category="provider_failure",
+                    provider_evidence_hash=self._provider_rejection_evidence(
+                        purpose_name=purpose_name, error=err, status=status
+                    ),
+                )
+                raise PreparationMutationRejected(status) from None
+            if isinstance(err, asyncio.CancelledError):
+                raise
             raise PublicContractError from None
-        try:
-            evidence = hashlib.sha256(repr(result).encode()).hexdigest()
-            await authority.async_record_outcome(
-                attempt_id=attempt.attempt_id,
-                expected_revision=attempt.record_revision,
-                outcome_category="provider_success",
-                provider_evidence_hash=evidence,
-            )
-        except Exception:
-            raise PublicContractError from None
+        evidence = hashlib.sha256(repr(result).encode()).hexdigest()
+        await authority.async_record_outcome(
+            attempt_id=attempt.attempt_id,
+            expected_revision=attempt.record_revision,
+            outcome_category="provider_success",
+            provider_evidence_hash=evidence,
+        )
         return result
 
     def async_consume_final_quote(

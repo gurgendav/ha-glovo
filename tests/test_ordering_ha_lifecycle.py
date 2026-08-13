@@ -802,6 +802,271 @@ def test_deterministic_preparation_rejection_keeps_closed_diagnostic_and_no_latc
         assert forbidden not in log
 
 
+@pytest.mark.parametrize(
+    ("provider_result", "expected_state", "expected_status"),
+    [
+        ("glovo-422", "PROVIDER_FAILED", 422),
+        ("glovo-418", "RECONCILIATION_REQUIRED", None),
+        ("glovo-500", "RECONCILIATION_REQUIRED", None),
+        ("transport", "RECONCILIATION_REQUIRED", None),
+        ("malformed", "RECONCILIATION_REQUIRED", None),
+    ],
+)
+def test_production_shaped_preparation_outcomes_are_conservative_private_and_one_call(
+    ha_runtime: SimpleNamespace,
+    caplog: pytest.LogCaptureFixture,
+    provider_result: str,
+    expected_state: str,
+    expected_status: int | None,
+) -> None:
+    from test_ordering_remote_basket_quotes import intent_payload
+
+    prefix = ha_runtime.prefix
+    live_api = sys.modules[f"{prefix}.ordering_live_api"]
+    remote = sys.modules[f"{prefix}.ordering_remote_basket"]
+    api = sys.modules[f"{prefix}.api_session"]
+    prep = sys.modules[f"{prefix}.ordering_prep_authority"]
+    state_module = sys.modules[f"{prefix}.ordering_state"]
+    real_glovo = _load(
+        f"{prefix}.real_glovo_error_{provider_result.replace('-', '_')}",
+        GLOVO_ROOT / "glovo.py",
+    )
+    private = "private-response-body https://private.invalid/customer/42"
+    calls = 0
+
+    async def mutate(*args: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if provider_result.startswith("glovo-"):
+            raise real_glovo.GlovoApiError(int(provider_result.removeprefix("glovo-")), private)
+        if provider_result == "transport":
+            raise RuntimeError(private)
+        return {"malformedPrivate": private}
+
+    session = api.SerializedApiSession(
+        token_source=lambda: "stored-token",
+        persist_token=lambda value: None,
+        ensure_token=lambda value: ("access-ok", value),
+        transport=lambda *args: {},
+        mutation_transport=mutate,
+    )
+    client = remote.RemoteBasketClient(session)
+    state_storage = state_module.MemoryOrderingStateStorage()
+    durable_state = state_module.DurableOrderingState(state_storage)
+    prep_storage = prep.MemoryPreparationStorage()
+    authority = prep.PreparationMutationAuthority(
+        prep_storage, clock=lambda: 500.0, durable_state=durable_state
+    )
+    facade = object.__new__(live_api.LiveOrderingFacade)
+    facade._preparation_authority = authority
+    facade._preparation_attempt_source = lambda: "prep-" + "b" * 32
+    intent = remote.parse_basket_intent(intent_payload())
+    location = api.DeliveryLocation("AM", "YRV", 40.177, 44.513)
+
+    async def scenario() -> None:
+        await durable_state.async_load()
+        await authority.async_load()
+        with live_api._basket_sync_stage("provider_mutation"):
+            await facade._async_preparation_mutation(
+                operation="live/basket_set",
+                generation=1,
+                purpose_name="basket_create",
+                expected_category="expected_present",
+                expected=intent,
+                invoke=lambda: client.async_create(intent, location),
+            )
+
+    error_type = (
+        live_api.PreparationMutationRejected
+        if expected_state == "PROVIDER_FAILED"
+        else live_api.PublicContractError
+    )
+    with caplog.at_level("WARNING"):
+        with pytest.raises(error_type) as raised:
+            run(scenario())
+
+    assert calls == 1
+    assert type(raised.value) is error_type
+    assert getattr(raised.value, "status", None) == expected_status
+    record = authority.records[-1]
+    assert record.state.value == expected_state
+    assert prep_storage.data["records"][-1]["state"] == expected_state
+    if expected_state == "PROVIDER_FAILED":
+        assert record.outcome_category == "provider_failure"
+        assert record.provider_evidence_hash == hashlib.sha256(
+            json.dumps(
+                {
+                    "category": "provider_rejection",
+                    "class": "RemoteBasketRejected",
+                    "purpose": "basket_create",
+                    "status": 422,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        assert durable_state.preparation_binding is None
+    else:
+        assert record.outcome_category == "ambiguous"
+        assert record.provider_evidence_hash is None
+        assert durable_state.preparation_binding is not None
+        assert state_storage.data["preparation_binding"]["attempt_id"] == record.attempt_id
+    exposed = "\n".join(
+        (
+            repr(raised.value),
+            str(raised.value),
+            caplog.text,
+            repr(prep_storage.data),
+            repr(state_storage.data),
+        )
+    )
+    assert private not in exposed
+    assert "private.invalid" not in exposed
+
+
+@pytest.mark.parametrize("error_kind", ["class_name", "rejected_without_status"])
+def test_unproven_exception_cannot_spoof_preparation_outcome(
+    ha_runtime: SimpleNamespace, error_kind: str
+) -> None:
+    live_api = sys.modules[f"{ha_runtime.prefix}.ordering_live_api"]
+    remote = sys.modules[f"{ha_runtime.prefix}.ordering_remote_basket"]
+    api = sys.modules[f"{ha_runtime.prefix}.api_session"]
+    outcomes: list[dict[str, Any]] = []
+
+    class Authority:
+        loaded = True
+        unresolved: tuple[Any, ...] = ()
+
+        async def async_acquire(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(attempt_id=kwargs["attempt_id"], record_revision=1)
+
+        async def async_record_outcome(self, **kwargs: Any) -> None:
+            outcomes.append(kwargs)
+
+    class SomethingAmbiguous(RuntimeError):
+        pass
+
+    facade = object.__new__(live_api.LiveOrderingFacade)
+    facade._preparation_authority = Authority()
+    facade._preparation_attempt_source = lambda: "prep-" + "c" * 32
+    error = (
+        SomethingAmbiguous("private")
+        if error_kind == "class_name"
+        else remote.RemoteBasketRejected(api.MutationPurpose.CREATE_BASKET, None)
+    )
+
+    async def scenario() -> None:
+        await facade._async_preparation_mutation(
+            operation="live/basket_set",
+            generation=1,
+            purpose_name="basket_create",
+            expected_category="expected_present",
+            expected={"closed": True},
+            invoke=lambda: (_ for _ in ()).throw(error),
+        )
+
+    with pytest.raises(live_api.PublicContractError):
+        run(scenario())
+    assert outcomes == [
+        {
+            "attempt_id": "prep-" + "c" * 32,
+            "expected_revision": 1,
+            "outcome_category": "ambiguous",
+        }
+    ]
+
+
+def test_cancelled_preparation_dispatch_durably_latches_before_cancellation_surfaces(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    prefix = ha_runtime.prefix
+    live_api = sys.modules[f"{prefix}.ordering_live_api"]
+    prep = sys.modules[f"{prefix}.ordering_prep_authority"]
+    state_module = sys.modules[f"{prefix}.ordering_state"]
+    durable_state = state_module.DurableOrderingState(
+        state_module.MemoryOrderingStateStorage()
+    )
+    authority = prep.PreparationMutationAuthority(
+        prep.MemoryPreparationStorage(), clock=lambda: 500.0, durable_state=durable_state
+    )
+    facade = object.__new__(live_api.LiveOrderingFacade)
+    facade._preparation_authority = authority
+    facade._preparation_attempt_source = lambda: "prep-" + "d" * 32
+
+    async def cancelled() -> None:
+        raise asyncio.CancelledError
+
+    async def scenario() -> None:
+        await durable_state.async_load()
+        await authority.async_load()
+        await facade._async_preparation_mutation(
+            operation="live/basket_clear",
+            generation=1,
+            purpose_name="basket_delete",
+            expected_category="expected_absent",
+            expected={"closed": True},
+            invoke=cancelled,
+        )
+
+    with pytest.raises(asyncio.CancelledError):
+        run(scenario())
+    assert authority.records[-1].state.value == "RECONCILIATION_REQUIRED"
+    assert durable_state.preparation_binding is not None
+
+
+@pytest.mark.parametrize("provider_succeeded", [False, True])
+def test_preparation_outcome_persistence_fault_is_not_erased_after_dispatch(
+    ha_runtime: SimpleNamespace, provider_succeeded: bool
+) -> None:
+    prefix = ha_runtime.prefix
+    live_api = sys.modules[f"{prefix}.ordering_live_api"]
+    prep = sys.modules[f"{prefix}.ordering_prep_authority"]
+    state_module = sys.modules[f"{prefix}.ordering_state"]
+
+    class FailingOutcomeStorage(prep.MemoryPreparationStorage):
+        fail = False
+
+        async def async_save(self, data: dict[str, Any]) -> None:
+            if self.fail:
+                raise RuntimeError("private storage detail")
+            await super().async_save(data)
+
+    storage = FailingOutcomeStorage()
+    durable_state = state_module.DurableOrderingState(
+        state_module.MemoryOrderingStateStorage()
+    )
+    authority = prep.PreparationMutationAuthority(
+        storage, clock=lambda: 500.0, durable_state=durable_state
+    )
+    facade = object.__new__(live_api.LiveOrderingFacade)
+    facade._preparation_authority = authority
+    facade._preparation_attempt_source = lambda: "prep-" + "e" * 32
+
+    async def invoke() -> object:
+        storage.fail = True
+        if not provider_succeeded:
+            raise RuntimeError("private transport detail")
+        return object()
+
+    async def scenario() -> None:
+        await durable_state.async_load()
+        await authority.async_load()
+        await facade._async_preparation_mutation(
+            operation="live/basket_set",
+            generation=1,
+            purpose_name="basket_create",
+            expected_category="expected_present",
+            expected={"closed": True},
+            invoke=invoke,
+        )
+
+    with pytest.raises(prep.PreparationAuthorityFault):
+        run(scenario())
+    assert authority.integrity_fault is True
+    assert durable_state.integrity_fault is True
+    assert authority.records[-1].state.value == "DISPATCHING"
+
+
 def test_basket_context_is_repr_private_and_address_mismatch_stops_before_delete_dispatch(
     ha_runtime: SimpleNamespace,
 ) -> None:

@@ -4,6 +4,10 @@
 
 This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. No authenticated request and no basket, quote, status, checkout, order, completion, cancellation, or payment call was made while collecting or applying this evidence.
 
+## Withdrawn home.5 canary (2026-08-13)
+
+The audited preparation-only canary on home.5 stopped after exactly one basket-create mutation. It made zero retries and zero quote-template, final-checkout, checkout-status, payment, or order calls. The sanitized seam reported the provider status as unavailable. Offline review found that an unknown post-dispatch exception could be falsely persisted as terminal provider failure instead of durably requiring reconciliation, so home.5 was withdrawn. All four ordering gates were restored to false and production was rolled back to home.2. This public-safe record intentionally excludes credentials, account/store/basket identifiers, addresses, coordinates, payloads, provider response text, and private diagnostics.
+
 ## Withdrawn home.4 canary (2026-08-13)
 
 The corrected optionless canary on home.4 sent exactly one basket-create mutation and received a deterministic provider failure. It made zero retries and zero quote-template, final-checkout, payment, checkout-status, order-status, or other order calls; zero active orders remained. No manual-check or integrity latch was created. All four ordering gates were restored to false and production was rolled back to home.2. This public-safe record intentionally excludes credentials, account/store/basket identifiers, addresses, coordinates, payloads, provider response text, and private diagnostics.
@@ -27,7 +31,7 @@ The evidenced create root remains `{products, storeId, storeAddressId, storeCate
 
 The common basket response requires basket/customer/store identities, `products`, `basketPrice`, typed nullable `mbs`, nullable `isPrimeSubscriptionSimulated`, and boolean `usingDhBasket`; `productSuggestions` and `cityCode` are optional. The first-party validator declares basket products as `productSchema.partial()`. The adapter therefore requires the nested product IDs and quantity needed to prove exact selection, requires selected customizations to match exactly, and strictly validates and preserves every optional current product field when it appears. Sponsored suggestions retain the full rich product schema.
 
-Replacement follows the first-party clone-current-basket/change-products PUT behavior. Quantity PATCH is exactly `{handlingStrategy, basketVersion, products:[{basketProductId, quantity}]}`. Whole-basket DELETE is bodyless. Deterministic 4xx responses remain provider rejection; transport, 5xx, or malformed/mismatched successful responses remain ambiguous and are never replayed.
+Replacement follows the first-party clone-current-basket/change-products PUT behavior. Quantity PATCH is exactly `{handlingStrategy, basketVersion, products:[{basketProductId, quantity}]}`. Whole-basket DELETE is bodyless. A post-dispatch exception is terminal provider rejection only when it carries `category=provider_rejection` and an exact allowlisted status in `{400,401,403,404,405,406,409,410,415,422,429}`. Missing or unapproved status, transport, 5xx, cancellation, malformed/mismatched successful responses, and every other unknown outcome remain ambiguous, durably latch reconciliation, and are never replayed. Exception class names alone are not evidence.
 
 ## Frozen final-checkout evidence (2026-08-13)
 

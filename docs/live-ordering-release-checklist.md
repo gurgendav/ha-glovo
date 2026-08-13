@@ -5,7 +5,7 @@
 ## Repository and release identity
 
 - [ ] Work from a clean tracked candidate; run the explicit staged archive suite and `python scripts/verify_clean_checkout.py` after commit.
-- [ ] Manifest is `1.1.0+home.5`; trust ID matches the documented canonical descriptor.
+- [ ] Manifest is `1.1.0+home.6`; trust ID matches the documented canonical descriptor.
 - [ ] Inspect staged names, stat, and full diff; all intended tests are tracked and no private/credential material is present.
 - [ ] Run focused paid/status/cancellation tests twice and the full suite twice after the last edit.
 - [ ] Run Ruff, compileall, Node syntax, frontend harness, privacy scanner, every release/security verifier, JSON parsing/key parity, and `git diff --check`.
@@ -26,6 +26,8 @@
 
 ## Dispatch and reconciliation safety
 
+- [ ] A preparatory post-dispatch exception becomes terminal provider failure only with `category=provider_rejection` and exact status in `{400,401,403,404,405,406,409,410,415,422,429}`; all other exceptions durably require reconciliation.
+- [ ] Class names, missing/unallowlisted status, 5xx, transport/cancellation, and malformed/mismatched success cannot bypass the preparation reconciliation latch; outcome-persistence failure remains an integrity fault.
 - [ ] Exactly one `POST /v3/checkouts/order/1`; no automatic retry, token refresh/replay, fallback, or duplicate dispatch.
 - [ ] No `/complete`, checkout/payment cancellation, redirect, capture, wallet, or payment mutation is implemented.
 - [ ] Durable prepared/reserved and dispatching authority precedes network invocation; all literal gates, generation, freshness, and fingerprints are rechecked.

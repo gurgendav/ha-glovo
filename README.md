@@ -62,11 +62,17 @@ place an order.
 
 ### Guarded live paid checkout
 
-Release `1.1.0+home.5` includes an experimental administrator-only paid checkout path.
+Release `1.1.0+home.6` includes an experimental administrator-only paid checkout path.
 It remains default-off behind **separate** preparation and paid-spending switches and
 acknowledgements. Enabling paid checkout requires preparation consent as well. Migration
 and reauthentication reset all four values, and capability becomes false on unload,
 options change, unresolved outcome, or integrity fault.
+
+Home.6 conservatively classifies preparatory post-dispatch failures. Only a closed
+`provider_rejection` with an explicitly allowlisted deterministic HTTP status becomes
+terminal provider failure. Missing or unapproved status, transport/5xx/cancellation,
+malformed success, parser mismatch, and every other unknown outcome durably require
+reconciliation and block later ordering; exception class names carry no authority.
 
 Release `1.1.0+home.3` was withdrawn after its stop-before-submit canary detected
 provider basket-contract drift. No final checkout was dispatched. This release restores
