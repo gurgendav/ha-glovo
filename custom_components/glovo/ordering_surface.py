@@ -95,6 +95,9 @@ class OrderingSurface:
         # runtime are left callback-free by async_unload and fail closed.
         handlers: dict[str, Handler] = {
             PUBLIC_OPERATION_COMMANDS["state"]: self._state,
+            PUBLIC_OPERATION_COMMANDS["live/checkout_status"]: self._operation_handler(
+                "live/checkout_status"
+            ),
             "glovo/ordering/manual_checks": self._manual_checks,
             "glovo/ordering/manual_check": self._manual_check,
             "glovo/ordering/prepare_manual_resolution": self._prepare_manual_resolution,
@@ -105,7 +108,7 @@ class OrderingSurface:
                 {
                     command: self._operation_handler(operation)
                     for operation, command in PUBLIC_OPERATION_COMMANDS.items()
-                    if operation != "state"
+                    if operation not in {"state", "live/checkout_status"}
                 }
             )
         try:

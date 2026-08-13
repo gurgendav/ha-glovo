@@ -99,6 +99,11 @@ assert.deepEqual(panel._serializeBasket(), [{
   options: [{ groupHandle: "g1", optionHandles: ["o1"] }],
 }]);
 assert.equal(panel._estimatedSubtotal().amountMinor, 200);
+assert.equal(panel._formatMinor(560000, "AMD"), "AMD 5,600.00");
+assert.equal(panel._formatMinor(1234, "JPY"), "¥1,234");
+assert.equal(panel._formatMinor(1234, "EUR"), "€12.34");
+assert.match(panel._formatMinor(1234, "KWD"), /1\.234/);
+assert.equal(panel._formatMinor(1234, "ZZZ"), "Price unavailable");
 
 const first = panel._beginLatestRead("menu");
 const second = panel._beginLatestRead("menu");
@@ -115,6 +120,61 @@ assert.equal(flightCalls, 1);
 releaseFlight();
 assert.deepEqual(await Promise.all([one, two]), ["done", "done"]);
 assert.equal(panel._singleFlights.size, 0);
+
+// The paid acknowledgement is bound to exact minor units and currency. Submit
+// itself is single-flight, consumes the challenge before I/O, and is inert while
+// capability is unresolved/false.
+const checkoutPanel = new Panel();
+checkoutPanel._generation = 19;
+checkoutPanel._model.quote = {
+  projection: {
+    store: "Synthetic Store",
+    items: [{ name: "Meal", quantity: 2, options: ["Large"] }],
+    priceLines: [{ title: "Subtotal", value: "5,600 AMD" }],
+    purchaseTotalCents: 560000,
+    currencyCode: "AMD",
+    address: "123 Synthetic Avenue",
+    payment: "Saved card •••• 4242",
+    eta: "20 min",
+  },
+  secondsRemaining: 30,
+  challenge: null,
+  ackText: "",
+  typed: "",
+};
+checkoutPanel._renderAll = () => {};
+checkoutPanel._setLifecycle = () => {};
+checkoutPanel._invalidateAuthority = () => {};
+checkoutPanel._refreshStateAfterMutationFailure = async () => {};
+checkoutPanel.shadowRoot = { querySelectorAll: () => [] };
+const checkoutRequests = [];
+let releaseCheckout;
+const checkoutGate = new Promise((resolveGate) => { releaseCheckout = resolveGate; });
+checkoutPanel._request = async (operation, request) => {
+  checkoutRequests.push({ operation, request });
+  if (operation === "live/prepare_confirmation") {
+    return { purchaseTotalCents: 560000, currencyCode: "AMD", challenge: "challenge-exact" };
+  }
+  await checkoutGate;
+  return { status: "succeeded", manualCheckRequired: false };
+};
+await checkoutPanel._prepareConfirmation();
+assert.equal(checkoutPanel._model.quote.ackText, "ACK 560000 AMD");
+assert.equal(checkoutPanel._ackText, "ACK 560000 AMD");
+checkoutPanel._model.quote.typed = "ACK 560000 AMD";
+await checkoutPanel._submitCheckout();
+assert.deepEqual(checkoutRequests.map((entry) => entry.operation), ["live/prepare_confirmation"]);
+checkoutPanel._model.capability.liveCheckoutAvailable = true;
+checkoutPanel._model.quote.challenge = "challenge-exact";
+const submitOne = checkoutPanel._submitCheckout();
+const submitTwo = checkoutPanel._submitCheckout();
+await Promise.resolve();
+assert.deepEqual(checkoutRequests.map((entry) => entry.operation), ["live/prepare_confirmation", "live/execute_checkout"]);
+assert.equal(checkoutPanel._model.quote.challenge, null);
+releaseCheckout();
+await Promise.all([submitOne, submitTwo]);
+assert.equal(checkoutRequests.filter((entry) => entry.operation === "live/execute_checkout").length, 1);
+assert.deepEqual(checkoutRequests[1].request, { generation: 19, challenge: "challenge-exact", acknowledged: true });
 
 // Routine Home Assistant state updates must not replace focused form controls.
 // Simulate typing every character of a slug while HA publishes a fresh hass object

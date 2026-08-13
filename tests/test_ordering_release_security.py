@@ -1,4 +1,4 @@
-"""Release gates for the default-off, fixture-only ordering foundation."""
+"""Release gates for the guarded production paid-checkout seam."""
 
 from __future__ import annotations
 
@@ -49,14 +49,42 @@ def test_privacy_scanner_allows_public_checkout_operation_but_catches_private_re
         path.read_text(encoding="utf-8")
         for path in (COMPONENT / "__init__.py", COMPONENT / "coordinator.py", COMPONENT / "ordering_manager.py")
     )
-    assert "ordering_live_checkout" not in runtime
+    assert "ProductionFinalCheckoutAdapter" in runtime
+    assert "FinalCheckoutRequest.from_quote" in runtime
 
 
-def test_release_evidence_is_explicitly_fail_closed() -> None:
+def test_release_evidence_reviews_guarded_production_seam_without_idempotency_claim() -> None:
     evidence = (ROOT / "docs" / "live-ordering-protocol-evidence.md").read_text(encoding="utf-8")
-    assert "productionFinalCheckoutSupported: false" in evidence
-    for missing in ("exact request JSON", "success", "rejection", "status endpoint", "completion"):
-        assert missing in evidence
+    assert "productionFinalCheckoutSupported: true" in evidence
+    for required in (
+        "POST /v3/checkouts/order/1",
+        "GET /v3/checkouts/order/{checkoutId}",
+        "Preserve the server template projection exactly",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
+        "Saved card only",
+        "No polling",
+        "does **not** establish provider idempotency",
+    ):
+        assert required in evidence
+
+
+def test_reviewed_final_path_has_no_completion_cancel_payment_mutation_or_retry() -> None:
+    final_source = (COMPONENT / "ordering_live_checkout.py").read_text(encoding="utf-8")
+    session_source = (COMPONENT / "api_session.py").read_text(encoding="utf-8")
+    manager_source = (COMPONENT / "ordering_manager.py").read_text(encoding="utf-8")
+    assert final_source.count(
+        'MutationPurpose.FINAL_CHECKOUT, "POST", FINAL_CHECKOUT_PATH, body'
+    ) == 1
+    assert 'FINAL_CHECKOUT_PATH: Final = "/v3/checkouts/order/1"' in final_source
+    assert "async_final_status" in final_source and "FINAL_STATUS_PATH_PREFIX + known" in final_source
+    for prohibited in ("/complete", "/cancel", "/payments/", "async_complete_checkout"):
+        assert prohibited not in final_source
+        assert prohibited not in manager_source
+    assert "No branch below retries" in session_source
+    assert "refreshes, replays, compensates" in session_source
+    assert "while attempt" not in final_source
 
 
 def test_manifest_does_not_claim_unevidenced_minimum_home_assistant() -> None:

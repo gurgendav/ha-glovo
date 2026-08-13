@@ -755,7 +755,31 @@ class LiveOrderingFacade:
                     raise PublicContractError
                 store = state.store
                 await self._async_require_store_open(store, address)
-                quote_request = QuoteRequest(owner_key=owner, generation=generation, intent_key=f"intent-{state.revision}", source_screen="BASKET", basket=state.snapshot, delivery_address=address, payment=payment, masked_address="Saved destination ••••", masked_payment=f"Saved card •••• {payment.last_four_digits or ''}".strip(), store_display_name=store.name)
+                quote_request = QuoteRequest(
+                    owner_key=owner,
+                    generation=generation,
+                    intent_key=f"intent-{state.revision}",
+                    source_screen="BASKET",
+                    basket=state.snapshot,
+                    delivery_address=address,
+                    payment=payment,
+                    masked_address="Saved destination ••••",
+                    masked_payment=f"Saved card •••• {payment.last_four_digits or ''}".strip(),
+                    store_display_name=store.name,
+                    full_address=address.address_line,
+                    item_display=tuple(
+                        {
+                            "name": line["label"],
+                            "quantity": line["quantity"],
+                            "options": [
+                                label
+                                for group in line["options"]
+                                for label in group["optionLabels"]
+                            ],
+                        }
+                        for line in state.lines
+                    ),
+                )
                 # A replacement attempt removes previous authority before dispatch.
                 self._confirmations.invalidate(owner)
                 self._quote.pop(owner, None)

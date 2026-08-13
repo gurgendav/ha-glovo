@@ -1,7 +1,9 @@
 """Runtime lifecycle for the durable, gated live-ordering dependency seam.
 
-Production composition may inject a preparation facade only after its gate and
-durable authority are ready. A production final-checkout adapter is unsupported.
+Production composition injects a preparation facade only after its gate and
+durable authority are ready.  The read-only final-status adapter remains
+available to a blocked recovery runtime; final submission still requires the
+facade, both consent gates, and the exact request factory.
 """
 from __future__ import annotations
 
@@ -33,6 +35,9 @@ class OrderingRuntime:
         self._options = live_options
         self.flow: OrderingLiveFlow | None = None
         self._closed = False
+        # Recovery may need one explicit GET after an ambiguous final POST even
+        # though manual-check state has closed every mutation capability.
+        self.manager._final_status_adapter = final_adapter  # noqa: SLF001
         # No facade means no remote preparation clients were instantiated. The
         # production setup injects one only after its independent gate and durable
         # authority are ready; tests may inject the same narrow seam directly.
@@ -45,11 +50,13 @@ class OrderingRuntime:
                 live_options=live_options,
                 final_adapter=final_adapter,
                 final_request_factory=final_request_factory,
+                manager=manager,
             )
             self.manager._live_dispatcher = self.flow.async_live_dispatch  # noqa: SLF001
             self.manager._live_availability = (  # noqa: SLF001
                 lambda: self.live_ordering_available
             )
+
 
     @property
     def live_checkout_available(self) -> bool:
@@ -90,3 +97,4 @@ class OrderingRuntime:
         # production facade after reload/unload.
         self.manager._live_dispatcher = None  # noqa: SLF001
         self.manager._live_availability = None  # noqa: SLF001
+        self.manager._final_status_adapter = None  # noqa: SLF001

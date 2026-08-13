@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import importlib.util
 import json
 import socket
@@ -406,7 +407,10 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
 def _recovery_commands(runtime: SimpleNamespace) -> set[str]:
     surface = sys.modules[f"{runtime.prefix}.ordering_surface"]
-    return {surface.PUBLIC_OPERATION_COMMANDS["state"]} | set(surface.RECOVERY_COMMANDS)
+    return {
+        surface.PUBLIC_OPERATION_COMMANDS["state"],
+        surface.PUBLIC_OPERATION_COMMANDS["live/checkout_status"],
+    } | set(surface.RECOVERY_COMMANDS)
 
 
 def _enabled_commands(runtime: SimpleNamespace) -> set[str]:
@@ -433,7 +437,9 @@ def _call_ws(
     return connection
 
 
-def _manual_record(*, integrity: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+def _manual_record(
+    *, integrity: bool = False, checkout_id: str | None = "checkout-private-synthetic"
+) -> tuple[dict[str, Any], dict[str, Any]]:
     record = {
         "attempt_id": "attempt-live-ha",
         "state": "MANUAL_CHECK_REQUIRED",
@@ -445,7 +451,11 @@ def _manual_record(*, integrity: bool = False) -> tuple[dict[str, Any], dict[str
         "execution_mode": "live",
         "request_fingerprint": "f" * 64,
         "provider_session_hash": "a" * 64,
-        "checkout_id": "checkout-private-synthetic",
+        "basket_reference_hash": hashlib.sha256(
+            b"basket-private-synthetic"
+        ).hexdigest(),
+        "provider_evidence_hash": None,
+        "checkout_id": checkout_id,
         "dispatch_started_at": 1_700_000_005.0,
         "failure_class": "timeout",
         "resolution": None,
@@ -473,13 +483,41 @@ def _manual_record(*, integrity: bool = False) -> tuple[dict[str, Any], dict[str
     return record, state
 
 
-def _seed_manual_recovery(runtime: SimpleNamespace, *, integrity: bool = False) -> None:
-    record, state = _manual_record(integrity=integrity)
+def _seed_manual_recovery(
+    runtime: SimpleNamespace,
+    *,
+    integrity: bool = False,
+    checkout_id: str | None = "checkout-private-synthetic",
+) -> None:
+    record, state = _manual_record(integrity=integrity, checkout_id=checkout_id)
     runtime.Store.values["glovo.ordering_journal_v2.entry-one"] = {
         "version": 2,
         "records": [record],
     }
     runtime.Store.values["glovo.ordering_safety_v2.entry-one"] = state
+
+
+def _checkout_status_payload(status: str, **changes: Any) -> dict[str, Any]:
+    order = None
+    if status == "COMPLETED":
+        order = {
+            "id": "order-private-synthetic",
+            "basketId": "basket-private-synthetic",
+            "total": 624000,
+            "currencyCode": "AMD",
+        }
+    checkout = {
+        "checkoutId": "checkout-private-synthetic",
+        "status": status,
+        "action": None,
+        "postAuthAction": None,
+        "willDoMinimalAmountAuthAndVoid": False,
+        "errors": [],
+        "order": order,
+        "payments": [],
+    }
+    checkout.update(changes)
+    return {"checkout": checkout}
 
 
 def _seed_integrity_fault(runtime: SimpleNamespace) -> None:
@@ -770,7 +808,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
             )
         return response
 
-    glovo_api.single_attempt_authed_get = get
+    setattr(glovo_api, "single_attempt_authed_get", get)
     setattr(glovo_api, "single_attempt_authed_location_get", location_get)
     glovo_api.single_attempt_authed_phase_mutation = mutate
     assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
@@ -997,7 +1035,7 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         assert entry.options["ordering_acknowledged"] is False
         assert entry.options["allow_live_checkout"] is False
         assert entry.options["live_checkout_acknowledged"] is False
-        assert entry.minor_version == 3
+        assert entry.minor_version == 4
 
         assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
         assert entry.runtime_data.refreshed is True
@@ -1025,7 +1063,7 @@ def test_reauth_refresh_resets_both_ordering_options_false(
     assert result["options"]["live_checkout_acknowledged"] is False
 
 
-def test_options_flow_has_one_default_off_preparation_switch(
+def test_options_flow_has_separate_default_off_preparation_and_spending_switches(
     ha_runtime: SimpleNamespace,
 ) -> None:
     entry = ha_runtime.FakeEntry(
@@ -1045,7 +1083,7 @@ def test_options_flow_has_one_default_off_preparation_switch(
             {
                 "scan_interval": 15,
                 "allow_ordering": True,
-                # Stale/forged removed fields can never enable paid checkout.
+                "ordering_acknowledged": True,
                 "allow_live_checkout": True,
                 "live_checkout_acknowledged": True,
             }
@@ -1054,8 +1092,8 @@ def test_options_flow_has_one_default_off_preparation_switch(
     assert accepted["type"] == "create_entry"
     assert accepted["data"]["allow_ordering"] is True
     assert accepted["data"]["ordering_acknowledged"] is True
-    assert accepted["data"]["allow_live_checkout"] is False
-    assert accepted["data"]["live_checkout_acknowledged"] is False
+    assert accepted["data"]["allow_live_checkout"] is True
+    assert accepted["data"]["live_checkout_acknowledged"] is True
 
 
 def test_panel_registration_failure_preserves_websocket_api_and_tracking(
@@ -1572,6 +1610,216 @@ def test_F_recovery_websocket_payloads_and_errors_use_privacy_allowlist(
     assert sanitized.errors == [
         (1, "invalid_ordering_request", "Ordering request is unavailable or invalid")
     ]
+
+
+def test_status_reconciliation_without_learned_id_performs_zero_gets_and_stays_manual(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    _seed_manual_recovery(ha_runtime, checkout_id=None)
+    calls: list[tuple[str, str]] = []
+    glovo_api = sys.modules[f"{ha_runtime.prefix}.glovo"]
+    setattr(
+        glovo_api,
+        "single_attempt_authed_get",
+        lambda method, _token, path, _query: calls.append((method, path)),
+    )
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry({})
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    result = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/checkout_status",
+        {"type": "glovo/ordering/live/checkout_status", "generation": 4},
+    )
+    assert result.errors == []
+    assert result.results[0][1] == {
+        "status": "no_checkout_id",
+        "manualCheckRequired": True,
+    }
+    assert calls == []
+    assert entry.runtime_data.ordering_manager.manual_check_required is True
+
+
+@pytest.mark.parametrize(
+    ("provider_status", "public_status", "journal_state"),
+    [
+        ("COMPLETED", "succeeded", "CONFIRMED_SUCCEEDED"),
+        ("FAILED", "failed", "CONFIRMED_FAILED"),
+        ("CANCELLED", "failed", "CONFIRMED_FAILED"),
+    ],
+)
+def test_exact_learned_id_one_explicit_get_durably_provider_confirms_terminal_result(
+    ha_runtime: SimpleNamespace,
+    provider_status: str,
+    public_status: str,
+    journal_state: str,
+) -> None:
+    _seed_manual_recovery(ha_runtime)
+    calls: list[tuple[str, str, dict[str, str]]] = []
+    glovo_api = sys.modules[f"{ha_runtime.prefix}.glovo"]
+
+    def get(method: str, _token: str, path: str, query: dict[str, str]) -> Any:
+        calls.append((method, path, copy.deepcopy(query)))
+        return _checkout_status_payload(provider_status)
+
+    setattr(glovo_api, "single_attempt_authed_get", get)
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry({})
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    result = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/checkout_status",
+        {"type": "glovo/ordering/live/checkout_status", "generation": 4},
+    )
+    assert result.errors == []
+    assert result.results[0][1] == {
+        "status": public_status,
+        "manualCheckRequired": False,
+    }
+    assert calls == [
+        ("GET", "/v3/checkouts/order/checkout-private-synthetic", {})
+    ]
+    record = ha_runtime.Store.values["glovo.ordering_journal_v2.entry-one"]["records"][0]
+    safety = ha_runtime.Store.values["glovo.ordering_safety_v2.entry-one"]
+    assert record["state"] == journal_state
+    assert record["resolution"] == (
+        "provider_succeeded" if provider_status == "COMPLETED" else "provider_failed"
+    )
+    assert record["evidence_source"] == "provider_response"
+    assert len(record["provider_evidence_hash"]) == 64
+    assert safety == {
+        "version": 2,
+        "generation": 5,
+        "manual_check_required": False,
+        "integrity_fault": False,
+    }
+    assert entry.runtime_data.ordering_manager.manual_check_required is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _checkout_status_payload("AUTH_REQUIRED", action="AUTH"),
+        _checkout_status_payload("NO_AUTH_PENDING", action="NO_AUTH_POLL"),
+        _checkout_status_payload("NO_AUTH_PENDING", action="PROCESS_PAYMENT"),
+        {"malformed": True},
+        _checkout_status_payload(
+            "COMPLETED",
+            order={
+                "id": "order-private-synthetic",
+                "basketId": "basket-mismatch",
+                "total": 624000,
+                "currencyCode": "AMD",
+            },
+        ),
+    ],
+    ids=["auth", "pending", "process-payment", "malformed", "identity-mismatch"],
+)
+def test_nonterminal_malformed_and_mismatch_status_stay_manual_without_polling(
+    ha_runtime: SimpleNamespace, payload: dict[str, Any]
+) -> None:
+    _seed_manual_recovery(ha_runtime)
+    calls: list[str] = []
+    glovo_api = sys.modules[f"{ha_runtime.prefix}.glovo"]
+
+    def get(_method: str, _token: str, path: str, _query: dict[str, str]) -> Any:
+        calls.append(path)
+        return copy.deepcopy(payload)
+
+    setattr(glovo_api, "single_attempt_authed_get", get)
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry({})
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    result = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/checkout_status",
+        {"type": "glovo/ordering/live/checkout_status", "generation": 4},
+    )
+    assert result.results[0][1] == {
+        "status": "manual_check_required",
+        "manualCheckRequired": True,
+    }
+    assert calls == ["/v3/checkouts/order/checkout-private-synthetic"]
+    assert ha_runtime.Store.values["glovo.ordering_journal_v2.entry-one"]["records"][0][
+        "state"
+    ] == "MANUAL_CHECK_REQUIRED"
+    assert entry.runtime_data.ordering_manager.manual_check_required is True
+
+
+def test_status_transport_failure_is_one_get_and_remains_manual(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    _seed_manual_recovery(ha_runtime)
+    calls: list[str] = []
+    glovo_api = sys.modules[f"{ha_runtime.prefix}.glovo"]
+
+    def get(_method: str, _token: str, path: str, _query: dict[str, str]) -> Any:
+        calls.append(path)
+        raise ConnectionResetError("synthetic read failure")
+
+    setattr(glovo_api, "single_attempt_authed_get", get)
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry({})
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    result = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/checkout_status",
+        {"type": "glovo/ordering/live/checkout_status", "generation": 4},
+    )
+    assert result.results[0][1]["manualCheckRequired"] is True
+    assert calls == ["/v3/checkouts/order/checkout-private-synthetic"]
+
+
+@pytest.mark.parametrize("failure_layer", ["journal", "safety"])
+def test_status_terminal_paired_persistence_failure_fails_closed(
+    ha_runtime: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_layer: str,
+) -> None:
+    _seed_manual_recovery(ha_runtime)
+    glovo_api = sys.modules[f"{ha_runtime.prefix}.glovo"]
+    setattr(
+        glovo_api,
+        "single_attempt_authed_get",
+        lambda _method, _token, _path, _query: _checkout_status_payload("COMPLETED"),
+    )
+    original_save = ha_runtime.Store.async_save
+
+    async def failing_save(storage: Any, data: dict[str, Any]) -> None:
+        if failure_layer == "journal" and "ordering_journal_v2" in storage.key and data[
+            "records"
+        ][0]["state"] == "CONFIRMED_SUCCEEDED":
+            raise OSError("synthetic journal save failure")
+        if failure_layer == "safety" and "ordering_safety_v2" in storage.key and data.get(
+            "manual_binding", {}
+        ).get("resolution") == "provider_succeeded":
+            raise OSError("synthetic safety save failure")
+        await original_save(storage, data)
+
+    monkeypatch.setattr(ha_runtime.Store, "async_save", failing_save)
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry({})
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    result = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/checkout_status",
+        {"type": "glovo/ordering/live/checkout_status", "generation": 4},
+    )
+    manager = entry.runtime_data.ordering_manager
+    if failure_layer == "journal":
+        assert result.errors == []
+        assert result.results[0][1]["manualCheckRequired"] is True
+        assert manager.manual_check_required is True
+        assert manager.integrity_fault is False
+    else:
+        assert result.errors[0][1] == "ordering_integrity_fault"
+        assert manager.integrity_fault is True
+        assert manager.enabled is False
 
 
 def test_G_recovery_frontend_has_only_nonretrying_challenge_acknowledged_outcomes() -> None:

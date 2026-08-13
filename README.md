@@ -60,23 +60,40 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
-### Ordering safety and release posture
+### Guarded live paid checkout
 
-Paid checkout is unavailable: `liveCheckoutAvailable` is always `false`, paid-checkout
-configuration values are forced to literal false, and the panel exposes no paid CTA.
-The exact production payment endpoint, request schema, status polling, redirects,
-token refresh, retry rules, and ambiguous-result protocol remain unsupported; see the
-[public static protocol evidence](docs/live-ordering-protocol-evidence.md).
+Release `1.1.0+home.3` includes an experimental administrator-only paid checkout path.
+It remains default-off behind **separate** preparation and paid-spending switches and
+acknowledgements. Enabling paid checkout requires preparation consent as well. Migration
+and reauthentication reset all four values, and capability becomes false on unload,
+options change, unresolved outcome, or integrity fault.
 
-Any future paid-ordering proposal must use only a provider-selected saved card, treat
-the server quote as authoritative, require explicit confirmation of the exact amount
-and currency, and dispatch at most once. Any timeout, cancellation, malformed
-response, or uncertainty requires manual reconciliation in the provider application
-with no automatic retry. Never log or capture tokens, cookies, payment data, full
-addresses, checkout references, raw requests, or responses; rollback never clears an
-unresolved journal state. The required stop criteria and release gates are documented
-in the [operator runbook](docs/live-ordering-operator-runbook.md) and
-[release checklist](docs/live-ordering-release-checklist.md).
+Only a provider-selected saved card is supported. The final review displays the exact
+store, items/quantities/options, provider price lines, total and ISO currency, ETA,
+expiry, masked card, and full saved address. The full address is admin-only and
+**ephemeral**: it is not written to journals, logs, diagnostics, or recovery payloads.
+The administrator must type an acknowledgement bound to the exact minor-unit amount and
+currency.
+
+Final submission is exactly one `POST /v3/checkouts/order/1` using the server template's
+exact quoted projection. There is no automatic retry, refresh-and-replay, fallback,
+checkout completion, cancellation, redirect, capture, or payment mutation. Pending or
+interactive payment/auth states, timeout, cancellation, malformed or contradictory
+responses, transport loss, identity mismatch, and persistence uncertainty become
+`MANUAL_CHECK_REQUIRED` and block every later checkout across restart.
+
+If the response privately yielded a checkout ID, each explicit administrator status
+action performs exactly one `GET /v3/checkouts/order/{checkoutId}`; there is no polling.
+With no learned ID it performs zero GETs. Public and recovery projections reveal only
+`hasCheckoutId`, never the identifier. Provider-confirmed success additionally requires
+an exact basket, amount, and currency match; all other ambiguity remains manual.
+
+The [reviewed static protocol evidence](docs/live-ordering-protocol-evidence.md) does
+**not** claim provider idempotency or lookup by `checkoutSessionId`. The adapter is
+supportable only because it never retries an ambiguous paid POST and requires manual
+provider-app reconciliation. Follow the [operator runbook](docs/live-ordering-operator-runbook.md)
+and [release checklist](docs/live-ordering-release-checklist.md); disabling or rolling
+back never clears unresolved durable state.
 
 ## Installation
 

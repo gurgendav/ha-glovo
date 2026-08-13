@@ -11,7 +11,7 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from .api_session import ApiSessionError, MutationPurpose
 from .ordering_contracts import AddressSnapshot, SavedPayment
@@ -230,6 +230,8 @@ class QuoteRequest:
     masked_address: str
     masked_payment: str
     store_display_name: str
+    full_address: str = field(default="Saved destination", repr=False)
+    item_display: tuple[dict[str, Any], ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         _id(self.owner_key)
@@ -260,6 +262,18 @@ class QuoteRequest:
         object.__setattr__(self, "masked_address", masked_address)
         object.__setattr__(self, "masked_payment", masked_payment)
         object.__setattr__(self, "store_display_name", store_name)
+        _text(self.full_address, maximum=300)
+        _bounded_payload(list(self.item_display))
+        for item in self.item_display:
+            row = _object(
+                item,
+                required={"name", "quantity", "options"},
+                allowed={"name", "quantity", "options"},
+            )
+            _display(row["name"], maximum=120)
+            _int(row["quantity"], minimum=1, maximum=1_000)
+            for option in _array(row["options"], maximum=100):
+                _display(option, maximum=120)
 
     @property
     def store_fingerprint(self) -> str:
@@ -382,6 +396,21 @@ class AuthoritativeQuote:
     masked_address: str
     masked_payment: str
     name: str
+    submit_projection_bytes: bytes = field(default=b"{}", repr=False)
+    full_address: str = field(default="Saved destination", repr=False)
+    item_display: tuple[dict[str, Any], ...] = field(default=(), repr=False)
+
+    def exact_submit_projection(self) -> dict[str, Any]:
+        """Return a fresh copy of the exact immutable template submit authority."""
+        value: object = None
+        try:
+            value = json.loads(self.submit_projection_bytes)
+        except (TypeError, ValueError):
+            _fail("mismatch")
+        if not isinstance(value, dict):
+            _fail("mismatch")
+        _bounded_payload(value)
+        return cast(dict[str, Any], value)
 
     @property
     def expires_at(self) -> float:
@@ -423,6 +452,13 @@ class AuthoritativeQuote:
                 "owner": self.owner_key,
                 "generation": self.generation,
                 "intent": self.intent_key,
+                "submitProjectionHash": hashlib.sha256(self.submit_projection_bytes).hexdigest(),
+                "confirmationDisplay": {
+                    "store": self.store_display_name,
+                    "items": list(self.item_display),
+                    "fullAddress": self.full_address,
+                    "payment": self.masked_payment,
+                },
             }
         )
 
@@ -437,7 +473,8 @@ class AuthoritativeQuote:
             "store": self.store_display_name,
             "itemSummary": f"{count} item(s)",
             "itemCount": count,
-            "address": self.masked_address,
+            "items": [dict(item) for item in self.item_display],
+            "address": self.full_address,
             "payment": self.masked_payment,
             "priceLines": [line.public_dict() for line in self.price_lines],
             "purchaseTotalCents": self.total.amount_minor,
@@ -675,6 +712,31 @@ def parse_quote_template(
         _fail("unsupported")
     if "templateReceived" in analytics and not isinstance(analytics["templateReceived"], bool):
         _fail()
+    projection_details = dict(details)
+    projection_details.pop("currencyCode", None)
+    projection_details.pop("purchaseTotalCents", None)
+    projection_details.pop("basketVersion", None)
+    projection_details.pop("eta", None)
+    projection_details.pop("legalVerificationRequired", None)
+    projection_details.pop("templateId", None)
+    basket_widget = projection_details.pop("basketWidgetId", None)
+    projection_details["versionId"] = version_id
+    projection_details["basketId"] = basket_id
+    if basket_widget is not None:
+        projection_details["basketCreationWidgetId"] = basket_widget
+    projection_details["checkoutSessionId"] = checkout_session_id
+    submit_projection = {
+        "orderDetails": projection_details,
+        "components": checkout["components"],
+        "analytics": {"templateReceived": analytics.get("templateReceived")},
+    }
+    submit_projection_bytes = json.dumps(
+        submit_projection,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
     return AuthoritativeQuote(
         checkout_session_id=checkout_session_id,
         version_id=version_id,
@@ -702,6 +764,9 @@ def parse_quote_template(
         masked_address=request.masked_address,
         masked_payment=request.masked_payment,
         name=_display(checkout["name"], maximum=100),
+        submit_projection_bytes=submit_projection_bytes,
+        full_address=request.full_address,
+        item_display=request.item_display,
     )
 
 

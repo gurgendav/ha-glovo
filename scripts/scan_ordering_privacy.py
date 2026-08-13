@@ -155,10 +155,16 @@ def scan_capabilities(findings: list[str]) -> None:
         for name, pattern in CAPABILITY_DENYLIST:
             if pattern.search(text):
                 findings.append(f"{path.relative_to(ROOT)}: {name}")
-    runtime_files = [COMPONENT / "__init__.py", COMPONENT / "coordinator.py", COMPONENT / "ordering_manager.py"]
-    for path in runtime_files:
-        if path.exists() and "ordering_live_checkout" in path.read_text(encoding="utf-8"):
-            findings.append(f"{path.relative_to(ROOT)}: runtime imports fixture-only final checkout")
+    # Production final checkout is permitted only through the reviewed adapter,
+    # purpose-typed serialized session, and durable manager coordinator.
+    runtime_text = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in (COMPONENT / "__init__.py", COMPONENT / "ordering_manager.py")
+    }
+    if "ProductionFinalCheckoutAdapter" not in runtime_text["__init__.py"]:
+        findings.append("custom_components/glovo/__init__.py: reviewed final adapter is not composed")
+    if "async_execute_live_final" not in runtime_text["ordering_manager.py"]:
+        findings.append("custom_components/glovo/ordering_manager.py: durable final coordinator is absent")
 
 
 def main() -> int:

@@ -192,8 +192,11 @@ def test_strings_and_every_translation_have_live_spending_copy_and_key_parity() 
     base = json.loads((ROOT / "custom_components" / "glovo" / "strings.json").read_text(encoding="utf-8"))
     fields = base["options"]["step"]["init"]["data"]
     assert "allow_live_checkout" in fields
-    assert "server basket/template" in base["options"]["step"]["init"]["description"]
+    assert "live_checkout_acknowledged" in fields
+    assert "Preparation and paid checkout have separate" in base["options"]["step"]["init"]["description"]
     assert "no retry" in base["options"]["step"]["init"]["description"]
+    assert "one explicit status GET" in base["options"]["step"]["init"]["description"]
+    assert "ephemerally" in base["options"]["step"]["init"]["description"]
 
     def leaves(value: object, prefix: tuple[str, ...] = ()) -> set[tuple[str, ...]]:
         if isinstance(value, dict):

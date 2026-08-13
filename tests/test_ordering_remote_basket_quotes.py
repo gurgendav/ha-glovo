@@ -1015,12 +1015,15 @@ def test_added_sources_have_private_auxiliary_capability_only() -> None:
         assert prohibited not in source
 
 
-def test_integration_runtime_wires_only_gated_preparation_and_no_final_checkout() -> None:
-    """Production composition may wire preparation, never a final adapter."""
+def test_integration_runtime_wires_reviewed_final_checkout_only_through_strict_seam() -> None:
+    """Production composition wires only the reviewed final adapter/session seam."""
     runtime = (GLOVO_ROOT / "__init__.py").read_text()
     for required in (
         "ordering_remote_basket",
         "ordering_live_quote",
+        "ordering_live_checkout",
+        "ProductionFinalCheckoutAdapter",
+        "FinalCheckoutRequest.from_quote",
         "mutation_transport=",
         "single_attempt_authed_phase_mutation",
     ):
@@ -1029,6 +1032,5 @@ def test_integration_runtime_wires_only_gated_preparation_and_no_final_checkout(
         "FixtureOnlyFinalCheckoutAdapter",
         "MockCheckoutAdapter",
         "SyntheticCatalogProvider",
-        "ordering_live_checkout",
     ):
         assert prohibited not in runtime

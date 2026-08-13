@@ -71,7 +71,7 @@ class GlovoConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the Glovo config flow."""
 
     VERSION = 1
-    MINOR_VERSION = 3
+    MINOR_VERSION = 4
 
     @staticmethod
     @callback
@@ -175,9 +175,30 @@ class GlovoOptionsFlow(OptionsFlow):
         current_allow_ordering = (
             self.config_entry.options.get(CONF_ALLOW_ORDERING, False) is True
         )
+        current_ordering_ack = (
+            self.config_entry.options.get(CONF_ORDERING_ACKNOWLEDGED, False) is True
+        )
+        current_allow_checkout = (
+            self.config_entry.options.get(CONF_ALLOW_LIVE_CHECKOUT, False) is True
+        )
+        current_checkout_ack = (
+            self.config_entry.options.get(CONF_LIVE_CHECKOUT_ACKNOWLEDGED, False)
+            is True
+        )
 
         if user_input is not None:
             allow_ordering = user_input.get(CONF_ALLOW_ORDERING, False) is True
+            ordering_ack = user_input.get(CONF_ORDERING_ACKNOWLEDGED, False) is True
+            allow_checkout = user_input.get(CONF_ALLOW_LIVE_CHECKOUT, False) is True
+            checkout_ack = (
+                user_input.get(CONF_LIVE_CHECKOUT_ACKNOWLEDGED, False) is True
+            )
+            if allow_ordering and not ordering_ack:
+                errors["base"] = "ordering_ack_required"
+            if allow_checkout and (
+                not allow_ordering or not ordering_ack or not checkout_ack
+            ):
+                errors["base"] = "live_checkout_ack_required"
 
             refresh_token = (user_input.get(CONF_REFRESH_TOKEN) or "").strip()
             if refresh_token and not errors:
@@ -196,11 +217,15 @@ class GlovoOptionsFlow(OptionsFlow):
                     data={
                         CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
                         CONF_ALLOW_ORDERING: allow_ordering,
-                        # One explicit default-off preparation switch is enough.
-                        # Paid checkout remains unavailable independently.
-                        CONF_ORDERING_ACKNOWLEDGED: allow_ordering,
-                        CONF_ALLOW_LIVE_CHECKOUT: False,
-                        CONF_LIVE_CHECKOUT_ACKNOWLEDGED: False,
+                        CONF_ORDERING_ACKNOWLEDGED: (
+                            ordering_ack if allow_ordering else False
+                        ),
+                        CONF_ALLOW_LIVE_CHECKOUT: (
+                            allow_checkout if allow_ordering and ordering_ack else False
+                        ),
+                        CONF_LIVE_CHECKOUT_ACKNOWLEDGED: (
+                            checkout_ack if allow_checkout else False
+                        ),
                     }
                 )
 
@@ -214,6 +239,16 @@ class GlovoOptionsFlow(OptionsFlow):
                     vol.Optional(CONF_REFRESH_TOKEN): _REFRESH_TOKEN_SELECTOR,
                     vol.Required(
                         CONF_ALLOW_ORDERING, default=current_allow_ordering
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_ORDERING_ACKNOWLEDGED, default=current_ordering_ack
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_ALLOW_LIVE_CHECKOUT, default=current_allow_checkout
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_LIVE_CHECKOUT_ACKNOWLEDGED,
+                        default=current_checkout_ack,
                     ): selector.BooleanSelector(),
                 }
             ),

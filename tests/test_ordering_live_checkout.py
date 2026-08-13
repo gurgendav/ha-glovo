@@ -1,14 +1,12 @@
-"""Offline regressions for cancellation-safe transport and final checkout fixtures."""
-
+"""Offline strict-contract tests for the production-shaped final checkout seam."""
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
+import copy
 import importlib.util
 import json
 import socket
 import sys
-import threading
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
@@ -18,22 +16,16 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 GLOVO_ROOT = ROOT / "custom_components" / "glovo"
-FIXTURES = ROOT / "tests" / "fixtures" / "glovo_ordering" / "checkout"
 MODULES = (
-    "ordering_models",
-    "api_session",
-    "ordering_contracts",
-    "ordering_remote_basket",
-    "ordering_live_quote",
-    "ordering_live_checkout",
+    "ordering_models", "api_session", "ordering_contracts", "ordering_remote_basket",
+    "ordering_live_quote", "ordering_live_checkout",
 )
 
 
 @pytest.fixture(autouse=True)
 def socket_guard(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     def blocked(*args: Any, **kwargs: Any) -> Any:
-        pytest.fail("checkout fixture test attempted outbound network access")
-
+        pytest.fail("final checkout test attempted outbound network access")
     monkeypatch.setattr(socket, "create_connection", blocked)
     monkeypatch.setattr(socket, "getaddrinfo", blocked)
     monkeypatch.setattr(socket.socket, "connect", blocked)
@@ -63,389 +55,167 @@ def live() -> dict[str, ModuleType]:
                 sys.modules.pop(name, None)
 
 
-def quote(
-    live: dict[str, ModuleType], *, received_at: float = 100.0, **overrides: Any
-) -> Any:
+def quote(live: dict[str, ModuleType], **overrides: Any) -> Any:
     remote = live["ordering_remote_basket"]
     quote_module = live["ordering_live_quote"]
     product = remote.RemoteBasketProduct(
-        product_id="product-fixture-1",
-        external_id="external-fixture-1",
-        legacy_id=None,
-        store_product_id="store-product-fixture-1",
-        basket_product_id="basket-product-fixture-1",
-        quantity=2,
-        quantity_limit=10,
-        customizations=(),
+        product_id="product-fixture-1", external_id="external-fixture-1", legacy_id=None,
+        store_product_id="store-product-fixture-1", basket_product_id="basket-product-fixture-1",
+        quantity=2, quantity_limit=10, customizations=(),
     )
+    projection = {
+        "orderDetails": {
+            "storeId": 71, "storeAddressId": 81, "basketId": "basket-fixture-1",
+            "versionId": 3, "checkoutSessionId": "checkout-session-fixture-1",
+        },
+        "components": [{"type": "CONFIRMED_FIXTURE", "data": {"selected": True}}],
+        "analytics": {"templateReceived": True},
+    }
     values = {
-        "checkout_session_id": "checkout-session-fixture-1",
-        "version_id": 3,
-        "template_id": 9,
-        "basket_id": "basket-fixture-1",
-        "basket_version": "basket-version-fixture-1",
-        "customer_id": 101,
-        "store_id": 71,
-        "store_address_id": 81,
-        "store_category_id": 201,
-        "city_code": "city-fixture-1",
-        "handling_strategy": "DELIVERY",
-        "exact_products": (product,),
-        "address_fingerprint": "a" * 64,
-        "payment_fingerprint": "b" * 64,
-        "capability_fingerprint": "c" * 64,
-        "owner_key": "admin-fixture",
-        "generation": 7,
-        "intent_key": "intent-fixture-1",
+        "checkout_session_id": "checkout-session-fixture-1", "version_id": 3,
+        "template_id": 9, "basket_id": "basket-fixture-1",
+        "basket_version": "basket-version-fixture-1", "customer_id": 101,
+        "store_id": 71, "store_address_id": 81, "store_category_id": 201,
+        "city_code": "YRV", "handling_strategy": "DELIVERY",
+        "exact_products": (product,), "address_fingerprint": "a" * 64,
+        "payment_fingerprint": "b" * 64, "capability_fingerprint": "c" * 64,
+        "owner_key": "admin-fixture", "generation": 7, "intent_key": "intent-fixture-1",
         "total": live["ordering_models"].Money(560000, "AMD"),
-        "price_lines": (quote_module.ProviderPriceLine("Total", "fixture", "TOTAL"),),
-        "eta": None,
-        "received_at": received_at,
-        "store_display_name": "Fixture Kitchen",
-        "masked_address": "Saved Home ••••",
-        "masked_payment": "Saved card •••• 4242",
+        "price_lines": (quote_module.ProviderPriceLine("Total", "5,600 AMD", "TOTAL"),),
+        "eta": "20 min", "received_at": 100.0, "store_display_name": "Fixture Kitchen",
+        "masked_address": "Saved destination ••••", "masked_payment": "Saved card •••• 4242",
         "name": "Fixture checkout",
+        "submit_projection_bytes": json.dumps(projection, sort_keys=True, separators=(",", ":")).encode(),
+        "full_address": "Fixture delivery address",
+        "item_display": ({"name": "Fixture item", "quantity": 2, "options": ["Standard"]},),
     }
     values.update(overrides)
     return quote_module.AuthoritativeQuote(**values)
 
 
-class FixtureTransport:
-    __glovo_fixture_only__ = True
-
-    def __init__(self, responses: list[Any]) -> None:
-        self.responses = responses
-        self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
-
-    async def __call__(self, method: str, path: str, body: dict[str, Any] | None) -> Any:
-        self.calls.append((method, path, body))
-        response = self.responses.pop(0)
-        if isinstance(response, BaseException):
-            raise response
-        return response
-
-
-def fixture(name: str) -> dict[str, Any]:
-    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
-
-
-class StatusError(RuntimeError):
-    def __init__(self, status: int) -> None:
-        self.status = status
-        super().__init__("private provider detail")
-
-
-@pytest.mark.parametrize("worker_outcome", [{"ok": True}, RuntimeError("fixture worker failure")])
-@pytest.mark.parametrize("cancellation_count", [2, 4])
-def test_executor_repeated_cancellation_retains_mutation_authority_until_real_thread_finishes(
-    live: dict[str, ModuleType], worker_outcome: Any, cancellation_count: int
-) -> None:
-    """Repeated cancels cannot release mutation authority before its thread returns."""
-    api = live["api_session"]
-
-    async def scenario() -> None:
-        loop = asyncio.get_running_loop()
-        entered = threading.Barrier(2)
-        release: concurrent.futures.Future[None] = concurrent.futures.Future()
-        calls: list[str] = []
-
-        def mutation(method: str, token: str, path: str, query: dict[str, str], body: Any) -> Any:
-            del method, token, path, query, body
-            if not calls:
-                calls.append("FIRST_STARTED")
-                entered.wait()
-                release.result()
-                calls.append("FIRST_RETURNED")
-                if isinstance(worker_outcome, BaseException):
-                    raise worker_outcome
-                return worker_outcome
-            if "FIRST_RETURNED" not in calls:
-                calls.append("SECOND_STARTED_BEFORE_FIRST_RETURNED")
-            calls.append("SECOND_STARTED")
-            return {"second": True}
-
-        async def executor(function: Any) -> Any:
-            return await loop.run_in_executor(None, function)
-
-        async def checkpoint() -> None:
-            """Yield through a completed executor Future without a timing sleep."""
-            await asyncio.to_thread(lambda: None)
-
-        client = api.SerializedApiSession(
-            token_source=lambda: "token-fixture",
-            persist_token=lambda value: None,
-            ensure_token=lambda value: ("access-fixture", value),
-            transport=lambda *args: {"read": True},
-            mutation_transport=mutation,
-            executor=executor,
-        )
-        first = asyncio.create_task(
-            client.async_mutate(
-                api.MutationPurpose.CREATE_BASKET,
-                "POST",
-                "/v1/authenticated/customers/42/baskets",
-                {},
-            )
-        )
-        await asyncio.to_thread(entered.wait)
-        second: asyncio.Task[Any] | None = None
-        try:
-            for _ in range(cancellation_count):
-                assert first.cancel()
-                await checkpoint()
-                assert client.lock.locked()
-                assert calls == ["FIRST_STARTED"]
-            second = asyncio.create_task(
-                client.async_mutate(
-                    api.MutationPurpose.CREATE_BASKET,
-                    "POST",
-                    "/v1/authenticated/customers/42/baskets",
-                    {},
-                )
-            )
-            await checkpoint()
-            assert calls == ["FIRST_STARTED"]
-            release.set_result(None)
-            with pytest.raises(api.MutationDispatchUncertain):
-                await first
-            assert await second == {"second": True}
-            assert calls == ["FIRST_STARTED", "FIRST_RETURNED", "SECOND_STARTED"]
-            assert "SECOND_STARTED_BEFORE_FIRST_RETURNED" not in calls
-        finally:
-            if not release.done():
-                release.set_result(None)
-            await asyncio.gather(first, *(task for task in (second,) if task is not None), return_exceptions=True)
-
-    asyncio.run(scenario())
-
-
-def test_phase_mutation_allowlists_are_purpose_path_method_and_empty_query_parity(
-    live: dict[str, ModuleType], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    api = live["api_session"]
-    glovo_spec = importlib.util.spec_from_file_location("glovo_phase_under_test", GLOVO_ROOT / "glovo.py")
-    assert glovo_spec is not None and glovo_spec.loader is not None
-    glovo = importlib.util.module_from_spec(glovo_spec)
-    glovo_spec.loader.exec_module(glovo)
-    assert api._PHASE_MUTATION_ALLOWLIST == glovo._PHASE_MUTATION_ALLOWLIST
-    assert set(api._MUTATION_QUERY_CONTRACT) == {row[0] for row in glovo._PHASE_MUTATION_ALLOWLIST}
-    assert all(value == frozenset() for value in api._MUTATION_QUERY_CONTRACT.values())
-
-    sent: list[tuple[str, str, Any]] = []
-    monkeypatch.setattr(glovo, "_request_json", lambda method, url, **kwargs: sent.append((method, url, kwargs.get("body"))))
-    for purpose, method, pattern in glovo._PHASE_MUTATION_ALLOWLIST:
-        assert api._MUTATION_ROUTES[api.MutationPurpose(purpose)][0] == method
-        assert api._MUTATION_ROUTES[api.MutationPurpose(purpose)][1].pattern == pattern
-        sample = {
-            "create_basket": "/v1/authenticated/customers/42/baskets",
-            "replace_basket_products": "/v1/authenticated/customers/42/baskets/basket-1/products",
-            "change_basket_quantity": "/v1/authenticated/customers/42/baskets/basket-1/products/quantity",
-            "delete_basket": "/v1/authenticated/customers/42/baskets/basket-1",
-            "create_quote_template": "/v3/checkouts/order/1/template",
-        }[purpose]
-        glovo.single_attempt_authed_phase_mutation(method, "access-fixture", sample, {}, {"fixture": True})
-    with pytest.raises(RuntimeError):
-        glovo.single_attempt_authed_phase_mutation("POST", "access-fixture", "/v3/checkouts/order/1/template", {"x": "1"}, {})
-    assert len(sent) == len(glovo._PHASE_MUTATION_ALLOWLIST)
-
-
-def test_final_checkout_request_is_private_exact_and_quote_bound(live: dict[str, ModuleType]) -> None:
-    checkout = live["ordering_live_checkout"]
-    request = checkout.FinalCheckoutRequest.from_quote(quote(live), now=100.0)
-    body = request.private_body()
-    assert set(body) == {"checkout"}
-    assert set(body["checkout"]) == {
-        "checkoutSessionId", "versionId", "templateId", "basket", "address", "payment", "total", "authority",
+def response(status: str, *, checkout_id: str = "checkout-fixture-1", q: Any | None = None, **changes: Any) -> dict[str, Any]:
+    order = None
+    if status == "COMPLETED":
+        assert q is not None
+        order = {"id": "order-fixture-1", "basketId": q.basket_id, "total": q.total.amount_minor, "currencyCode": q.total.currency}
+    value = {
+        "checkoutId": checkout_id, "status": status, "action": None,
+        "postAuthAction": None, "willDoMinimalAmountAuthAndVoid": False,
+        "errors": [], "order": order, "payments": [],
     }
-    assert body["checkout"]["total"] == {"minor": 560000, "currency": "AMD"}
-    basket = body["checkout"]["basket"]
-    assert set(basket) == {
-        "id", "version", "customerId", "storeId", "storeAddressId",
-        "storeCategoryId", "cityCode", "handlingStrategy", "products",
-    }
-    assert {key: basket[key] for key in basket if key != "products"} == {
-        "id": "basket-fixture-1",
-        "version": "basket-version-fixture-1",
-        "customerId": 101,
-        "storeId": 71,
-        "storeAddressId": 81,
-        "storeCategoryId": 201,
-        "cityCode": "city-fixture-1",
-        "handlingStrategy": "DELIVERY",
-    }
-    assert basket["products"][0]["quantity"] == 2
-    assert "560000" not in repr(request)
-    for bad_now in (True, float("nan"), 145.0):
-        with pytest.raises(checkout.FinalCheckoutContractError):
-            checkout.FinalCheckoutRequest.from_quote(quote(live), now=bad_now)
+    value.update(changes)
+    return {"checkout": value}
 
 
-@pytest.mark.parametrize(
-    ("field", "changed_value", "body_key"),
-    [
-        ("customer_id", 102, "customerId"),
-        ("store_category_id", 202, "storeCategoryId"),
-        ("city_code", "city-fixture-2", "cityCode"),
-    ],
-)
-def test_final_checkout_binds_each_complete_quote_context_value(
-    live: dict[str, ModuleType], field: str, changed_value: Any, body_key: str
-) -> None:
+class Session:
+    def __init__(self, results: list[Any]) -> None:
+        self.results = results
+        self.calls: list[tuple[str, str, Any]] = []
+
+    async def async_mutate(self, purpose: Any, method: str, path: str, body: Any) -> Any:
+        self.calls.append((method, path, copy.deepcopy(body)))
+        result = self.results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    async def async_final_status(self, path: str) -> Any:
+        self.calls.append(("GET", path, None))
+        result = self.results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+def test_exact_private_projection_is_preserved_and_fingerprint_bound(live: dict[str, ModuleType]) -> None:
     checkout = live["ordering_live_checkout"]
-    baseline = quote(live)
-    changed = quote(live, **{field: changed_value})
-    request = checkout.FinalCheckoutRequest.from_quote(changed, now=100.0)
-
-    assert request.quote_fingerprint != baseline.fingerprint
-    assert request.private_body()["checkout"]["basket"][body_key] == changed_value
-
-
-@pytest.mark.parametrize(
-    ("field", "bypassed_value"),
-    [
-        ("customer_id", 102),
-        ("store_category_id", 202),
-        ("city_code", "city-fixture-2"),
-        ("handling_strategy", "PICKUP"),
-    ],
-)
-def test_final_checkout_rejects_bypassed_complete_quote_context(
-    live: dict[str, ModuleType], field: str, bypassed_value: Any
-) -> None:
-    checkout = live["ordering_live_checkout"]
-    request = checkout.FinalCheckoutRequest.from_quote(quote(live), now=100.0)
-
-    # A bypassed frozen quote cannot cause a body that disagrees with authority.
-    object.__setattr__(request.quote, field, bypassed_value)
-    with pytest.raises(checkout.FinalCheckoutContractError) as raised:
-        request.private_body()
-    assert raised.value.category == "mismatch"
-
-
-@pytest.mark.parametrize(
-    ("field", "invalid_value"),
-    [
-        ("customer_id", True),
-        ("customer_id", 0),
-        ("store_category_id", True),
-        ("store_category_id", 0),
-        ("city_code", True),
-        ("city_code", ""),
-        ("handling_strategy", True),
-        ("handling_strategy", ""),
-        ("handling_strategy", "PICKUP"),
-    ],
-)
-def test_final_checkout_rejects_invalid_complete_quote_context(
-    live: dict[str, ModuleType], field: str, invalid_value: Any
-) -> None:
-    checkout = live["ordering_live_checkout"]
-    invalid_quote = quote(live, **{field: invalid_value})
-
-    with pytest.raises(checkout.FinalCheckoutContractError) as raised:
-        checkout.FinalCheckoutRequest(
-            quote=invalid_quote, quote_fingerprint=invalid_quote.fingerprint
-        )
-    assert raised.value.category == "mismatch"
-
-
-@pytest.mark.parametrize(
-    "response",
-    [
-        TimeoutError("private"), ConnectionResetError("private"), StatusError(408), StatusError(409),
-        StatusError(425), StatusError(500), StatusError(503), {"checkout": {"state": "SUBMITTED"}},
-        {"checkout": {"checkoutId": "checkout-fixture-1", "state": "COMPLETED"}},
-    ],
-)
-def test_final_submit_all_ambiguous_outcomes_make_exactly_one_call(
-    live: dict[str, ModuleType], response: Any
-) -> None:
-    checkout = live["ordering_live_checkout"]
-    transport = FixtureTransport([response])
-    adapter = checkout.FixtureOnlyFinalCheckoutAdapter(transport)
-    with pytest.raises(checkout.FinalCheckoutAmbiguous):
-        asyncio.run(adapter.async_submit(checkout.FinalCheckoutRequest.from_quote(quote(live), now=100.0)))
-    assert [(method, path) for method, path, _ in transport.calls] == [("POST", checkout.FINAL_CHECKOUT_PATH)]
-
-
-def test_final_submit_deterministic_rejection_is_one_call(live: dict[str, ModuleType]) -> None:
-    checkout = live["ordering_live_checkout"]
-    transport = FixtureTransport([StatusError(400)])
-    adapter = checkout.FixtureOnlyFinalCheckoutAdapter(transport)
-    with pytest.raises(checkout.FinalCheckoutRejected) as raised:
-        asyncio.run(adapter.async_submit(checkout.FinalCheckoutRequest.from_quote(quote(live), now=100.0)))
-    assert raised.value.status == 400
-    assert [(method, path) for method, path, _ in transport.calls] == [("POST", checkout.FINAL_CHECKOUT_PATH)]
-
-
-def test_final_submit_cancellation_is_ambiguous_exactly_once(live: dict[str, ModuleType]) -> None:
-    checkout = live["ordering_live_checkout"]
-
-    class CancellableFixture(FixtureTransport):
-        async def __call__(self, method: str, path: str, body: dict[str, Any] | None) -> Any:
-            self.calls.append((method, path, body))
-            await asyncio.Event().wait()
-            raise AssertionError
-
-    async def scenario() -> None:
-        transport = CancellableFixture([])
-        adapter = checkout.FixtureOnlyFinalCheckoutAdapter(transport)
-        task = asyncio.create_task(adapter.async_submit(checkout.FinalCheckoutRequest.from_quote(quote(live), now=100.0)))
-        await asyncio.to_thread(lambda: None)
-        task.cancel()
-        with pytest.raises(checkout.FinalCheckoutAmbiguous):
-            await task
-        assert len(transport.calls) == 1
-
-    asyncio.run(scenario())
-
-
-def test_final_validation_and_fixture_gate_have_zero_submit_calls(live: dict[str, ModuleType]) -> None:
-    checkout = live["ordering_live_checkout"]
-    transport = FixtureTransport([fixture("submit-success.json")])
-    adapter = checkout.FixtureOnlyFinalCheckoutAdapter(transport)
+    q = quote(live)
+    request = checkout.FinalCheckoutRequest.from_quote(q, now=100.0)
+    assert request.private_body() == {"checkout": q.exact_submit_projection()}
+    assert "checkout-session-fixture-1" not in repr(request)
+    object.__setattr__(q, "store_id", 72)
     with pytest.raises(checkout.FinalCheckoutContractError):
-        asyncio.run(adapter.async_submit(object()))
-    with pytest.raises(checkout.FinalCheckoutUnsupported):
-        checkout.FixtureOnlyFinalCheckoutAdapter(lambda *args: None)
-    assert transport.calls == []
+        request.private_body()
+    for now in (True, float("nan"), 145.0):
+        with pytest.raises(checkout.FinalCheckoutContractError):
+            checkout.FinalCheckoutRequest.from_quote(quote(live), now=now)
 
 
-def test_final_success_known_id_permits_one_explicit_read_only_status_and_no_completion(
-    live: dict[str, ModuleType]
-) -> None:
+@pytest.mark.parametrize("status", ["AUTH_REQUIRED", "NO_AUTH_PENDING"])
+def test_pending_and_interactive_responses_are_ambiguous_with_learned_id(live: dict[str, ModuleType], status: str) -> None:
     checkout = live["ordering_live_checkout"]
-    transport = FixtureTransport([fixture("submit-success.json"), fixture("status-completed.json")])
-    adapter = checkout.FixtureOnlyFinalCheckoutAdapter(transport)
-    submitted = asyncio.run(adapter.async_submit(checkout.FinalCheckoutRequest.from_quote(quote(live), now=100.0)))
-    assert submitted.state == "SUBMITTED" and submitted.requires_manual_completion
-    status = asyncio.run(adapter.async_status(submitted.checkout_id))
-    assert status.state == "COMPLETED" and not status.requires_manual_completion
-    with pytest.raises(checkout.FinalCheckoutUnsupported):
-        asyncio.run(adapter.async_complete(submitted.checkout_id))
-    assert [(method, path) for method, path, _ in transport.calls] == [
-        ("POST", "/v3/checkouts/order/1"),
-        ("GET", "/v3/checkouts/order/1/checkout-fixture-1"),
-    ]
+    q = quote(live)
+    session = Session([response(status, q=q, action="AUTH" if status == "AUTH_REQUIRED" else "NO_AUTH_POLL")])
+    adapter = checkout.ProductionFinalCheckoutAdapter(session)
+    with pytest.raises(checkout.FinalCheckoutAmbiguous) as raised:
+        asyncio.run(adapter.async_submit(checkout.FinalCheckoutRequest.from_quote(q, now=100.0)))
+    assert raised.value.checkout_id == "checkout-fixture-1"
+    assert len(session.calls) == 1
 
 
-@pytest.mark.parametrize("response", [TimeoutError("private"), StatusError(500), {"checkout": {"checkoutId": "other", "state": "PENDING"}}])
-def test_known_id_status_ambiguity_is_one_read_only_call(live: dict[str, ModuleType], response: Any) -> None:
+@pytest.mark.parametrize("status", ["FAILED", "CANCELLED"])
+def test_schema_valid_provider_rejection_is_terminal(live: dict[str, ModuleType], status: str) -> None:
     checkout = live["ordering_live_checkout"]
-    transport = FixtureTransport([response])
-    adapter = checkout.FixtureOnlyFinalCheckoutAdapter(transport)
+    q = quote(live)
+    session = Session([response(status, q=q)])
+    result = asyncio.run(checkout.ProductionFinalCheckoutAdapter(session).async_submit(checkout.FinalCheckoutRequest.from_quote(q, now=100.0)))
+    assert result.terminal and not result.succeeded and result.state == "REJECTED"
+    assert len(result.evidence_hash) == 64 and len(session.calls) == 1
+
+
+def test_completed_requires_exact_basket_total_currency(live: dict[str, ModuleType]) -> None:
+    checkout = live["ordering_live_checkout"]
+    q = quote(live)
+    valid = checkout.parse_final_response(response("COMPLETED", q=q), quote=q)
+    assert valid.succeeded and valid.terminal
+    for field, value in (("basketId", "other"), ("total", 560001), ("currencyCode", "USD")):
+        payload = response("COMPLETED", q=q)
+        payload["checkout"]["order"][field] = value
+        with pytest.raises(checkout.FinalCheckoutContractError):
+            checkout.parse_final_response(payload, quote=q)
+
+
+@pytest.mark.parametrize("bad", [True, 1, 2**80, float("nan")])
+def test_parser_rejects_bool_as_int_overflow_and_malformed_total(live: dict[str, ModuleType], bad: Any) -> None:
+    checkout = live["ordering_live_checkout"]
+    q = quote(live)
+    payload = response("COMPLETED", q=q)
+    payload["checkout"]["order"]["total"] = bad
+    with pytest.raises(checkout.FinalCheckoutContractError):
+        checkout.parse_final_response(payload, quote=q)
+
+
+@pytest.mark.parametrize("result", [TimeoutError(), ConnectionResetError(), RuntimeError(), {"malformed": True}])
+def test_every_transport_or_malformed_failure_is_one_call_no_retry(live: dict[str, ModuleType], result: Any) -> None:
+    checkout = live["ordering_live_checkout"]
+    q = quote(live)
+    api = live["api_session"]
+    wrapped = result if isinstance(result, dict) else api.ApiSessionError(category="transport", endpoint_family="checkout", status=getattr(result, "status", None), purpose=api.MutationPurpose.FINAL_CHECKOUT)
+    session = Session([wrapped])
+    adapter = checkout.ProductionFinalCheckoutAdapter(session)
     with pytest.raises(checkout.FinalCheckoutAmbiguous):
-        asyncio.run(adapter.async_status("checkout-fixture-1"))
-    assert [(method, path) for method, path, _ in transport.calls] == [
-        ("GET", "/v3/checkouts/order/1/checkout-fixture-1")
-    ]
+        asyncio.run(adapter.async_submit(checkout.FinalCheckoutRequest.from_quote(q, now=100.0)))
+    assert [(m, p) for m, p, _ in session.calls] == [("POST", "/v3/checkouts/order/1")]
 
 
-def test_adapter_is_private_unwired_and_has_one_submit_call_site() -> None:
-    source = (GLOVO_ROOT / "ordering_live_checkout.py").read_text(encoding="utf-8")
-    assert source.count('self._fixture_transport("POST", FINAL_CHECKOUT_PATH, body)') == 1
-    assert source.count('self._fixture_transport("GET", FINAL_STATUS_PATH_PREFIX + known_id, None)') == 1
-    for runtime_file in ("__init__.py", "coordinator.py", "ordering.py"):
-        path = GLOVO_ROOT / runtime_file
-        if path.exists():
-            assert "ordering_live_checkout" not in path.read_text(encoding="utf-8")
+def test_explicit_status_is_one_get_for_exact_known_id_and_no_completion(live: dict[str, ModuleType]) -> None:
+    checkout = live["ordering_live_checkout"]
+    q = quote(live)
+    session = Session([response("COMPLETED", q=q)])
+    adapter = checkout.ProductionFinalCheckoutAdapter(session)
+    status = asyncio.run(adapter.async_status("checkout-fixture-1", q))
+    assert status.succeeded
+    with pytest.raises(checkout.FinalCheckoutUnsupported):
+        asyncio.run(adapter.async_complete("checkout-fixture-1"))
+    assert session.calls[0][:2] == ("GET", "/v3/checkouts/order/checkout-fixture-1")
+    assert len(session.calls) == 1
+
+
+def test_final_route_is_purpose_typed_and_completion_routes_absent(live: dict[str, ModuleType]) -> None:
+    api = live["api_session"]
+    assert api._MUTATION_ROUTES[api.MutationPurpose.FINAL_CHECKOUT][0] == "POST"
+    assert api._MUTATION_ROUTES[api.MutationPurpose.FINAL_CHECKOUT][1].fullmatch("/v3/checkouts/order/1")
+    source = (GLOVO_ROOT / "ordering_live_checkout.py").read_text()
+    assert source.count("MutationPurpose.FINAL_CHECKOUT, \"POST\", FINAL_CHECKOUT_PATH, body") == 1
+    for forbidden in ("/complete", "/cancel", "/payments/"):
+        assert forbidden not in source

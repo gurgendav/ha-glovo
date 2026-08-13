@@ -550,7 +550,10 @@ class GlovoOrderingPanel extends HTMLElement {
 
   _formatMinor(amountMinor, currency) {
     if (!Number.isInteger(Number(amountMinor)) || !currency) return "Price unavailable";
-    try { return new Intl.NumberFormat(this._locale || "en", { style: "currency", currency: String(currency) }).format(Number(amountMinor) / 100); }
+    const exponents = { AMD: 2, AUD: 2, CAD: 2, CHF: 2, CNY: 2, EUR: 2, GBP: 2, GEL: 2, JPY: 0, KWD: 3, PLN: 2, RUB: 2, UAH: 2, USD: 2 };
+    const exponent = exponents[String(currency)];
+    if (!Number.isInteger(exponent)) return "Price unavailable";
+    try { return new Intl.NumberFormat(this._locale || "en", { style: "currency", currency: String(currency), minimumFractionDigits: exponent, maximumFractionDigits: exponent }).format(Number(amountMinor) / (10 ** exponent)); }
     catch (_error) { return `${Number(amountMinor)} ${String(currency)}`; }
   }
 
@@ -988,9 +991,14 @@ class GlovoOrderingPanel extends HTMLElement {
   _renderQuoteInto(host) {
     const model = this._model.quote; if (!model) return;
     const quote = model.projection; const box = this._el("section", "quote-box"); box.append(this._el("h3", "", "Authoritative quote"));
+    box.append(this._el("p", "", `Store: ${quote.store || "Unavailable"}`));
+    const items = this._el("ul", "confirmation-items");
+    (quote.items || []).forEach((item) => { const options = Array.isArray(item.options) && item.options.length ? ` — ${item.options.join(", ")}` : ""; items.append(this._el("li", "", `${item.quantity} × ${item.name}${options}`)); });
+    box.append(items);
     (quote.priceLines || []).forEach((line) => { const row = this._el("div", "quote-line"); row.append(this._el("span", "", line.title || "Price"), this._el("span", "", line.value || "—")); box.append(row); });
     const total = this._el("div", "quote-line"); total.append(this._el("strong", "", "Exact total"), this._el("strong", "", this._formatMinor(quote.purchaseTotalCents, quote.currencyCode))); box.append(total);
-    const details = [quote.address || "Masked saved address", quote.payment || "Provider-selected saved card", quote.eta ? `ETA ${quote.eta}` : "ETA unavailable", Number.isInteger(model.secondsRemaining) ? `expires in ${model.secondsRemaining}s` : ""].filter(Boolean).join(" · "); box.append(this._el("div", "authority-note", details));
+    const details = [`Full delivery address: ${quote.address || "Unavailable"}`, quote.payment || "Provider-selected saved card", quote.eta ? `ETA ${quote.eta}` : "ETA unavailable", Number.isInteger(model.secondsRemaining) ? `expires in ${model.secondsRemaining}s` : ""].filter(Boolean).join(" · "); box.append(this._el("div", "authority-note", details));
+    box.append(this._el("p", "danger-note", "WARNING: This performs one real paid saved-card submission for the exact amount above. There is no retry. If anything is uncertain, manually inspect and reconcile in the Glovo app before administrator resolution."));
     const advanced = this._el("details"); const summary = this._el("summary", "touch-target", "Advanced canary validation"); advanced.append(summary);
     const prepare = this._button("Prepare exact confirmation", "prepare-confirmation"); advanced.append(prepare);
     if (model.ackText) {

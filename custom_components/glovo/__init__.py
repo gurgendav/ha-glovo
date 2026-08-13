@@ -28,6 +28,7 @@ from .ordering_runtime import OrderingRuntime
 from .ordering_manager import OrderingManager
 from .ordering_account import AccountClient
 from .ordering_live_catalog import LiveCatalogClient
+from .ordering_live_checkout import FinalCheckoutRequest, ProductionFinalCheckoutAdapter
 from .ordering_live_api import LiveOrderingFacade
 from .ordering_live_quote import (
     AuthoritativeConfirmationManager,
@@ -48,7 +49,7 @@ from .ordering_state import (
 
 _LOGGER = logging.getLogger(__name__)
 CONFIG_ENTRY_VERSION = 1
-CONFIG_ENTRY_MINOR_VERSION = 3
+CONFIG_ENTRY_MINOR_VERSION = 4
 
 
 def _ordering_options(entry: GlovoConfigEntry) -> dict[str, object]:
@@ -191,9 +192,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         preparation_authority=preparation_authority,
         live_options=lambda: entry.options,
         facade=facade,
-        # Final checkout is deliberately unavailable in every production setup.
-        final_adapter=None,
-        final_request_factory=None,
+        # Status reconciliation is GET-only and must survive the manual latch
+        # that closes all mutation authority after an ambiguous final submit.
+        final_adapter=ProductionFinalCheckoutAdapter(api_session),
+        final_request_factory=(
+            (lambda quote: FinalCheckoutRequest.from_quote(quote, now=time.monotonic()))
+            if mutation_ready
+            else None
+        ),
     )
     try:
         await ordering_runtime.async_initialize()

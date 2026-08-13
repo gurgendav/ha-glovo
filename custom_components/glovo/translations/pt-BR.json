@@ -30,13 +30,14 @@
     "step": {
       "init": {
         "title": "Opções do Glovo",
-        "description": "Leave the refresh token empty to keep the current one. LIVE ORDERING IS ADMIN-ONLY. allow_ordering permits only live preparation and may change the server basket/template; allow_live_checkout separately permits one paid submission. The provider-selected saved card and the exact authoritative total/currency must be explicitly confirmed immediately before submit. Ambiguous outcomes require manual Glovo checking and have no retry. Re-authentication resets these gates.",
+        "description": "Leave the refresh token empty to keep the current one. LIVE ORDERING IS ADMIN-ONLY. Preparation and paid checkout have separate default-off switches and acknowledgements; paid checkout requires preparation consent. Only the exact fresh server quote and provider-selected saved card can be submitted once. There is no retry, completion, cancellation, or payment mutation. Ambiguous outcomes block ordering for manual Glovo reconciliation; a learned checkout ID permits one explicit status GET with no polling. The full saved address is shown only ephemerally to the administrator and is not persisted in recovery data. Re-authentication resets all controls.",
         "data": {
           "scan_interval": "Intervalo de atualização (segundos)",
           "refresh_token": "Novo token de atualização (opcional)",
           "allow_ordering": "Enable live ordering preparation (may change server basket/template)",
-          "ordering_acknowledged": "I understand preparation can change the server basket/template, checkout is separately gated, and ambiguous outcomes have no retry",
-          "allow_live_checkout": "Enable one live paid checkout submission"
+          "ordering_acknowledged": "I understand preparation can change remote state and ambiguous outcomes are never retried",
+          "allow_live_checkout": "Enable one guarded live paid checkout submission",
+          "live_checkout_acknowledged": "I authorize a single exact saved-card submission and will manually reconcile any uncertainty without retry"
         }
       }
     },

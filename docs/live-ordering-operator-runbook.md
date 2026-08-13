@@ -1,90 +1,52 @@
-# Live-ordering operator runbook (production gate remains closed)
+# Guarded live paid-checkout operator runbook
 
-> **Current state:** this integration cannot make a production purchase.
-> `productionFinalCheckoutSupported: false` is recorded in
-> [protocol evidence](live-ordering-protocol-evidence.md). This runbook defines
-> the controls that would apply only after that blocker is resolved; it is not
-> authority to operate a live checkout today.
+> **Release policy:** production final checkout is supported only through the reviewed one-POST, no-retry adapter and manual-reconciliation policy in [protocol evidence](live-ordering-protocol-evidence.md). This runbook does not authorize unattended ordering, deployment, or a live test.
 
 ## Non-negotiable operating model
 
-1. **Two default-off gates.** Gate 1 is the administrator's explicit options
-   switch plus acknowledgement for the experimental ordering surface. Gate 2 is
-   a separately reviewed production-final-checkout capability, disabled unless
-   the exact-SHA protocol evidence is complete and approved. Gate 1 alone is
-   never payment authority.
-2. **Preparation can change remote state.** Browsing/menu selection, basket
-   creation or replacement, and quote-template preparation may mutate a remote
-   basket or template. Treat them as externally visible; do not describe them
-   as dry-run or idempotent.
-3. **Payment and amount authority.** Only a selected saved card may be used;
-   never collect, display, or log card details. The server quote is
-   authoritative. Show and require confirmation of the exact quoted amount and
-   currency immediately before a final action; reject stale, changed, missing,
-   or locally computed totals.
-4. **One attempt only.** A final submit, if ever enabled, is one dispatch with
-   no retry, fallback, refresh-and-replay, compensating mutation, or automatic
-   redirect continuation. Timeout, cancellation, malformed response, unknown
-   status, or lost identifier is **ambiguous**: stop and reconcile manually in
-   the provider application before any further action.
-5. **Privacy.** Do not put tokens, cookies, payment data, full addresses,
-   provider checkout/order references, request bodies, or raw responses in
-   issue reports, logs, screenshots, fixtures, or chat. Use only masked saved
-   selections and a local opaque journal handle.
-6. **Rollback preserves uncertainty.** Disable the gate and remove the panel
-   if required, but never clear, overwrite, retry, or mark resolved an
-   unresolved/ambiguous journal record. Reconcile manually first.
+1. **Two fresh default-off controls.** Preparation consent and its acknowledgement permit remote basket/template preparation. Separate paid-checkout consent and acknowledgement permit one paid submission. Paid consent implies both preparation controls; migration and reauthentication reset all four values.
+2. **Preparation can change remote state.** Basket and template operations are consequential and are not described as dry-run or idempotent.
+3. **Exact payment authority.** Use only the provider-selected saved card. Immediately before submit, show the exact store, items/quantities/options, admin-only ephemeral full address, masked card, provider price lines, total with ISO currency, ETA, and expiry. Require the exact amount-bound acknowledgement.
+4. **One final POST.** Dispatch `POST /v3/checkouts/order/1` once. Never retry, refresh-and-replay, fall back, or compensate after dispatch.
+5. **No payment continuations.** Never issue checkout completion, checkout/payment cancellation, redirect, capture, wallet, 3DS, split-payment, or other payment mutation.
+6. **Manual ambiguity.** Pending/auth/`PROCESS_PAYMENT`, timeout, cancellation, transport loss, malformed/unknown/contradictory response, exact-identity mismatch, or persistence uncertainty becomes `MANUAL_CHECK_REQUIRED`. Do not place another order.
+7. **Status is explicit and read-only.** If and only if the private journal learned a checkout ID, one administrator action may issue exactly one `GET /v3/checkouts/order/{checkoutId}`. There is no polling. Without an ID, use the provider app.
+8. **Privacy.** Public and recovery projections expose only `hasCheckoutId`, never provider IDs. The full address is admin-only and ephemeral; never put it, credentials, card data, IDs, request bodies, or raw responses in logs, journals, screenshots, issues, or chat.
+9. **Rollback preserves uncertainty.** Disable access, but never clear/retry/overwrite an unresolved attempt. An integrity fault is fail-closed and not normally clearable.
 
-## Required preflight (both canaries)
+## Preflight
 
-- [ ] The release checklist is green from a clean tracked checkout.
-- [ ] The exact source and asset SHA reviewed is the one recorded in the
-  release record; any change invalidates the result.
-- [ ] Journal is clean: no unresolved, submitted, pending, or ambiguous record.
-- [ ] Check the provider application for an existing basket/order/payment
-  conflict before starting.
-- [ ] A named operator has authority to stop; monitoring and manual provider
-  access are available.
-- [ ] No secrets, cookies, addresses, card data, raw provider IDs, or raw
-  responses will be captured.
+- [ ] Artifact is release `1.1.0+home.3` with the reviewed trust identity and all release gates green from a clean tracked archive.
+- [ ] Journal and safety state are coherent, with no unresolved/manual/integrity record.
+- [ ] Both preparation controls and both separate paid controls were freshly enabled by the named administrator.
+- [ ] Provider app shows no conflicting order or payment.
+- [ ] Selected payment is a saved card and no interactive continuation is anticipated.
+- [ ] Exact quote facts and expiry are visible; operator can manually inspect the provider app immediately.
+- [ ] No private data capture is enabled.
 
-## No-payment canary (only after Gate 2 exists)
+## No-payment canary
 
-1. Verify the exact artifact SHA and all preflight items.
-2. Enable Gate 1 and the separately approved Gate 2 only for the designated
-   operator; record the timestamp and local opaque run handle.
-3. Exercise only the approved non-payment path. Observe that remote basket or
-   template changes, if any, match the intended preparation action.
-4. Stop before any final confirmation/submit control. Verify that no final
-   journal attempt exists and check the provider application for conflicts.
-5. Disable both gates. Preserve the clean journal evidence and any ambiguous
-   state rather than deleting it.
+1. Verify release/trust identity and every preflight item.
+2. Exercise only approved address/store/menu/basket/template reads or preparation actions.
+3. Stop before **Submit paid order**. Verify no final attempt exists.
+4. Inspect provider app for unexpected basket/order/payment state.
+5. Disable both consent groups. Preserve any unexpected durable state.
 
-**Abort immediately** on a changed SHA, incomplete evidence, unexpected remote
-basket/template state, unmasked sensitive data, journal residue, app conflict,
-or any appearance of a final-payment control before the planned stop point.
+Abort on changed identity, stale quote, unexpected mutation, private-data exposure, journal residue, or provider-app conflict.
 
-## One-payment E2E (blocked until the protocol evidence verdict changes)
+## Deliberately authorized one-payment validation
 
-This procedure is not currently executable. Once independently approved:
+1. Repeat preflight and obtain explicit human authorization for the displayed store, items/options, full destination, saved card, exact amount, and currency.
+2. Confirm the amount-bound acknowledgement exactly and invoke the paid control once.
+3. If terminal `COMPLETED` exactly matches durable basket/amount/currency, preserve provider-confirmed success evidence. If terminal `FAILED`/`CANCELLED` is schema-valid and non-contradictory, preserve provider-confirmed failure evidence.
+4. For every other result, stop immediately. Do not retry or issue completion/cancellation/payment mutations. Inspect the provider app.
+5. If an ID was learned, the operator may use **Check provider status** once per deliberate action. Pending/malformed/transport/mismatch remains manual. With no learned ID, this action performs no GET.
+6. Disable both consent groups after the validation. Rollback never clears unresolved state.
 
-1. Repeat every preflight check, including clean journal, provider-app conflict
-   check, exact SHA match, selected saved card, server-authoritative quote, and
-   displayed exact amount/currency.
-2. Have the operator compare the final quote with the provider application and
-   give one explicit amount-bound confirmation.
-3. Send **one** final attempt only. Do not retry under any circumstance.
-4. If the response is anything other than the fully evidenced deterministic
-   success classification, stop. Treat it as ambiguous/rejected exactly as
-   specified by the frozen contract and reconcile manually in the provider app.
-5. After a deterministic success, perform only the separately evidenced
-   read-only status/check operation. Do not complete/capture/redirect/replay
-   unless that exact operation is proven mandatory by the evidence.
-6. Disable both gates after the attempt. Rollback preserves the journal; it
-   never clears unresolved state.
+## Recovery
 
-**Stop/abort criteria:** quote changes or expires; a different payment/address
-is selected; any endpoint/schema/status/completion/redirect behavior differs
-from frozen evidence; a token refresh or retry would be needed; connection is
-lost; a provider-app conflict appears; privacy is at risk; or the operator
-cannot manually reconcile immediately.
+- `MANUAL_CHECK_REQUIRED` blocks further ordering across restart, browser, and administrator.
+- Use privacy-safe recovery facts and `hasCheckoutId`; never copy provider IDs into public channels.
+- Provider-confirmed terminal status can durably clear the manual latch only after coherent journal and safety persistence.
+- If either persistence layer fails, retain manual state or enter permanent integrity fault. Do not infer an outcome.
+- Manual administrator resolution requires direct provider-app/account/payment inspection and the existing challenge-bound acknowledgement. `still_unknown` preserves the block.

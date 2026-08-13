@@ -747,9 +747,12 @@ def test_panel_with_no_production_facade_registers_only_safe_shells(
             "icon": "mdi:cart-outline",
             "require_admin": True,
         }
-        expected = {ordering["ordering_surface"].PUBLIC_OPERATION_COMMANDS["state"]} | set(
-            ordering["ordering_surface"].RECOVERY_COMMANDS
-        )
+        expected = {
+            ordering["ordering_surface"].PUBLIC_OPERATION_COMMANDS["state"],
+            ordering["ordering_surface"].PUBLIC_OPERATION_COMMANDS[
+                "live/checkout_status"
+            ],
+        } | set(ordering["ordering_surface"].RECOVERY_COMMANDS)
         assert set(adapter.handlers) == expected
         assert all("mock" not in name for name in adapter.handlers)
         assert all("place_order" not in name for name in adapter.handlers)
@@ -812,17 +815,17 @@ def test_documentation_calls_feature_default_off_admin_only_preparation() -> Non
         "delivery address",
         "zero basket writes",
         "registers no home assistant ordering service",
-        "paid checkout is unavailable",
+        "guarded live paid checkout",
     ):
         assert phrase in readme
     assert "mock-only" not in readme
 
 
-def test_manifest_version_and_trust_identity_are_unchanged() -> None:
+def test_manifest_version_and_trust_identity_match_paid_checkout_release() -> None:
     manifest = json.loads((ROOT / "custom_components/glovo/manifest.json").read_text())
     const_source = (ROOT / "custom_components/glovo/const.py").read_text()
-    assert manifest["version"] == "1.1.0+home.2"
-    assert "d65db609f53b5f93092f368b60398d4b231ee5aa8a3d506b25103081aa2b50da" in const_source
+    assert manifest["version"] == "1.1.0+home.3"
+    assert "569f3d2f75134ae1206a8e4b980ed73d7d679501880a7b491240e99f6318c432" in const_source
     assert datetime.now(UTC).tzinfo is UTC
 
 

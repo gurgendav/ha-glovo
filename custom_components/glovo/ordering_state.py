@@ -23,7 +23,12 @@ class OrderingStateStorage(Protocol):
 
 
 _MANUAL_RESOLUTIONS = frozenset(
-    {"found_succeeded", "found_failed_or_cancelled"}
+    {
+        "found_succeeded",
+        "found_failed_or_cancelled",
+        "provider_succeeded",
+        "provider_failed",
+    }
 )
 
 

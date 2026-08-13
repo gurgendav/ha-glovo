@@ -531,6 +531,7 @@ _PHASE_MUTATION_ALLOWLIST = (
         r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
     ),
     ("create_quote_template", "POST", r"^/v3/checkouts/order/1/template$"),
+    ("final_checkout", "POST", r"^/v3/checkouts/order/1$"),
 )
 _PHASE_MUTATION_ROUTES = tuple(
     (purpose, method, re.compile(pattern))

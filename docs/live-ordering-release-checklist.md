@@ -1,55 +1,49 @@
-# Live-ordering release checklist
+# Guarded live paid-checkout release checklist
 
-**No deployment is performed by this checklist.** At the time of writing,
-production final checkout is blocked by `productionFinalCheckoutSupported: false`.
+**No deployment or provider call is performed by this checklist.** Production final checkout is supported only under the reviewed one-POST/manual-reconciliation policy; provider idempotency is not claimed.
 
-## Repository and compatibility gates
+## Repository and release identity
 
-- [ ] Work from a clean, tracked checkout; run
-  `python scripts/verify_clean_checkout.py` successfully.
-- [ ] Run Ruff, Python compile/AST checks, JSON validation, available JavaScript
-  syntax checks, `git diff --check`, privacy/capability scan, and mutation
-  allowlist parity.
-- [ ] Run the full offline test suite and the release/security tests from the
-  archive checkout.
-- [ ] Verify `manifest.json` does not claim an unevidenced Home Assistant
-  minimum. The compatibility CI matrix exercises HA `2024.12` and the current
-  published HA on the selected supported Python without secrets.
-- [ ] Note the limitation honestly: the integration declares no third-party
-  runtime requirement pin, and CI's `current` resolution is time-dependent.
-  The offline stubs and import/compile checks are compatibility signals, not a
-  replacement for a supported live Home Assistant deployment test.
-- [ ] Verify `strings.json` and every tracked translation have equivalent key
-  structure (translation parity); do not claim translated ordering wording not
-  present in the artifact.
+- [ ] Work from a clean tracked candidate; run the explicit staged archive suite and `python scripts/verify_clean_checkout.py` after commit.
+- [ ] Manifest is `1.1.0+home.3`; trust ID matches the documented canonical descriptor.
+- [ ] Inspect staged names, stat, and full diff; all intended tests are tracked and no private/credential material is present.
+- [ ] Run focused paid/status/cancellation tests twice and the full suite twice after the last edit.
+- [ ] Run Ruff, compileall, Node syntax, frontend harness, privacy scanner, every release/security verifier, JSON parsing/key parity, and `git diff --check`.
 
-## Security, protocol, and operations gates
+## Configuration and capability
 
-- [ ] Confirm `scripts/scan_ordering_privacy.py` reports no public DTO fixture,
-  logger/message/diagnostic, or frontend leak, and no final-purchase
-  service/entity/event/automation/intent/webhook/MQTT seam.
-- [ ] Reconfirm the exact public asset SHA/date record in
-  [protocol evidence](live-ordering-protocol-evidence.md). If any required
-  method, request JSON, response/status, completion, redirect, retry, or token
-  refresh behavior remains missing, keep final checkout disabled.
-- [ ] Verify two default-off gates, saved-card-only selection, authoritative
-  server quote, exact amount confirmation, one-attempt/no-retry behavior, and
-  privacy/rollback rules against the operator runbook.
-- [ ] Rollback test: disabling capability removes access while preserving the
-  journal and every unresolved/ambiguous state for manual reconciliation.
+- [ ] Fresh options expose separate preparation and paid controls with separate acknowledgements; paid consent implies preparation consent.
+- [ ] Migration minor version 4 and reauthentication reset all four controls to literal false.
+- [ ] Capability is true only with every gate, adapter/factory, durable authority, and facade healthy; it becomes false on unload, options change, reauth, unresolved state, or integrity fault.
+- [ ] No public service/entity/event/automation/intent/webhook/MQTT purchase seam exists; only the admin WebSocket workspace is available.
 
-## Controlled validation sequence (only after every gate is green)
+## Exact checkout and frontend contract
 
-- [ ] Run the **no-payment canary** with exact SHA, clean journal, and
-  provider-app conflict check; stop before final confirmation and disable both
-  gates afterward.
-- [ ] Recheck the provider application and journal. Any mismatch, stale quote,
-  unexpected remote mutation, raw sensitive data, or unresolved state aborts
-  release.
-- [ ] A **one real-payment attempt** is permitted only after all above gates and
-  a complete production protocol verdict. Verify exact SHA, clean journal,
-  app-conflict absence, saved card, server quote, exact amount confirmation,
-  and named manual reconciler immediately before it.
-- [ ] On timeout, cancellation, malformed/unknown response, redirect mismatch,
-  or any uncertainty: do not retry; manually reconcile and preserve the
-  journal. No deployment/release proceeds on ambiguity.
+- [ ] Saved-card-only payment; authoritative fresh template/quote projection preserved exactly.
+- [ ] Confirmation shows store, items/quantities/options, admin-only ephemeral full address, masked card, price lines, exact total/currency, ETA, and expiry.
+- [ ] Currency formatting covers configured 0/2/3 exponents (including JPY, AMD/EUR, KWD); unsupported currencies fail display closed.
+- [ ] Acknowledgement is bound to exact minor units and currency; submit is challenge-bound, single-flight, and disabled while capability is unresolved.
+
+## Dispatch and reconciliation safety
+
+- [ ] Exactly one `POST /v3/checkouts/order/1`; no automatic retry, token refresh/replay, fallback, or duplicate dispatch.
+- [ ] No `/complete`, checkout/payment cancellation, redirect, capture, wallet, or payment mutation is implemented.
+- [ ] Durable prepared/reserved and dispatching authority precedes network invocation; all literal gates, generation, freshness, and fingerprints are rechecked.
+- [ ] Terminal `COMPLETED` requires exact basket, amount, and currency; `FAILED`/`CANCELLED` requires non-contradictory terminal evidence.
+- [ ] Pending/auth/`PROCESS_PAYMENT`, malformed, transport/cancellation, mismatch, and persistence uncertainty remain manual.
+- [ ] No learned checkout ID means zero status GETs. A learned ID means exactly one GET per explicit admin action and no polling.
+- [ ] Provider terminal reconciliation persists journal and safety state coherently; paired persistence faults retain manual state or enter integrity fault.
+- [ ] Public/recovery projections expose only `hasCheckoutId`, never provider IDs; full address remains ephemeral and absent from journals/logs/recovery.
+
+## Protocol and operational review
+
+- [ ] Reconfirm the dated static source hashes in [protocol evidence](live-ordering-protocol-evidence.md).
+- [ ] Explicitly acknowledge that provider idempotency and lookup by `checkoutSessionId` remain unproven.
+- [ ] Verify the [operator runbook](live-ordering-operator-runbook.md) no-payment canary, one-payment authorization, stop criteria, status action, and rollback-preserves-uncertainty procedure.
+- [ ] Any changed source asset, contract, route, schema, action, or continuation requirement blocks release until reviewed.
+
+## Controlled validation (separate human authorization required)
+
+- [ ] Run a no-payment canary and stop before final submit.
+- [ ] A single real-payment attempt is permitted only after every gate above is green, provider-app conflict check is clean, and a named operator authorizes the exact displayed purchase.
+- [ ] On any ambiguity, stop: no retry, no completion/cancel/payment mutation, preserve journal state, and reconcile in the provider app.

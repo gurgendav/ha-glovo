@@ -178,6 +178,7 @@ _RECORD_KEYS = frozenset(
         "execution_mode",
         "request_fingerprint",
         "provider_session_hash",
+        "basket_reference_hash",
         "provider_evidence_hash",
         "checkout_id",
         "dispatch_started_at",
@@ -236,6 +237,7 @@ class AttemptRecord:
     execution_mode: str
     request_fingerprint: str
     provider_session_hash: str | None
+    basket_reference_hash: str | None
     provider_evidence_hash: str | None
     checkout_id: str | None
     dispatch_started_at: float | None
@@ -272,6 +274,7 @@ class AttemptRecord:
             "execution_mode": self.execution_mode,
             "request_fingerprint": self.request_fingerprint,
             "provider_session_hash": self.provider_session_hash,
+            "basket_reference_hash": self.basket_reference_hash,
             "provider_evidence_hash": self.provider_evidence_hash,
             "checkout_id": self.checkout_id,
             "dispatch_started_at": self.dispatch_started_at,
@@ -289,10 +292,15 @@ class AttemptRecord:
 
     @classmethod
     def from_dict(cls, value: object) -> AttemptRecord:
-        # Pre-evidence v2 records remain readable; a new write normalizes the
-        # private evidence slot without making legacy ambiguity resolvable.
-        if isinstance(value, Mapping) and frozenset(value) == (_RECORD_KEYS - {"provider_evidence_hash"}):
-            value = {**value, "provider_evidence_hash": None}
+        # Older v2 records remain readable; new writes normalize private hashes.
+        if isinstance(value, Mapping):
+            missing = _RECORD_KEYS - frozenset(value)
+            if missing.issubset({"provider_evidence_hash", "basket_reference_hash"}):
+                value = {
+                    **value,
+                    "provider_evidence_hash": value.get("provider_evidence_hash"),
+                    "basket_reference_hash": value.get("basket_reference_hash"),
+                }
         if not isinstance(value, Mapping) or frozenset(value) != _RECORD_KEYS:
             raise JournalCorrupt("journal record schema mismatch")
         attempt_id = value["attempt_id"]
@@ -348,6 +356,11 @@ class AttemptRecord:
             provider_session_hash=_hash(
                 value["provider_session_hash"],
                 "journal provider session hash is invalid",
+                optional=True,
+            ),
+            basket_reference_hash=_hash(
+                value["basket_reference_hash"],
+                "journal basket reference hash is invalid",
                 optional=True,
             ),
             provider_evidence_hash=_hash(
@@ -588,6 +601,7 @@ def _migrate_v1_record(value: object) -> AttemptRecord:
             "execution_mode": "mock",
             "request_fingerprint": value["quote_fingerprint"],
             "provider_session_hash": None,
+            "basket_reference_hash": None,
             "provider_evidence_hash": None,
             "checkout_id": None,
             "dispatch_started_at": None,
@@ -833,6 +847,7 @@ class AttemptJournal:
         currency: str = "AMD",
         execution_mode: str = "mock",
         provider_session_hash: str | None = None,
+        basket_reference_hash: str | None = None,
         checkout_id: str | None = None,
         store_display_name: str = "Mock fixture store",
         item_count: int = 0,
@@ -856,6 +871,7 @@ class AttemptJournal:
                     "execution_mode": execution_mode,
                     "request_fingerprint": request_fingerprint,
                     "provider_session_hash": provider_session_hash,
+                    "basket_reference_hash": basket_reference_hash,
                     "provider_evidence_hash": None,
                     "checkout_id": checkout_id,
                     "dispatch_started_at": None,
@@ -885,6 +901,7 @@ class AttemptJournal:
         failure_class: str | None = None,
         resolution: str | None = None,
         evidence_source: str | None = None,
+        checkout_reference: str | None = None,
     ) -> AttemptRecord:
         async with self._lock:
             try:
@@ -909,6 +926,11 @@ class AttemptJournal:
                     resolution = outcome
                     evidence_source = evidence_source or "mock_adapter"
             now = self._now()
+            learned_checkout = (
+                _checkout_reference(checkout_reference)
+                if checkout_reference is not None
+                else current.checkout_id
+            )
             updated = AttemptRecord.from_dict(
                 replace(
                     current,
@@ -923,6 +945,7 @@ class AttemptJournal:
                     failure_class=failure_class,
                     resolution=resolution,
                     evidence_source=evidence_source,
+                    checkout_id=learned_checkout,
                     record_revision=current.record_revision + 1,
                 ).to_dict()
             )
@@ -971,6 +994,48 @@ class AttemptJournal:
                     provider_evidence_hash=evidence,
                     failure_class=failure_class,
                     resolution=resolution,
+                    evidence_source="provider_response",
+                    last_reviewed_at=now,
+                    record_revision=current.record_revision + 1,
+                ).to_dict()
+            )
+            candidate = list(self._records)
+            candidate[candidate.index(current)] = updated
+            await self._async_save_records_unlocked(candidate)
+            self._records = candidate
+            return updated
+
+    async def async_record_provider_reconciliation(
+        self,
+        attempt_id: str,
+        *,
+        expected_revision: int,
+        succeeded: bool,
+        provider_evidence_hash: str,
+    ) -> AttemptRecord:
+        """Persist one terminal result from one explicit known-ID status GET."""
+        evidence = _hash(provider_evidence_hash, "provider evidence hash is invalid")
+        async with self._lock:
+            current = self.get(attempt_id)
+            if (
+                current.execution_mode != "live"
+                or current.state is not JournalState.MANUAL_CHECK_REQUIRED
+                or current.record_revision != expected_revision
+                or current.checkout_id is None
+            ):
+                raise JournalCorrupt("provider reconciliation identity changed")
+            now = self._now()
+            updated = AttemptRecord.from_dict(
+                replace(
+                    current,
+                    state=(
+                        JournalState.CONFIRMED_SUCCEEDED
+                        if succeeded
+                        else JournalState.CONFIRMED_FAILED
+                    ),
+                    updated_at=now,
+                    provider_evidence_hash=evidence,
+                    resolution="provider_succeeded" if succeeded else "provider_failed",
                     evidence_source="provider_response",
                     last_reviewed_at=now,
                     record_revision=current.record_revision + 1,

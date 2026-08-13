@@ -39,12 +39,14 @@ class OrderingLiveFlow:
         live_options: Callable[[], Mapping[str, object]],
         final_adapter: FinalDispatchAdapter | None = None,
         final_request_factory: Callable[[str], Any] | None = None,
+        manager: Any | None = None,
     ) -> None:
         self._facade = facade
         self._authority = preparation_authority
         self._options = live_options
         self._final_adapter = final_adapter
         self._final_request_factory = final_request_factory
+        self._manager = manager
         self._lock = asyncio.Lock()
         self._loaded = False
         self._active = False
@@ -52,9 +54,23 @@ class OrderingLiveFlow:
 
     @property
     def live_checkout_available(self) -> bool:
-        # Fixture adapters may be injected in isolated tests, but production
-        # availability is always false until a separately reviewed adapter exists.
-        return self._final_adapter is not None and self._final_request_factory is not None
+        """Truthful final capability including distinct literal spending consent."""
+        try:
+            options = self._options()
+            return (
+                self._active
+                and self._final_adapter is not None
+                and self._final_request_factory is not None
+                and self._authority.loaded
+                and not self._authority.integrity_fault
+                and not self._authority.unresolved
+                and options.get("allow_ordering", False) is True
+                and options.get("ordering_acknowledged", False) is True
+                and options.get("allow_live_checkout", False) is True
+                and options.get("live_checkout_acknowledged", False) is True
+            )
+        except Exception:
+            return False
 
     @property
     def live_ordering_available(self) -> bool:
@@ -144,11 +160,17 @@ class OrderingLiveFlow:
                     final_request = self._final_request_factory(quote)
                     # This is the sole final adapter invocation. No retry/status
                     # poll/fallback/compensating mutation is permitted here.
-                    outcome = await self._final_adapter.async_submit(final_request)
-                    state = getattr(outcome, "state", None)
-                    if state not in {"COMPLETED", "REJECTED"}:
-                        raise LiveFlowUnavailable("live checkout requires manual review")
-                    return {"status": "succeeded" if state == "COMPLETED" else "failed"}
+                    if self._manager is None:
+                        raise LiveFlowUnavailable("live checkout is unavailable")
+                    from .ordering_manager import OrderingUser
+
+                    return await self._manager.async_execute_live_final(
+                        OrderingUser(owner_key, True),
+                        generation,
+                        quote,
+                        final_request,
+                        self._final_adapter,
+                    )
                 except LiveFlowUnavailable:
                     raise
                 except Exception:

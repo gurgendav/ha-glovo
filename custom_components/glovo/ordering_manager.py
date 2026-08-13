@@ -159,6 +159,7 @@ class OrderingManager:
         # mock adapter remains isolated from this capability.
         self._live_dispatcher = live_dispatcher
         self._live_availability = live_availability
+        self._final_status_adapter: Any | None = None
         self._preparation_authority = preparation_authority
         self._clock = clock
         self._challenge_source = challenge_source or (lambda: secrets.token_urlsafe(32))
@@ -521,7 +522,7 @@ class OrderingManager:
                         record is not None
                         and record.record_revision == binding.record_revision
                         and record.resolution == binding.resolution
-                        and record.evidence_source == "admin_review"
+                        and record.evidence_source in {"admin_review", "provider_response"}
                         and record.state
                         in {
                             JournalState.CONFIRMED_SUCCEEDED,
@@ -614,7 +615,9 @@ class OrderingManager:
                 "manualCheckRequired": self.manual_check_required,
                 "integrityFault": self.integrity_fault,
                 "orderingBlocked": self.recovery_required,
-                "liveCheckoutAvailable": False,
+                "liveCheckoutAvailable": bool(
+                    self.live_ordering_available and self._checkout_gate()
+                ),
             }
 
     async def async_live_dispatch(
@@ -630,6 +633,12 @@ class OrderingManager:
         if not isinstance(request, Mapping):
             raise StaleOrderingGeneration("ordering generation is stale")
         generation = request.get("generation")
+        if operation == "live/checkout_status":
+            if set(request) != {"generation"}:
+                raise StaleOrderingGeneration("ordering generation is stale")
+            return await self.async_inspect_live_checkout_status(
+                OrderingUser(owner_key, True), generation
+            )
         async with self._lock:
             # Exact positive current generation is required before a live flow
             # can invoke any preparatory mutation or final fixture seam.
@@ -641,6 +650,165 @@ class OrderingManager:
         if not isinstance(result, dict):
             raise OrderingSecurityFault("live ordering dispatcher returned invalid state")
         return result
+
+    async def async_execute_live_final(
+        self, user: OrderingUser, generation: int, quote: Any, request: Any, adapter: Any
+    ) -> dict[str, Any]:
+        """Persist one exact live attempt around the sole final provider POST."""
+        from .ordering_live_checkout import FinalCheckoutAmbiguous, FinalCheckoutStatus
+
+        async with self._lock:
+            self._guard(user, generation)
+            if not self._checkout_gate() or self.recovery_required:
+                raise OrderingDisabled("live checkout is unavailable")
+            fingerprint = getattr(quote, "fingerprint", None)
+            if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+                raise InvalidConfirmation("final quote is invalid")
+            attempt_key = f"attempt-{self._attempt_source()}"
+            record = None
+            dispatched = False
+            learned_checkout_id: str | None = None
+            try:
+                record = await self.journal.async_create(
+                    attempt_key,
+                    generation,
+                    fingerprint,
+                    amount_minor=quote.total.amount_minor,
+                    currency=quote.total.currency,
+                    execution_mode="live",
+                    provider_session_hash=hashlib.sha256(
+                        quote.checkout_session_id.encode()
+                    ).hexdigest(),
+                    basket_reference_hash=hashlib.sha256(
+                        quote.basket_id.encode()
+                    ).hexdigest(),
+                    store_display_name=quote.store_display_name,
+                    item_count=sum(item.quantity for item in quote.exact_products),
+                    item_summary=f"{sum(item.quantity for item in quote.exact_products)} item(s)",
+                    masked_payment_label=quote.masked_payment,
+                    masked_address_alias="Saved destination ••••",
+                )
+                await self.journal.async_transition(record.attempt_id, JournalState.QUOTED)
+                await self.journal.async_transition(record.attempt_id, JournalState.RESERVED)
+                dispatching = await self.journal.async_transition(
+                    record.attempt_id, JournalState.DISPATCHING
+                )
+                self._guard(user, generation)
+                if not self._checkout_gate() or request.quote_fingerprint != fingerprint:
+                    raise InvalidConfirmation("final authority changed")
+                await self._durable_state.async_assert_current(generation)
+                self._guard(user, generation)
+                if not self._checkout_gate() or request.quote_fingerprint != quote.fingerprint:
+                    raise InvalidConfirmation("final authority changed")
+                dispatched = True
+                outcome = await adapter.async_submit(request)
+                if not isinstance(outcome, FinalCheckoutStatus) or not outcome.terminal:
+                    raise FinalCheckoutAmbiguous(
+                        getattr(outcome, "checkout_id", None), "pending_or_interactive"
+                    )
+                learned_checkout_id = outcome.checkout_id
+                await self.journal.async_record_provider_terminal(
+                    record.attempt_id,
+                    expected_revision=dispatching.record_revision,
+                    succeeded=outcome.succeeded,
+                    provider_evidence_hash=outcome.evidence_hash,
+                    checkout_reference=outcome.checkout_id,
+                    failure_class="unknown_ambiguous",
+                )
+                self._invalidate_all_ephemeral()
+                await self._async_bump_generation()
+                return {
+                    "status": "succeeded" if outcome.succeeded else "failed",
+                    "manualCheckRequired": False,
+                }
+            except FinalCheckoutAmbiguous as err:
+                if record is not None:
+                    try:
+                        current = self.journal.get(record.attempt_id)
+                        if current.state is JournalState.DISPATCHING and err.checkout_id:
+                            await self.journal.async_transition(
+                                record.attempt_id,
+                                JournalState.MANUAL_CHECK_REQUIRED,
+                                failure_class=(
+                                    err.category
+                                    if err.category in {
+                                        "cancelled", "connection_reset", "malformed_response",
+                                        "timeout", "unknown_ambiguous"
+                                    }
+                                    else "unknown_ambiguous"
+                                ),
+                                checkout_reference=err.checkout_id,
+                            )
+                    except JournalFault:
+                        pass
+                    await self._async_recover_live_ambiguity(
+                        record.attempt_id,
+                        err.category
+                        if err.category in {
+                            "cancelled", "connection_reset", "malformed_response",
+                            "timeout", "unknown_ambiguous"
+                        }
+                        else "unknown_ambiguous",
+                    )
+                raise OrderingManualCheckRequired(
+                    "manual account reconciliation is required"
+                ) from None
+            except asyncio.CancelledError:
+                if record is not None and dispatched and learned_checkout_id is not None:
+                    try:
+                        current = self.journal.get(record.attempt_id)
+                        if current.state is JournalState.DISPATCHING:
+                            await self.journal.async_transition(
+                                record.attempt_id,
+                                JournalState.MANUAL_CHECK_REQUIRED,
+                                failure_class="cancelled",
+                                checkout_reference=learned_checkout_id,
+                            )
+                    except (JournalFault, asyncio.CancelledError):
+                        pass
+                await self._async_complete_cancellation_recovery(
+                    record.attempt_id if record is not None and dispatched else None
+                )
+                raise
+            except (JournalFault, OrderingStateFault) as err:
+                if record is not None and dispatched:
+                    if learned_checkout_id is not None:
+                        try:
+                            current = self.journal.get(record.attempt_id)
+                            if current.state is JournalState.DISPATCHING:
+                                await self.journal.async_transition(
+                                    record.attempt_id,
+                                    JournalState.MANUAL_CHECK_REQUIRED,
+                                    failure_class="persistence_failure",
+                                    checkout_reference=learned_checkout_id,
+                                )
+                        except JournalFault:
+                            pass
+                    await self._async_recover_live_ambiguity(
+                        record.attempt_id, "persistence_failure"
+                    )
+                    if not self.integrity_fault:
+                        raise OrderingManualCheckRequired(
+                            "manual account reconciliation is required"
+                        ) from None
+                elif record is not None:
+                    await self._async_best_effort_uncertain(record.attempt_id)
+                await self._async_latch_safety_fault()
+                raise OrderingSecurityFault("final journal safety fault") from err
+            except InvalidConfirmation:
+                if record is not None and not dispatched:
+                    current = self.journal.get(record.attempt_id)
+                    if current.state is JournalState.DISPATCHING:
+                        await self.journal.async_record_provider_terminal(
+                            record.attempt_id,
+                            expected_revision=current.record_revision,
+                            succeeded=False,
+                            provider_evidence_hash=hashlib.sha256(
+                                b"local-no-dispatch-authority-changed"
+                            ).hexdigest(),
+                            failure_class="unknown_ambiguous",
+                        )
+                raise
 
     def _bound_manual_record(self) -> Any:
         """Return only the record named by the durable manual binding."""
@@ -660,11 +828,92 @@ class OrderingManager:
                 record.state
                 in {JournalState.CONFIRMED_SUCCEEDED, JournalState.CONFIRMED_FAILED}
                 and record.resolution == binding.resolution
-                and record.evidence_source == "admin_review"
+                and record.evidence_source in {"admin_review", "provider_response"}
             )
         if not valid:
             raise OrderingSecurityFault("manual recovery binding changed")
         return record
+
+    async def async_inspect_live_checkout_status(
+        self, user: OrderingUser, generation: object
+    ) -> dict[str, Any]:
+        """Perform one explicit GET for the exact privately stored checkout ID."""
+        async with self._lock:
+            self._admin_guard(user)
+            if (
+                isinstance(generation, bool)
+                or not isinstance(generation, int)
+                or generation != self.generation
+            ):
+                raise StaleOrderingGeneration("ordering generation is stale")
+            if self.integrity_fault or not self.manual_check_required:
+                raise OrderingDisabled("checkout status inspection is unavailable")
+            record = self._bound_manual_record()
+            if record.checkout_id is None:
+                return {"status": "no_checkout_id", "manualCheckRequired": True}
+            adapter: Any = self._final_status_adapter
+            inspect: Any = getattr(adapter, "async_status", None)
+            if not callable(inspect):
+                return {"status": "unavailable", "manualCheckRequired": True}
+            try:
+                outcome = await inspect(
+                    record.checkout_id,
+                    expected_basket_hash=record.basket_reference_hash,
+                    expected_amount_minor=record.amount_minor,
+                    expected_currency=record.currency,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return {
+                    "status": "manual_check_required",
+                    "manualCheckRequired": True,
+                }
+            if not getattr(outcome, "terminal", False):
+                return {
+                    "status": "manual_check_required",
+                    "manualCheckRequired": True,
+                }
+            resolution = (
+                "provider_succeeded"
+                if getattr(outcome, "succeeded", False)
+                else "provider_failed"
+            )
+            try:
+                updated = await self.journal.async_record_provider_reconciliation(
+                    record.attempt_id,
+                    expected_revision=record.record_revision,
+                    succeeded=outcome.succeeded,
+                    provider_evidence_hash=outcome.evidence_hash,
+                )
+                await self._durable_state.async_update_manual_binding(
+                    attempt_id=updated.attempt_id,
+                    record_revision=updated.record_revision,
+                    resolution=resolution,
+                )
+                self._invalidate_all_ephemeral()
+                await self._async_bump_generation()
+                await self._durable_state.async_clear_manual_check(
+                    attempt_id=updated.attempt_id,
+                    record_revision=updated.record_revision,
+                    resolution=resolution,
+                    generation=self.generation,
+                )
+            except JournalFault:
+                return {
+                    "status": "manual_check_required",
+                    "manualCheckRequired": True,
+                }
+            except OrderingStateFault:
+                await self._async_force_integrity_fault(record.attempt_id)
+                raise OrderingSecurityFault(
+                    "checkout status persistence failed"
+                ) from None
+            self._manual_check = False
+            return {
+                "status": "succeeded" if outcome.succeeded else "failed",
+                "manualCheckRequired": False,
+            }
 
     async def async_list_manual_checks(self, user: OrderingUser) -> dict[str, Any]:
         """List only privacy-allowlisted records needed to recover this account."""

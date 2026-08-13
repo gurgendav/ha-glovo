@@ -14,7 +14,7 @@ from functools import partial
 from typing import Any, Final
 
 _ALLOWED_FAMILIES: Final = frozenset(
-    {"account", "address", "payment", "catalog", "tracking", "basket", "quote"}
+    {"account", "address", "payment", "catalog", "tracking", "basket", "quote", "checkout"}
 )
 _ALLOWED_CATEGORIES: Final = frozenset(
     {
@@ -72,6 +72,7 @@ _PHASE_MUTATION_ALLOWLIST: Final[tuple[tuple[str, str, str], ...]] = (
         r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
     ),
     ("create_quote_template", "POST", r"^/v3/checkouts/order/1/template$"),
+    ("final_checkout", "POST", r"^/v3/checkouts/order/1$"),
 )
 _MUTATION_QUERY_CONTRACT: Final[dict[str, frozenset[str]]] = {
     purpose: frozenset() for purpose, _, _ in _PHASE_MUTATION_ALLOWLIST
@@ -86,13 +87,18 @@ class MutationPurpose(str, Enum):
     CHANGE_BASKET_QUANTITY = "change_basket_quantity"
     DELETE_BASKET = "delete_basket"
     CREATE_QUOTE_TEMPLATE = "create_quote_template"
+    FINAL_CHECKOUT = "final_checkout"
 
 
 _MUTATION_ROUTES: Final[dict[MutationPurpose, tuple[str, re.Pattern[str], str]]] = {
     MutationPurpose(purpose): (
         method,
         re.compile(pattern),
-        "quote" if purpose == MutationPurpose.CREATE_QUOTE_TEMPLATE.value else "basket",
+        "checkout"
+        if purpose == MutationPurpose.FINAL_CHECKOUT.value
+        else "quote"
+        if purpose == MutationPurpose.CREATE_QUOTE_TEMPLATE.value
+        else "basket",
     )
     for purpose, method, pattern in _PHASE_MUTATION_ALLOWLIST
 }
@@ -434,6 +440,36 @@ class SerializedApiSession:
                 raise ApiSessionError(
                     category=category,
                     endpoint_family=endpoint_family,
+                    status=status,
+                ) from None
+
+    async def async_final_status(self, path: str) -> Any:
+        """Perform one explicit GET for one exact learned checkout identifier."""
+        if (
+            not isinstance(path, str)
+            or re.fullmatch(
+                r"/v3/checkouts/order/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", path
+            )
+            is None
+        ):
+            raise ApiSessionError(
+                category="invalid_request", endpoint_family="checkout"
+            )
+        async with self._lock:
+            if not self._valid:
+                raise ApiSessionError(category="auth", endpoint_family="checkout")
+            access_token = await self._async_authorize("checkout")
+            try:
+                return await self._invoke(
+                    self._transport, "GET", access_token, path, {}
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                status = _safe_status(err)
+                raise ApiSessionError(
+                    category="http" if status else "transport",
+                    endpoint_family="checkout",
                     status=status,
                 ) from None
 

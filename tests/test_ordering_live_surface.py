@@ -108,7 +108,10 @@ def test_recovery_registers_only_bootstrap_and_recovery_while_gated_off(
     manager, adapter = Manager(), Adapter()
     surface = surface_module.OrderingSurface(manager, adapter)
     run(surface.async_setup())
-    expected = {surface_module.PUBLIC_OPERATION_COMMANDS["state"]} | set(surface_module.RECOVERY_COMMANDS)
+    expected = {
+        surface_module.PUBLIC_OPERATION_COMMANDS["state"],
+        surface_module.PUBLIC_OPERATION_COMMANDS["live/checkout_status"],
+    } | set(surface_module.RECOVERY_COMMANDS)
     assert set(adapter.handlers) == expected
     assert adapter.panels == 1
     first = list(adapter.registrations)
