@@ -904,10 +904,12 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
         "Glovo-Client-Info",
         "Glovo-Device-Urn",
         "Glovo-Language-Code",
+        "Accept-Language",
         "Glovo-Perseus-Client-Id",
         "Glovo-Perseus-Session-Id",
         "Glovo-Perseus-Session-Timestamp",
         "Glovo-Perseus-Consent",
+        "Glovo-Dynamic-Session-Id",
         "Glovo-Location-Country-Code",
         "Glovo-Location-City-Code",
         "Glovo-Delivery-Location-Latitude",
@@ -919,9 +921,19 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
     }
     assert headers["Glovo-Location-Country-Code"] == "AM"
     assert headers["Glovo-Location-City-Code"] == "YRV"
+    assert headers["Accept"] == "application/json, text/plain, */*"
+    assert headers["Accept-Language"] == headers["Glovo-Language-Code"] == "en"
+    assert headers["Glovo-App-Version"] == "v1.2567.1"
+    assert headers["Glovo-Api-Version"] == "14"
+    assert headers["Glovo-Request-TTL"] == "7500"
+    assert headers["Glovo-Client-Info"] == (
+        "web-customer-web-react/v1.2567.1 project:customer-web"
+    )
     assert re.fullmatch(r"glv:device:[0-9a-f-]{36}", headers["Glovo-Device-Urn"])
-    assert headers["Glovo-Perseus-Client-Id"] == headers["Glovo-Perseus-Session-Id"]
+    assert headers["Glovo-Perseus-Client-Id"] != headers["Glovo-Perseus-Session-Id"]
+    assert headers["Glovo-Dynamic-Session-Id"] == headers["Glovo-Perseus-Session-Id"]
     assert re.fullmatch(r"[0-9a-f-]{36}", headers["Glovo-Perseus-Client-Id"])
+    assert re.fullmatch(r"[0-9a-f-]{36}", headers["Glovo-Perseus-Session-Id"])
     assert headers["Glovo-Perseus-Session-Timestamp"].isdigit()
     malformed = dict(context)
     malformed["Authorization"] = "forbidden"
@@ -929,6 +941,148 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
         glovo.single_attempt_authed_location_get(
             "GET", "access-private", "/v3/stores/x", {}, malformed
         )
+
+
+def test_mutation_transport_reuses_exact_delivery_header_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "glovo_mutation_transport_under_test", GLOVO_ROOT / "glovo.py"
+    )
+    assert spec is not None and spec.loader is not None
+    glovo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(glovo)
+    sent: list[dict[str, Any]] = []
+
+    def request(method: str, url: str, **kwargs: Any) -> dict[str, bool]:
+        sent.append({"method": method, "url": url, **kwargs})
+        return {"ok": True}
+
+    monkeypatch.setattr(glovo, "_request_json", request)
+    context = {
+        "countryCode": "AM",
+        "cityCode": "YRV",
+        "latitude": "40.177",
+        "longitude": "44.513",
+    }
+    routes = (
+        ("POST", "/v1/authenticated/customers/42/baskets", {"fixture": True}),
+        ("PUT", "/v1/authenticated/customers/42/baskets/basket-1/products", {"fixture": True}),
+        ("PATCH", "/v1/authenticated/customers/42/baskets/basket-1/products/quantity", {"fixture": True}),
+        ("DELETE", "/v1/authenticated/customers/42/baskets/basket-1", None),
+        ("POST", "/v3/checkouts/order/1/template", {"fixture": True}),
+        ("POST", "/v3/checkouts/order/1", {"fixture": True}),
+    )
+    for method, path, body in routes:
+        assert glovo.single_attempt_authed_phase_mutation(
+            method, "access-private", path, {}, body, context
+        ) == {"ok": True}
+    assert [(item["method"], item["body"]) for item in sent] == [
+        (method, body) for method, _, body in routes
+    ]
+    static_headers = {
+        key: value
+        for key, value in sent[0]["extra_headers"].items()
+        if key
+        not in {"Glovo-Request-Id", "Glovo-Delivery-Location-Timestamp"}
+    }
+    for item in sent:
+        headers = item["extra_headers"]
+        assert {
+            key: value
+            for key, value in headers.items()
+            if key
+            not in {"Glovo-Request-Id", "Glovo-Delivery-Location-Timestamp"}
+        } == static_headers
+        assert headers["Glovo-Dynamic-Session-Id"] == headers[
+            "Glovo-Perseus-Session-Id"
+        ]
+        assert headers["Glovo-Perseus-Client-Id"] != headers[
+            "Glovo-Perseus-Session-Id"
+        ]
+        assert item["access_token"] == "access-private"
+    assert sent[3]["body"] is None
+    with pytest.raises(RuntimeError, match="Invalid delivery context"):
+        glovo.single_attempt_authed_phase_mutation(
+            "POST",
+            "access-private",
+            "/v1/authenticated/customers/42/baskets",
+            {},
+            {"fixture": True},
+            {"countryCode": "AM"},
+        )
+
+
+def test_delivery_headers_refresh_request_id_and_location_timestamp_per_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "glovo_fresh_header_transport_under_test", GLOVO_ROOT / "glovo.py"
+    )
+    assert spec is not None and spec.loader is not None
+    glovo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(glovo)
+    context = {
+        "countryCode": "AM",
+        "cityCode": "YRV",
+        "latitude": "40.177",
+        "longitude": "44.513",
+    }
+    times = iter((1_800_000_000.001, 1_800_000_000.009))
+    request_ids = iter(("request-one", "request-two"))
+    monkeypatch.setattr(glovo.time, "time", lambda: next(times))
+    monkeypatch.setattr(glovo.uuid, "uuid4", lambda: next(request_ids))
+    first = glovo._delivery_headers(context)
+    second = glovo._delivery_headers(context)
+    assert first["Glovo-Request-Id"] == "request-one"
+    assert second["Glovo-Request-Id"] == "request-two"
+    assert first["Glovo-Delivery-Location-Timestamp"] == "1800000000001"
+    assert second["Glovo-Delivery-Location-Timestamp"] == "1800000000009"
+    assert first["Glovo-Perseus-Session-Timestamp"] == second[
+        "Glovo-Perseus-Session-Timestamp"
+    ]
+
+
+def test_request_json_adds_json_content_type_only_for_object_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "glovo_request_json_under_test", GLOVO_ROOT / "glovo.py"
+    )
+    assert spec is not None and spec.loader is not None
+    glovo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(glovo)
+    requests: list[Any] = []
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        @staticmethod
+        def read() -> bytes:
+            return b"{}"
+
+    def urlopen(request: Any, *, timeout: int) -> Response:
+        assert timeout == 30
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setattr(glovo.urllib.request, "urlopen", urlopen)
+    glovo._request_json(
+        "POST", "https://example.invalid/object", access_token="access-private", body={}
+    )
+    glovo._request_json(
+        "DELETE", "https://example.invalid/bodyless", access_token="access-private"
+    )
+    assert requests[0].get_header("Content-type") == "application/json"
+    assert requests[0].data == b"{}"
+    assert requests[1].get_header("Content-type") is None
+    assert requests[1].data is None
+    assert requests[0].get_header("Authorization") == "access-private"
+    assert requests[1].get_header("Authorization") == "access-private"
 
 
 def test_session_location_context_is_private_catalog_only_and_not_retried(

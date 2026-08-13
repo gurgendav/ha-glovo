@@ -74,9 +74,8 @@ def test_reviewed_final_path_has_no_completion_cancel_payment_mutation_or_retry(
     final_source = (COMPONENT / "ordering_live_checkout.py").read_text(encoding="utf-8")
     session_source = (COMPONENT / "api_session.py").read_text(encoding="utf-8")
     manager_source = (COMPONENT / "ordering_manager.py").read_text(encoding="utf-8")
-    assert final_source.count(
-        'MutationPurpose.FINAL_CHECKOUT, "POST", FINAL_CHECKOUT_PATH, body'
-    ) == 1
+    assert final_source.count("MutationPurpose.FINAL_CHECKOUT") == 1
+    assert 'delivery_location=request.quote.delivery_location' in final_source
     assert 'FINAL_CHECKOUT_PATH: Final = "/v3/checkouts/order/1"' in final_source
     assert "async_final_status" in final_source and "FINAL_STATUS_PATH_PREFIX + known" in final_source
     for prohibited in ("/complete", "/cancel", "/payments/", "async_complete_checkout"):

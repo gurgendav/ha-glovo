@@ -11,6 +11,7 @@ from typing import Any, Final, cast
 
 from .api_session import (
     ApiSessionError,
+    DeliveryLocation,
     MutationDispatchUncertain,
     MutationPurpose,
 )
@@ -1390,6 +1391,7 @@ class RemoteBasketClient:
         path: str,
         body: dict[str, Any] | None,
         intent: BasketIntent,
+        delivery_location: DeliveryLocation,
         *,
         expected_basket_id: str | None = None,
         previous_version: str | None = None,
@@ -1398,7 +1400,11 @@ class RemoteBasketClient:
         self._invalidate_authority()
         try:
             payload = await self._session.async_mutate(
-                purpose, method, path, body
+                purpose,
+                method,
+                path,
+                body,
+                delivery_location=delivery_location,
             )
         except ApiSessionError as err:
             if self._ambiguous(err):
@@ -1421,7 +1427,7 @@ class RemoteBasketClient:
             raise RemoteBasketAmbiguous(purpose) from err
 
     async def async_create(
-        self, intent: BasketIntent
+        self, intent: BasketIntent, delivery_location: DeliveryLocation
     ) -> RemoteBasketSnapshot:
         if not isinstance(intent, BasketIntent):
             raise BasketContractError
@@ -1431,12 +1437,14 @@ class RemoteBasketClient:
             f"/v1/authenticated/customers/{intent.customer_id}/baskets",
             intent.create_body(),
             intent,
+            delivery_location,
         )
 
     async def async_replace(
         self,
         current: RemoteBasketSnapshot,
         products: Sequence[RemoteBasketProduct],
+        delivery_location: DeliveryLocation,
     ) -> RemoteBasketSnapshot:
         if not isinstance(current, RemoteBasketSnapshot) or not isinstance(
             products, Sequence
@@ -1469,6 +1477,7 @@ class RemoteBasketClient:
             _path(current, "/products"),
             current.replace_body(projection_products),
             intent,
+            delivery_location,
             expected_basket_id=current.basket_id,
             previous_version=current.basket_version,
             expected_products=proposed,
@@ -1480,6 +1489,7 @@ class RemoteBasketClient:
         *,
         basket_product_id: str,
         increment: int,
+        delivery_location: DeliveryLocation,
         limit: int | None = None,
     ) -> RemoteBasketSnapshot:
         if not isinstance(current, RemoteBasketSnapshot):
@@ -1539,6 +1549,7 @@ class RemoteBasketClient:
             _path(current, "/products/quantity"),
             body,
             intent,
+            delivery_location,
             expected_basket_id=current.basket_id,
             previous_version=current.basket_version,
             expected_products=products,
@@ -1549,6 +1560,7 @@ class RemoteBasketClient:
         current: RemoteBasketSnapshot,
         *,
         explicit_user_intent: bool,
+        delivery_location: DeliveryLocation,
     ) -> None:
         if (
             not isinstance(current, RemoteBasketSnapshot)
@@ -1563,6 +1575,7 @@ class RemoteBasketClient:
                 "DELETE",
                 _path(current),
                 None,
+                delivery_location=delivery_location,
             )
         except ApiSessionError as err:
             if self._ambiguous(err):

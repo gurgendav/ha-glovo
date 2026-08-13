@@ -118,6 +118,7 @@ def quote(live: dict[str, ModuleType], **overrides: Any) -> Any:
         "exact_products": (product,), "address_fingerprint": "a" * 64,
         "payment_fingerprint": "b" * 64, "capability_fingerprint": "c" * 64,
         "owner_key": "admin-fixture", "generation": 7, "intent_key": "intent-fixture-1",
+        "delivery_location": live["api_session"].DeliveryLocation("AM", "YRV", 40.177, 44.513),
         "total": live["ordering_models"].Money(560000, "AMD"),
         "price_lines": (quote_module.ProviderPriceLine("Total", "5,600 AMD", "TOTAL"),),
         "eta": "20 min", "received_at": 100.0, "store_display_name": "Fixture Kitchen",
@@ -150,7 +151,21 @@ class Session:
         self.results = results
         self.calls: list[tuple[str, str, Any]] = []
 
-    async def async_mutate(self, purpose: Any, method: str, path: str, body: Any) -> Any:
+    async def async_mutate(
+        self,
+        purpose: Any,
+        method: str,
+        path: str,
+        body: Any,
+        *,
+        delivery_location: Any,
+    ) -> Any:
+        assert delivery_location.transport_context() == {
+            "countryCode": "AM",
+            "cityCode": "YRV",
+            "latitude": "40.177",
+            "longitude": "44.513",
+        }
         self.calls.append((method, path, copy.deepcopy(body)))
         result = self.results.pop(0)
         if isinstance(result, BaseException):
@@ -174,6 +189,17 @@ def test_exact_private_projection_is_preserved_and_fingerprint_bound(live: dict[
     object.__setattr__(q, "store_id", 72)
     with pytest.raises(checkout.FinalCheckoutContractError):
         request.private_body()
+    q = quote(live)
+    request = checkout.FinalCheckoutRequest.from_quote(q, now=100.0)
+    object.__setattr__(
+        q,
+        "delivery_location",
+        live["api_session"].DeliveryLocation("AM", "YRV", 40.178, 44.514),
+    )
+    session = Session([])
+    with pytest.raises(checkout.FinalCheckoutContractError):
+        asyncio.run(checkout.ProductionFinalCheckoutAdapter(session).async_submit(request))
+    assert session.calls == []
     for now in (True, float("nan"), 145.0):
         with pytest.raises(checkout.FinalCheckoutContractError):
             checkout.FinalCheckoutRequest.from_quote(quote(live), now=now)
@@ -199,6 +225,35 @@ def test_schema_valid_provider_rejection_is_terminal(live: dict[str, ModuleType]
     result = asyncio.run(checkout.ProductionFinalCheckoutAdapter(session).async_submit(checkout.FinalCheckoutRequest.from_quote(q, now=100.0)))
     assert result.terminal and not result.succeeded and result.state == "REJECTED"
     assert len(result.evidence_hash) == 64 and len(session.calls) == 1
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422, 429])
+def test_http_4xx_is_deterministic_rejection_and_never_retried(
+    live: dict[str, ModuleType], status: int
+) -> None:
+    checkout = live["ordering_live_checkout"]
+    api = live["api_session"]
+    q = quote(live)
+    session = Session(
+        [
+            api.ApiSessionError(
+                category="http",
+                endpoint_family="checkout",
+                status=status,
+                purpose=api.MutationPurpose.FINAL_CHECKOUT,
+            )
+        ]
+    )
+    with pytest.raises(checkout.FinalCheckoutRejected) as raised:
+        asyncio.run(
+            checkout.ProductionFinalCheckoutAdapter(session).async_submit(
+                checkout.FinalCheckoutRequest.from_quote(q, now=100.0)
+            )
+        )
+    assert raised.value.status == status
+    assert raised.value.category == "provider_rejection"
+    assert len(raised.value.evidence_hash) == 64
+    assert len(session.calls) == 1
 
 
 def test_completed_requires_exact_basket_total_currency(live: dict[str, ModuleType]) -> None:
@@ -254,6 +309,6 @@ def test_final_route_is_purpose_typed_and_completion_routes_absent(live: dict[st
     assert api._MUTATION_ROUTES[api.MutationPurpose.FINAL_CHECKOUT][0] == "POST"
     assert api._MUTATION_ROUTES[api.MutationPurpose.FINAL_CHECKOUT][1].fullmatch("/v3/checkouts/order/1")
     source = (GLOVO_ROOT / "ordering_live_checkout.py").read_text()
-    assert source.count("MutationPurpose.FINAL_CHECKOUT, \"POST\", FINAL_CHECKOUT_PATH, body") == 1
+    assert source.count("MutationPurpose.FINAL_CHECKOUT") == 1
     for forbidden in ("/complete", "/cancel", "/payments/"):
         assert forbidden not in source

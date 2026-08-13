@@ -82,14 +82,14 @@ class FixtureTransport:
     """Explicit fixture transport with a complete method/path/body ledger."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, dict[str, str], Any]] = []
+        self.calls: list[tuple[str, str, dict[str, str], Any, dict[str, str] | None]] = []
         self.responses: list[Any] = []
         self.entered: asyncio.Event | None = None
         self.release: asyncio.Event | None = None
 
     async def get(self, method: str, access: str, path: str, query: dict[str, str]) -> Any:
         assert method == "GET" and access == "access-ok"
-        self.calls.append((method, path, query, None))
+        self.calls.append((method, path, query, None, None))
         return self._next()
 
     async def mutate(
@@ -99,9 +99,12 @@ class FixtureTransport:
         path: str,
         query: dict[str, str],
         body: dict[str, Any] | None,
+        delivery_context: dict[str, str],
     ) -> Any:
         assert access == "access-ok"
-        self.calls.append((method, path, query, copy.deepcopy(body)))
+        self.calls.append(
+            (method, path, query, copy.deepcopy(body), copy.deepcopy(delivery_context))
+        )
         if self.entered is not None:
             self.entered.set()
         if self.release is not None:
@@ -125,6 +128,10 @@ def session(live: dict[str, ModuleType], transport: FixtureTransport, **override
     }
     values.update(overrides)
     return live["api_session"].SerializedApiSession(**values)
+
+
+def delivery_location(live: dict[str, ModuleType]) -> Any:
+    return live["api_session"].DeliveryLocation("AM", "YRV", 40.177, 44.513)
 
 
 def product(quantity: int = 2) -> dict[str, Any]:
@@ -364,7 +371,15 @@ def test_session_write_routes_are_purpose_typed_allowlisted_and_single_attempt(
         (api.MutationPurpose.CREATE_QUOTE_TEMPLATE, "POST", "/v3/checkouts/order/1/template"),
     )
     for purpose, method, path in allowed:
-        assert run(client.async_mutate(purpose, method, path, {"fixture": True})) == {"ok": True}
+        assert run(
+            client.async_mutate(
+                purpose,
+                method,
+                path,
+                {"fixture": True},
+                delivery_location=delivery_location(live),
+            )
+        ) == {"ok": True}
     assert [(item[0], item[1]) for item in fixture.calls] == [
         (item[1], item[2]) for item in allowed
     ]
@@ -379,7 +394,15 @@ def test_session_write_routes_are_purpose_typed_allowlisted_and_single_attempt(
     )
     for purpose, method, path in prohibited:
         with pytest.raises(api.ApiSessionError) as raised:
-            run(client.async_mutate(purpose, method, path, {}))
+            run(
+                client.async_mutate(
+                    purpose,
+                    method,
+                    path,
+                    {},
+                    delivery_location=delivery_location(live),
+                )
+            )
         assert raised.value.category == "invalid_request"
     with pytest.raises(api.ApiSessionError):
         run(
@@ -389,6 +412,27 @@ def test_session_write_routes_are_purpose_typed_allowlisted_and_single_attempt(
             )
         )
     assert len(fixture.calls) == len(allowed)
+
+
+def test_session_rejects_missing_or_malformed_mutation_context_before_dispatch(
+    live: dict[str, ModuleType],
+) -> None:
+    api = live["api_session"]
+    fixture = FixtureTransport()
+    client = session(live, fixture)
+    for context in (None, object(), {"countryCode": "AM"}):
+        with pytest.raises(api.ApiSessionError) as raised:
+            run(
+                client.async_mutate(
+                    api.MutationPurpose.CREATE_BASKET,
+                    "POST",
+                    "/v1/authenticated/customers/42/baskets",
+                    {},
+                    delivery_location=context,
+                )
+            )
+        assert raised.value.category == "invalid_request"
+    assert fixture.calls == []
 
 
 def test_session_persists_rotating_token_before_mutation_and_never_replays(
@@ -425,6 +469,7 @@ def test_session_persists_rotating_token_before_mutation_and_never_replays(
                 "POST",
                 "/v1/authenticated/customers/42/baskets",
                 {"private": "body"},
+                delivery_location=delivery_location(live),
             )
         )
     assert events == ["refresh", "persist", "dispatch"]
@@ -455,6 +500,7 @@ def test_session_auth_or_persistence_failure_has_zero_mutation_calls(live: dict[
                     "POST",
                     "/v1/authenticated/customers/42/baskets",
                     {},
+                    delivery_location=delivery_location(live),
                 )
             )
         assert fixture.calls == []
@@ -481,6 +527,7 @@ def test_cancellation_before_dispatch_has_zero_calls_after_dispatch_is_ambiguous
                 "POST",
                 "/v1/authenticated/customers/42/baskets",
                 {},
+                delivery_location=delivery_location(live),
             )
         )
         await entered.wait()
@@ -501,6 +548,7 @@ def test_cancellation_before_dispatch_has_zero_calls_after_dispatch_is_ambiguous
                 "POST",
                 "/v1/authenticated/customers/42/baskets",
                 {},
+                delivery_location=delivery_location(live),
             )
         )
         await fixture.entered.wait()
@@ -538,6 +586,7 @@ def test_cancellation_during_rotating_token_persistence_is_pre_dispatch(
                 "POST",
                 "/v1/authenticated/customers/42/baskets",
                 {},
+                delivery_location=delivery_location(live),
             )
         )
         await entered.wait()
@@ -551,6 +600,7 @@ def test_cancellation_during_rotating_token_persistence_is_pre_dispatch(
                 "POST",
                 "/v1/authenticated/customers/42/baskets",
                 {},
+                delivery_location=delivery_location(live),
             )
         assert raised.value.category == "auth"
         assert fixture.calls == []
@@ -810,14 +860,23 @@ def test_remote_client_create_replace_quantity_delete_are_one_call_and_version_b
         session(live, fixture), invalidate_authority=lambda: invalidations.append("invalidated")
     )
     intent = remote.parse_basket_intent(intent_payload())
-    created = run(client.async_create(intent))
-    replaced = run(client.async_replace(created, intent.products))
+    location = delivery_location(live)
+    created = run(client.async_create(intent, location))
+    replaced = run(client.async_replace(created, intent.products, location))
     changed = run(
         client.async_change_quantity(
-            replaced, basket_product_id="basket-product-1", increment=1, limit=10
+            replaced,
+            basket_product_id="basket-product-1",
+            increment=1,
+            delivery_location=location,
+            limit=10,
         )
     )
-    run(client.async_delete(changed, explicit_user_intent=True))
+    run(
+        client.async_delete(
+            changed, explicit_user_intent=True, delivery_location=location
+        )
+    )
     assert [item[0] for item in fixture.calls] == ["POST", "PUT", "PATCH", "DELETE"]
     assert fixture.calls[0][3] == intent.create_body()
     expected_put = basket_payload(version="v1")
@@ -831,9 +890,16 @@ def test_remote_client_create_replace_quantity_delete_are_one_call_and_version_b
         ],
     }
     assert fixture.calls[3][3] is None
+    assert [item[4] for item in fixture.calls] == [
+        location.transport_context()
+    ] * 4
     assert len(invalidations) == 4
     with pytest.raises(remote.BasketContractError):
-        run(client.async_delete(changed, explicit_user_intent=False))
+        run(
+            client.async_delete(
+                changed, explicit_user_intent=False, delivery_location=location
+            )
+        )
     assert len(fixture.calls) == 4
 
 
@@ -848,7 +914,7 @@ def test_replace_put_accepts_changed_request_product_without_fabricating_rich_fi
     fixture.responses = [basket_payload(version="basket-v2", quantity=3)]
     client = remote.RemoteBasketClient(session(live, fixture))
 
-    changed = run(client.async_replace(current, proposed))
+    changed = run(client.async_replace(current, proposed, delivery_location(live)))
 
     assert changed.basket_version == "basket-v2"
     assert len(fixture.calls) == 1
@@ -885,7 +951,11 @@ def test_remote_4xx_is_provider_rejection_without_response_parser(
     ]
     client = remote.RemoteBasketClient(session(live, fixture))
     with pytest.raises(remote.RemoteBasketRejected) as raised:
-        run(client.async_create(remote.parse_basket_intent(intent_payload())))
+        run(
+            client.async_create(
+                remote.parse_basket_intent(intent_payload()), delivery_location(live)
+            )
+        )
     assert raised.value.status == status
     assert raised.value.category == "provider_rejection"
     assert len(fixture.calls) == 1
@@ -909,22 +979,30 @@ def test_every_remote_mutation_malformed_outcome_is_one_call_ambiguous(
     client = remote.RemoteBasketClient(session(live, fixture))
     intent = remote.parse_basket_intent(intent_payload())
     current = remote.parse_remote_basket(basket_payload(), intent)
+    location = delivery_location(live)
     with pytest.raises(remote.RemoteBasketAmbiguous):
         if operation == "create":
-            run(client.async_create(intent))
+            run(client.async_create(intent, location))
         elif operation == "replace":
-            run(client.async_replace(current, intent.products))
+            run(client.async_replace(current, intent.products, location))
         elif operation == "quantity":
             run(
                 client.async_change_quantity(
                     current,
                     basket_product_id="basket-product-1",
                     increment=1,
+                    delivery_location=location,
                     limit=10,
                 )
             )
         else:
-            run(client.async_delete(current, explicit_user_intent=True))
+            run(
+                client.async_delete(
+                    current,
+                    explicit_user_intent=True,
+                    delivery_location=location,
+                )
+            )
     assert len(fixture.calls) == 1
     assert fixture.calls[0][0] == method
 
@@ -941,7 +1019,11 @@ def test_ambiguous_mutation_never_retries_or_auto_deletes(
     fixture.responses = [failure]
     client = remote.RemoteBasketClient(session(live, fixture))
     with pytest.raises(remote.RemoteBasketAmbiguous) as raised:
-        run(client.async_create(remote.parse_basket_intent(intent_payload())))
+        run(
+            client.async_create(
+                remote.parse_basket_intent(intent_payload()), delivery_location(live)
+            )
+        )
     assert len(fixture.calls) == 1
     assert fixture.calls[0][0] == "POST"
     assert "private" not in str(raised.value).lower()
@@ -956,7 +1038,7 @@ def test_malformed_mutation_response_is_ambiguous_and_reconciliation_is_explicit
     client = remote.RemoteBasketClient(session(live, fixture))
     intent = remote.parse_basket_intent(intent_payload())
     with pytest.raises(remote.RemoteBasketAmbiguous) as info:
-        run(client.async_create(intent))
+        run(client.async_create(intent, delivery_location(live)))
     assert [call[0] for call in fixture.calls] == ["POST"]
     expected = remote.ReconciliationExpectation(
         purpose=live["api_session"].MutationPurpose.CREATE_BASKET,
@@ -1010,6 +1092,7 @@ def test_quote_request_is_exact_private_and_uses_canonical_basket_address_paymen
     assert checkout["components"]["paymentMethod"]["paymentInstrumentId"] == "instrument-private"
     assert checkout["analytics"] == {"templateReceived": None}
     assert "Private Street" not in repr(request)
+    assert "40.177" not in repr(request)
 
 
 def test_authoritative_quote_exact_envelope_types_cross_checks_and_one_total(
@@ -1024,6 +1107,7 @@ def test_authoritative_quote_exact_envelope_types_cross_checks_and_one_total(
     assert parsed.total.amount_minor == 560000
     assert parsed.is_fresh(clock())
     assert "checkout-private" not in repr(parsed)
+    assert "40.177" not in repr(parsed)
     public = parsed.public_confirmation()
     encoded = json.dumps(public, ensure_ascii=False)
     for forbidden in (
@@ -1145,6 +1229,7 @@ def test_quote_client_posts_once_and_malformed_or_transport_is_never_replayed(
                 run(client.async_create(make_request(live)))
         assert len(fixture.calls) == 1
         assert fixture.calls[0][:2] == ("POST", "/v3/checkouts/order/1/template")
+        assert fixture.calls[0][4] == make_request(live).delivery_location.transport_context()
 
 
 def test_quote_45_second_monotonic_boundary(live: dict[str, ModuleType]) -> None:
@@ -1218,6 +1303,12 @@ def test_confirmation_fingerprint_change_matrix_and_rejection_consumes_challenge
         replace(original, generation=8),
         replace(original, owner_key="admin-b"),
         replace(original, intent_key="intent-local-2"),
+        replace(
+            original,
+            delivery_location=live["api_session"].DeliveryLocation(
+                "AM", "YRV", 40.178, 44.514
+            ),
+        ),
     )
     for index, changed in enumerate(changes):
         manager = quote.AuthoritativeConfirmationManager(

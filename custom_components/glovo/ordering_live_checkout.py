@@ -45,6 +45,21 @@ class FinalCheckoutAmbiguous(RuntimeError):
         super().__init__("final checkout requires manual reconciliation")
 
 
+class FinalCheckoutRejected(RuntimeError):
+    """Closed deterministic 4xx rejection with no provider text or identifiers."""
+
+    category = "provider_rejection"
+
+    def __init__(self, status: int) -> None:
+        if status not in {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}:
+            _fail()
+        self.status = status
+        self.evidence_hash = hashlib.sha256(
+            f"final-provider-rejection:{status}".encode()
+        ).hexdigest()
+        super().__init__("final checkout was rejected")
+
+
 class FinalCheckoutUnsupported(RuntimeError):
     pass
 
@@ -250,11 +265,17 @@ class ProductionFinalCheckoutAdapter:
         body = request.private_body()
         try:
             payload = await self._session.async_mutate(
-                MutationPurpose.FINAL_CHECKOUT, "POST", FINAL_CHECKOUT_PATH, body
+                MutationPurpose.FINAL_CHECKOUT,
+                "POST",
+                FINAL_CHECKOUT_PATH,
+                body,
+                delivery_location=request.quote.delivery_location,
             )
         except MutationDispatchUncertain:
             raise asyncio.CancelledError from None
         except ApiSessionError as err:
+            if err.status in {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}:
+                raise FinalCheckoutRejected(err.status) from None
             category = "cancelled" if err.category == "cancelled" else "http_error" if err.status else "unknown_ambiguous"
             raise FinalCheckoutAmbiguous(category=category) from None
         try:

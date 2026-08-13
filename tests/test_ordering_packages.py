@@ -943,13 +943,27 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
             )
 
         class Baskets:
-            async def async_create(self, _intent: Any) -> Any:
+            async def async_create(self, _intent: Any, delivery_location: Any) -> Any:
                 nonlocal create_calls
+                assert delivery_location.transport_context() == {
+                    "countryCode": "AM",
+                    "cityCode": "YRV",
+                    "latitude": "40.177",
+                    "longitude": "44.513",
+                }
                 create_calls += 1
                 return snapshot(500)
 
-            async def async_replace(self, previous: Any, products: Any) -> Any:
+            async def async_replace(
+                self, previous: Any, products: Any, delivery_location: Any
+            ) -> Any:
                 nonlocal replace_calls
+                assert delivery_location.transport_context() == {
+                    "countryCode": "AM",
+                    "cityCode": "YRV",
+                    "latitude": "40.177",
+                    "longitude": "44.513",
+                }
                 replace_calls += 1
                 assert previous.basket_price.minor == 500
                 assert len(products) == 1

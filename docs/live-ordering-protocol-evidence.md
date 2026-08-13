@@ -4,6 +4,16 @@
 
 This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. No authenticated request and no basket, quote, status, checkout, order, completion, cancellation, or payment call was made while collecting or applying this evidence.
 
+## Withdrawn home.4 canary (2026-08-13)
+
+The corrected optionless canary on home.4 sent exactly one basket-create mutation and received a deterministic provider failure. It made zero retries and zero quote-template, final-checkout, payment, checkout-status, order-status, or other order calls; zero active orders remained. No manual-check or integrity latch was created. All four ordering gates were restored to false and production was rolled back to home.2. This public-safe record intentionally excludes credentials, account/store/basket identifiers, addresses, coordinates, payloads, provider response text, and private diagnostics.
+
+## Pinned common web fetcher evidence (2026-08-13)
+
+The route HTML `001-rena-restaurant-complex.html` (SHA-256 `899301f3c06619ac2b37af09be4c83337878c2b8fd13c839f75dd0b3aab4ec11`) pins web app version `v1.2567.1`, API version `14`, and request TTL `7500`. The basket SDK chunk `009-86937-d352ebf5782090c3.js` (SHA-256 `5830b8a8e5a98a9de1233eb165bc771822970d2665cc088c4ccf2a63006af0cc`, module `52500`) sends basket POST/PUT/PATCH/DELETE through the global `Z.GO.request` fetcher and adds no basket-specific headers or query parameters.
+
+Generic defaults are evidenced in `0006-91816-c3afd29330038219.js` (SHA-256 `33386b6e6c56cb5d2da4047e4fb42d7401407f6db1f3e2ccf2e423bd982b27ae`, module `49035`) and the common interceptor in `0009-26219-8c5c0fadda959f4a.js` (SHA-256 `07a22040d5fa6ee44c4ae9cce61ed2722fa2131b595c1146645e892d2fd74367`, module `30467`). Location overrides are published by `0022-66085-c7abf5e065d94713.js` (SHA-256 `ef964026292449d55ba2464708a122ef8ff4b06dd1e4bc03edd69f699d9a4058`, module `66085`). The shared request context includes Accept, app platform/type/version/development state, TTL, client info, API version, app context, separate process-private Perseus client/session IDs and timestamp/consent, dynamic session equal to the Perseus session, language, device, country/city, delivery coordinates/timestamp/accuracy, and Authorization on authenticated calls. Object-body mutations use JSON content type; bodyless DELETE does not force it. Request ID and delivery timestamp are fresh on every invocation.
+
 ## Frozen basket evidence (2026-08-13)
 
 The withdrawn home.3 stop-before-submit canary reached basket creation but received a deterministic provider rejection. No checkout or payment was dispatched. Anonymous first-party static recovery pinned the replacement contract to:

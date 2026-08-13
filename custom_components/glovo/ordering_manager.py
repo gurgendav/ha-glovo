@@ -655,7 +655,11 @@ class OrderingManager:
         self, user: OrderingUser, generation: int, quote: Any, request: Any, adapter: Any
     ) -> dict[str, Any]:
         """Persist one exact live attempt around the sole final provider POST."""
-        from .ordering_live_checkout import FinalCheckoutAmbiguous, FinalCheckoutStatus
+        from .ordering_live_checkout import (
+            FinalCheckoutAmbiguous,
+            FinalCheckoutRejected,
+            FinalCheckoutStatus,
+        )
 
         async with self._lock:
             self._guard(user, generation)
@@ -725,6 +729,20 @@ class OrderingManager:
                     "status": "succeeded" if outcome.succeeded else "failed",
                     "manualCheckRequired": False,
                 }
+            except FinalCheckoutRejected as err:
+                if record is None:
+                    raise OrderingSecurityFault("final rejection authority is unavailable") from None
+                current = self.journal.get(record.attempt_id)
+                await self.journal.async_record_provider_terminal(
+                    record.attempt_id,
+                    expected_revision=current.record_revision,
+                    succeeded=False,
+                    provider_evidence_hash=err.evidence_hash,
+                    failure_class="unknown_ambiguous",
+                )
+                self._invalidate_all_ephemeral()
+                await self._async_bump_generation()
+                return {"status": "failed", "manualCheckRequired": False}
             except FinalCheckoutAmbiguous as err:
                 if record is not None:
                     try:

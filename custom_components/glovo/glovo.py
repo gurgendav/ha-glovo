@@ -146,12 +146,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 API_URL = "https://api.glovoapp.com"
-ORDERING_WEB_VERSION = "v1.2476.1"
+ORDERING_WEB_VERSION = "v1.2567.1"
 _DELIVERY_CONTEXT_KEYS = frozenset(
     {"countryCode", "cityCode", "latitude", "longitude"}
 )
 _WEB_DEVICE_URN = f"glv:device:{uuid.uuid4()}"
-_WEB_PERSEUS_ID = str(uuid.uuid4())
+_WEB_PERSEUS_CLIENT_ID = str(uuid.uuid4())
+_WEB_PERSEUS_SESSION_ID = str(uuid.uuid4())
 _WEB_PERSEUS_TIMESTAMP = str(int(time.time() * 1000))
 DEFAULT_REFRESH_MARGIN_SEC = 60
 TrackingOrigin = Literal["ORDER_TRACKING", "ORDER_DETAILS"]
@@ -387,10 +388,9 @@ def _request_json(
     body: dict[str, Any] | None = None,
     extra_headers: Mapping[str, str] | None = None,
 ) -> Any:
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
     if access_token:
         headers["Authorization"] = access_token
     if extra_headers:
@@ -474,10 +474,12 @@ def _delivery_headers(context: Mapping[str, str]) -> dict[str, str]:
         ),
         "Glovo-Device-Urn": _WEB_DEVICE_URN,
         "Glovo-Language-Code": "en",
-        "Glovo-Perseus-Client-Id": _WEB_PERSEUS_ID,
-        "Glovo-Perseus-Session-Id": _WEB_PERSEUS_ID,
+        "Accept-Language": "en",
+        "Glovo-Perseus-Client-Id": _WEB_PERSEUS_CLIENT_ID,
+        "Glovo-Perseus-Session-Id": _WEB_PERSEUS_SESSION_ID,
         "Glovo-Perseus-Session-Timestamp": _WEB_PERSEUS_TIMESTAMP,
         "Glovo-Perseus-Consent": "essential_functional_marketing",
+        "Glovo-Dynamic-Session-Id": _WEB_PERSEUS_SESSION_ID,
         "Glovo-Location-Country-Code": country,
         "Glovo-Location-City-Code": city,
         "Glovo-Delivery-Location-Latitude": str(lat),
@@ -545,6 +547,7 @@ def single_attempt_authed_phase_mutation(
     path: str,
     query: dict[str, str],
     body: dict[str, Any] | None,
+    delivery_context: dict[str, str],
 ) -> Any:
     """Perform one approved basket/template call with no refresh or replay."""
     if query != {}:
@@ -557,7 +560,13 @@ def single_attempt_authed_phase_mutation(
     url = f"{API_URL}{path}"
     if query:
         url = f"{url}?{urllib.parse.urlencode(query)}"
-    return _request_json(method, url, access_token=access_token, body=body)
+    return _request_json(
+        method,
+        url,
+        access_token=access_token,
+        body=body,
+        extra_headers=_delivery_headers(delivery_context),
+    )
 
 
 def refresh_access_token(refresh_token: str) -> tuple[str, str, int]:

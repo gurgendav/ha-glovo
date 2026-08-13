@@ -16,7 +16,7 @@
 
 ## Preflight
 
-- [ ] Artifact is release `1.1.0+home.4` with the reviewed trust identity and all release gates green from a clean tracked archive.
+- [ ] Artifact is release `1.1.0+home.5` with the reviewed trust identity and all release gates green from a clean tracked archive.
 - [ ] Journal and safety state are coherent, with no unresolved/manual/integrity record.
 - [ ] Both preparation controls and both separate paid controls were freshly enabled by the named administrator.
 - [ ] Provider app shows no conflicting order or payment.

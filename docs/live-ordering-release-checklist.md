@@ -5,7 +5,7 @@
 ## Repository and release identity
 
 - [ ] Work from a clean tracked candidate; run the explicit staged archive suite and `python scripts/verify_clean_checkout.py` after commit.
-- [ ] Manifest is `1.1.0+home.4`; trust ID matches the documented canonical descriptor.
+- [ ] Manifest is `1.1.0+home.5`; trust ID matches the documented canonical descriptor.
 - [ ] Inspect staged names, stat, and full diff; all intended tests are tracked and no private/credential material is present.
 - [ ] Run focused paid/status/cancellation tests twice and the full suite twice after the last edit.
 - [ ] Run Ruff, compileall, Node syntax, frontend harness, privacy scanner, every release/security verifier, JSON parsing/key parity, and `git diff --check`.

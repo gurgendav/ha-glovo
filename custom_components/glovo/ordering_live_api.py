@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-from .api_session import ApiSessionError
+from .api_session import ApiSessionError, DeliveryLocation
 from .ordering_account import AccountClient, InvalidSelection
 from .ordering_contracts import CustomerIdentity
 from .ordering_live_catalog import LiveCatalogClient
@@ -53,9 +53,14 @@ def _basket_sync_stage(name: str):
         if status not in {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}:
             status = None
         _LOGGER.warning(
-            "Glovo basket sync rejected at stage=%s class=%s status=%s",
+            "Glovo basket sync rejected at stage=%s class=%s category=%s status=%s",
             name,
             type(err).__name__,
+            (
+                getattr(err, "category", None)
+                if getattr(err, "category", None) == "provider_rejection"
+                else None
+            ),
             status,
         )
         raise
@@ -106,6 +111,20 @@ class PublicContractError(ValueError):
         super().__init__("live ordering request is unavailable or invalid")
 
 
+class PreparationMutationRejected(PublicContractError):
+    """Closed deterministic provider diagnostic with a generic public message."""
+
+    category = "provider_rejection"
+
+    def __init__(self, status: int | None) -> None:
+        self.status = (
+            status
+            if status in {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}
+            else None
+        )
+        super().__init__()
+
+
 class PackageSaveStageError(PublicContractError):
     """Privacy-safe package-save failure with an allowlisted diagnostic stage."""
 
@@ -118,7 +137,7 @@ class PackageSaveStageError(PublicContractError):
         super().__init__()
 
 
-@dataclass(slots=True, repr=False)
+@dataclass(frozen=True, slots=True, repr=False)
 class _BasketState:
     generation: int
     revision: int
@@ -130,6 +149,7 @@ class _BasketState:
     snapshot: RemoteBasketSnapshot
     store: Any = field(repr=False)
     address_fingerprint: str = field(repr=False)
+    delivery_location: DeliveryLocation = field(repr=False)
 
 
 @dataclass(slots=True, repr=False)
@@ -370,6 +390,12 @@ class LiveOrderingFacade:
             except Exception:
                 # Authority failure is fail closed; it must never make another call.
                 pass
+            if (
+                getattr(err, "category", None) == "provider_rejection"
+                and getattr(err, "status", None)
+                in {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}
+            ):
+                raise PreparationMutationRejected(getattr(err, "status", None)) from None
             raise PublicContractError from None
         try:
             evidence = hashlib.sha256(repr(result).encode()).hexdigest()
@@ -636,6 +662,12 @@ class LiveOrderingFacade:
                         address_handle, owner_key=owner, generation=generation
                     )
                 address_fingerprint = delivery_address.canonical_fingerprint
+                delivery_location = DeliveryLocation(
+                    delivery_address.country_code,
+                    delivery_address.city_code,
+                    delivery_address.latitude,
+                    delivery_address.longitude,
+                )
                 with _basket_sync_stage("store"):
                     store = self._selections.resolve_store(
                         store_handle,
@@ -646,6 +678,7 @@ class LiveOrderingFacade:
                 if existing is not None and (
                     store_digest(existing.store) != store_digest(store)
                     or existing.address_fingerprint != address_fingerprint
+                    or existing.delivery_location != delivery_location
                 ):
                     raise PublicContractError
                 with _basket_sync_stage("customer"):
@@ -686,11 +719,17 @@ class LiveOrderingFacade:
                         expected_category="expected_present",
                         expected=intent,
                         invoke=(
-                            (lambda: self._baskets.async_create(intent))
+                            (
+                                lambda: self._baskets.async_create(
+                                    intent, delivery_location
+                                )
+                            )
                             if existing is None
                             else (
                                 lambda: self._baskets.async_replace(
-                                    existing.snapshot, intent.products
+                                    existing.snapshot,
+                                    intent.products,
+                                    delivery_location,
                                 )
                             )
                         ),
@@ -706,6 +745,7 @@ class LiveOrderingFacade:
                     snapshot=snapshot,
                     store=store,
                     address_fingerprint=address_fingerprint,
+                    delivery_location=delivery_location,
                 )
                 self._basket[owner] = state
                 self._quote.pop(owner, None)
@@ -715,6 +755,20 @@ class LiveOrderingFacade:
                 state = self._state(owner, generation)
                 if state.revision != _revision(request["expectedRevision"]):
                     raise PublicContractError
+                address = self._account.resolve_address(
+                    state.address_handle, owner_key=owner, generation=generation
+                )
+                if (
+                    address.canonical_fingerprint != state.address_fingerprint
+                    or DeliveryLocation(
+                        address.country_code,
+                        address.city_code,
+                        address.latitude,
+                        address.longitude,
+                    )
+                    != state.delivery_location
+                ):
+                    raise PublicContractError
                 await self._async_preparation_mutation(
                     operation="live/basket_clear",
                     generation=generation,
@@ -722,7 +776,9 @@ class LiveOrderingFacade:
                     expected_category="expected_absent",
                     expected=state.snapshot,
                     invoke=lambda: self._baskets.async_delete(
-                        state.snapshot, explicit_user_intent=True
+                        state.snapshot,
+                        explicit_user_intent=True,
+                        delivery_location=state.delivery_location,
                     ),
                 )
                 self._basket.pop(owner, None)
@@ -750,9 +806,20 @@ class LiveOrderingFacade:
                 address_handle = _handle(request["addressHandle"])
                 payment_handle = _handle(request["paymentHandle"])
                 address = self._account.resolve_address(address_handle, owner_key=owner, generation=generation)
-                if address.canonical_fingerprint != state.address_fingerprint:
+                if (
+                    address.canonical_fingerprint != state.address_fingerprint
+                    or DeliveryLocation(
+                        address.country_code,
+                        address.city_code,
+                        address.latitude,
+                        address.longitude,
+                    )
+                    != state.delivery_location
+                ):
                     raise PublicContractError
-                payment = self._account.resolve_payment(payment_handle, owner_key=owner, generation=generation)
+                payment = self._account.resolve_payment(
+                    payment_handle, owner_key=owner, generation=generation
+                )
                 if payment.selected is not True:
                     raise PublicContractError
                 store = state.store
@@ -842,6 +909,8 @@ class LiveOrderingFacade:
                 # There is no order identifier or provider polling endpoint in this release.
                 return {"status": "unsupported"}
         except PackageSaveStageError:
+            raise
+        except PreparationMutationRejected:
             raise
         except ApiSessionError:
             # This exception contains only allowlisted category/family/status fields.

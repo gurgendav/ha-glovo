@@ -62,7 +62,7 @@ place an order.
 
 ### Guarded live paid checkout
 
-Release `1.1.0+home.4` includes an experimental administrator-only paid checkout path.
+Release `1.1.0+home.5` includes an experimental administrator-only paid checkout path.
 It remains default-off behind **separate** preparation and paid-spending switches and
 acknowledgements. Enabling paid checkout requires preparation consent as well. Migration
 and reauthentication reset all four values, and capability becomes false on unload,

@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
-from .api_session import ApiSessionError, MutationPurpose
+from .api_session import ApiSessionError, DeliveryLocation, MutationPurpose
 from .ordering_contracts import AddressSnapshot, SavedPayment
 from .ordering_models import (
     ISO_4217_EXPONENTS,
@@ -66,6 +66,8 @@ class QuoteTemplateAmbiguous(RuntimeError):
 
 class QuoteTemplateRejected(RuntimeError):
     """The provider deterministically rejected template creation."""
+
+    category = "provider_rejection"
 
     def __init__(self, status: int | None) -> None:
         self.status = status if status in {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429} else None
@@ -300,6 +302,16 @@ class QuoteRequest:
     def payment_fingerprint(self) -> str:
         return _payment_fingerprint(self.payment)
 
+    @property
+    def delivery_location(self) -> DeliveryLocation:
+        """Return the private location context bound to the selected address."""
+        return DeliveryLocation(
+            self.delivery_address.country_code,
+            self.delivery_address.city_code,
+            self.delivery_address.latitude,
+            self.delivery_address.longitude,
+        )
+
     def private_body(self) -> dict[str, Any]:
         """Build the only approved new-quote shape; never log or persist it."""
         basket = self.basket
@@ -391,6 +403,7 @@ class AuthoritativeQuote:
     owner_key: str = field(repr=False)
     generation: int = field(repr=False)
     intent_key: str = field(repr=False)
+    delivery_location: DeliveryLocation = field(repr=False)
     total: Money
     price_lines: tuple[ProviderPriceLine, ...]
     eta: str | None
@@ -455,6 +468,7 @@ class AuthoritativeQuote:
                 "owner": self.owner_key,
                 "generation": self.generation,
                 "intent": self.intent_key,
+                "deliveryContext": self.delivery_location.transport_context(),
                 "submitProjectionHash": hashlib.sha256(self.submit_projection_bytes).hexdigest(),
                 "confirmationDisplay": {
                     "store": self.store_display_name,
@@ -759,6 +773,7 @@ def parse_quote_template(
         owner_key=request.owner_key,
         generation=request.generation,
         intent_key=request.intent_key,
+        delivery_location=request.delivery_location,
         total=total,
         price_lines=price_lines,
         eta=eta,
@@ -797,6 +812,7 @@ class QuoteTemplateClient:
                 "POST",
                 "/v3/checkouts/order/1/template",
                 request.private_body(),
+                delivery_location=request.delivery_location,
             )
         except ApiSessionError as err:
             if err.category in {"transport", "schema"} or err.status in {500, 502, 503, 504}:

@@ -284,7 +284,7 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         lambda method, access, path, query, context: {},
     )
     glovo_api.single_attempt_authed_phase_mutation = (
-        lambda method, access, path, query, body: {}
+        lambda method, access, path, query, body, context: {}
     )
     monkeypatch.setitem(sys.modules, glovo_api.__name__, glovo_api)
 
@@ -740,6 +740,126 @@ def test_clean_preparation_authority_wires_exact_one_attempt_transport_and_no_fi
     assert state["liveCheckoutAvailable"] is False
 
 
+def test_deterministic_preparation_rejection_keeps_closed_diagnostic_and_no_latch(
+    ha_runtime: SimpleNamespace, caplog: pytest.LogCaptureFixture
+) -> None:
+    live_api = sys.modules[f"{ha_runtime.prefix}.ordering_live_api"]
+    remote = sys.modules[f"{ha_runtime.prefix}.ordering_remote_basket"]
+    api = sys.modules[f"{ha_runtime.prefix}.api_session"]
+    outcomes: list[dict[str, Any]] = []
+
+    class Authority:
+        loaded = True
+        unresolved: tuple[Any, ...] = ()
+
+        async def async_acquire(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(attempt_id=kwargs["attempt_id"], record_revision=1)
+
+        async def async_record_outcome(self, **kwargs: Any) -> None:
+            outcomes.append(kwargs)
+
+    facade = object.__new__(live_api.LiveOrderingFacade)
+    facade._preparation_authority = Authority()
+    facade._preparation_attempt_source = lambda: "prep-" + "a" * 32
+
+    async def reject() -> None:
+        raise remote.RemoteBasketRejected(api.MutationPurpose.CREATE_BASKET, 422)
+
+    async def scenario() -> None:
+        with live_api._basket_sync_stage("provider_mutation"):
+            await facade._async_preparation_mutation(
+                operation="live/basket_set",
+                generation=1,
+                purpose_name="basket_create",
+                expected_category="expected_present",
+                expected={"closed": True},
+                invoke=reject,
+            )
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(live_api.PreparationMutationRejected) as raised:
+            run(scenario())
+    assert raised.value.status == 422
+    assert raised.value.category == "provider_rejection"
+    assert str(raised.value) == "live ordering request is unavailable or invalid"
+    assert outcomes[-1]["outcome_category"] == "provider_failure"
+    assert outcomes[-1]["provider_evidence_hash"]
+    assert Authority.unresolved == ()
+    log = caplog.text
+    assert "stage=provider_mutation" in log
+    assert "class=PreparationMutationRejected" in log
+    assert "category=provider_rejection" in log
+    assert "status=422" in log
+    for forbidden in (
+        "prep-",
+        "/v1/",
+        "customer",
+        "latitude",
+        "longitude",
+        "payload",
+        "Bearer",
+    ):
+        assert forbidden not in log
+
+
+def test_basket_context_is_repr_private_and_address_mismatch_stops_before_delete_dispatch(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    live_api = sys.modules[f"{ha_runtime.prefix}.ordering_live_api"]
+    api = sys.modules[f"{ha_runtime.prefix}.api_session"]
+    location = api.DeliveryLocation("AM", "YRV", 40.177, 44.513)
+    state = live_api._BasketState(
+        generation=1,
+        revision=1,
+        store_handle="store-local",
+        address_handle="address-local",
+        currency="AMD",
+        store_label="Fixture Kitchen",
+        lines=(),
+        snapshot=object(),
+        store=object(),
+        address_fingerprint="a" * 64,
+        delivery_location=location,
+    )
+    assert "40.177" not in repr(state)
+    assert "44.513" not in repr(state)
+
+    class Account:
+        @staticmethod
+        def resolve_address(*args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                canonical_fingerprint="b" * 64,
+                country_code="AM",
+                city_code="YRV",
+                latitude=40.178,
+                longitude=44.514,
+            )
+
+    class Baskets:
+        calls = 0
+
+        async def async_delete(self, *args: Any, **kwargs: Any) -> None:
+            self.calls += 1
+
+    facade = object.__new__(live_api.LiveOrderingFacade)
+    facade._account = Account()
+    facade._baskets = Baskets()
+    facade._basket = {"admin": state}
+    facade._quote = {}
+    facade._generation = 1
+    facade._confirmations = SimpleNamespace(invalidate=lambda owner: None)
+
+    with pytest.raises(live_api.PublicContractError):
+        run(
+            facade.async_dispatch(
+                owner="admin",
+                operation="live/basket_clear",
+                request={"generation": 1, "expectedRevision": 1},
+            )
+        )
+    assert facade._baskets.calls == 0
+
+
 def test_admin_fixture_transport_reaches_production_preparation_path_without_final_submit(
     ha_runtime: SimpleNamespace,
 ) -> None:
@@ -792,11 +912,17 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         return get(method, access, path, query)
 
     def mutate(
-        method: str, access: str, path: str, query: dict[str, str], body: Any
+        method: str,
+        access: str,
+        path: str,
+        query: dict[str, str],
+        body: Any,
+        context: dict[str, str],
     ) -> Any:
         assert access == "access-fixture"
         raw = ha_runtime.Store.values["glovo.ordering_prep_authority_v1.entry-one"]
         assert raw["records"][-1]["state"] == "DISPATCHING"
+        location_contexts.append(copy.deepcopy(context))
         ledger.append((method, path, copy.deepcopy(query), copy.deepcopy(body)))
         response = copy.deepcopy(mutation_responses.pop(0))
         if path.endswith("/baskets"):
@@ -932,14 +1058,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         "latitude": "40.177",
         "longitude": "44.513",
     }
-    assert location_contexts == [
-        expected_location,
-        expected_location,
-        expected_location,
-        expected_location,
-        expected_location,
-        expected_location,
-    ]
+    assert location_contexts == [expected_location] * 8
     assert ledger[5][2] == {} and ledger[9][2] == {}
     runtime = entry.runtime_data
     assert runtime.ordering_runtime.live_checkout_available is False

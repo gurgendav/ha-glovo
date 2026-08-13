@@ -204,7 +204,15 @@ class SerializedApiSession:
         ]
         | None = None,
         mutation_transport: Callable[
-            [str, str, str, dict[str, str], dict[str, Any] | None], Any
+            [
+                str,
+                str,
+                str,
+                dict[str, str],
+                dict[str, Any] | None,
+                dict[str, str],
+            ],
+            Any,
         ]
         | None = None,
         executor: Callable[[Callable[[], Any]], Awaitable[Any]] | None = None,
@@ -480,6 +488,8 @@ class SerializedApiSession:
         path: str,
         body: dict[str, Any] | None,
         query: Mapping[str, str] | None = None,
+        *,
+        delivery_location: DeliveryLocation | None = None,
     ) -> Any:
         """Dispatch exactly one purpose-bound mutation after token persistence."""
         route = _MUTATION_ROUTES.get(purpose) if isinstance(purpose, MutationPurpose) else None
@@ -498,6 +508,7 @@ class SerializedApiSession:
             )
             or not self._valid_body(body)
             or self._mutation_transport is None
+            or not isinstance(delivery_location, DeliveryLocation)
         ):
             raise ApiSessionError(
                 category="invalid_request",
@@ -522,6 +533,7 @@ class SerializedApiSession:
                     path,
                     dict(query or {}),
                     body,
+                    delivery_location.transport_context(),
                 )
             except asyncio.CancelledError:
                 raise MutationDispatchUncertain(
