@@ -1366,24 +1366,20 @@ def test_added_sources_have_private_auxiliary_capability_only() -> None:
         assert prohibited not in source
 
 
-def test_home7_integration_runtime_keeps_reviewed_final_checkout_uncomposed() -> None:
-    """Home.7 composes preparation transport but no final adapter or factory."""
+def test_home8_integration_runtime_composes_reviewed_final_checkout_only_behind_gates() -> None:
+    """Home.8 composes only the strict final adapter/factory behind paid gates."""
     runtime = (GLOVO_ROOT / "__init__.py").read_text()
     for required in (
         "ordering_remote_basket",
         "ordering_live_quote",
         "mutation_transport=",
         "single_attempt_authed_phase_mutation",
-        "final_adapter=None",
-        "final_request_factory=None",
+        "ProductionFinalCheckoutAdapter(api_session)",
+        "FinalCheckoutRequest.from_quote",
+        "options[CONF_ALLOW_LIVE_CHECKOUT] is True",
+        "options[CONF_LIVE_CHECKOUT_ACKNOWLEDGED] is True",
     ):
         assert required in runtime
-    for prohibited in (
-        "ordering_live_checkout",
-        "ProductionFinalCheckoutAdapter",
-        "FinalCheckoutRequest.from_quote",
-    ):
-        assert prohibited not in runtime
     for prohibited in (
         "FixtureOnlyFinalCheckoutAdapter",
         "MockCheckoutAdapter",

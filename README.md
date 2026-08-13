@@ -60,12 +60,14 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
-### Guarded live paid checkout remains unavailable in home.7
+### Guarded live paid checkout in home.8
 
-Release `1.1.0+home.7` does **not** compose a final checkout adapter or request factory,
-reports final checkout unavailable, and does not register the final-submit command.
-The reviewed paid-checkout seam remains isolated for offline tests only. The retained
-paid-spending options do not grant runtime purchase authority in this release.
+Release `1.1.0+home.8` production-composes the reviewed strict final request factory
+and one-attempt adapter only when fresh preparation and paid-checkout switch/
+acknowledgement pairs are all literally true and durable authority is healthy. All four
+controls default false; migration and reauthentication reset them false. Preparation
+consent alone constructs no final adapter, publishes final checkout unavailable, and
+registers no final-submit command.
 
 Home.6 conservatively classifies preparatory post-dispatch failures. Only a closed
 `provider_rejection` with an explicitly allowlisted deterministic HTTP status becomes
@@ -73,7 +75,7 @@ terminal provider failure. Missing or unapproved status, transport/5xx/cancellat
 malformed success, parser mismatch, and every other unknown outcome durably require
 reconciliation and block later ordering; exception class names carry no authority.
 
-Home.7 keeps unresolved preparatory writes visibly recoverable while every normal
+Home.8 retains home.7's unresolved preparatory-write recovery while every normal
 mutation and final submission remains blocked. An administrator may record one local,
 challenge-bound observation; this performs no provider request and never re-submits the
 original write. The authority record, exact account binding, and durable generation are
@@ -83,7 +85,8 @@ when both recovery kinds coexist, and no private preparation identity is exposed
 Release `1.1.0+home.3` was withdrawn after its stop-before-submit canary detected
 provider basket-contract drift. No final checkout was dispatched. This release restores
 the current nested basket product, customization, quantity, and response contracts while
-retaining the same one-attempt and fail-closed paid-checkout boundaries.
+retaining the same one-attempt and fail-closed paid-checkout boundaries. Composition is
+offline readiness only; it does not authorize deployment, a provider call, or payment.
 
 Only a provider-selected saved card is supported. The final review displays the exact
 store, items/quantities/options, provider price lines, total and ISO currency, ETA,

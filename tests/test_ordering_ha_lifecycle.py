@@ -296,6 +296,7 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         "ordering_live_catalog",
         "ordering_remote_basket",
         "ordering_live_quote",
+        "ordering_live_checkout",
         "ordering_live_selection",
         "ordering_packages",
         "ordering_basket",
@@ -419,6 +420,13 @@ def _enabled_commands(runtime: SimpleNamespace) -> set[str]:
         set(surface.PUBLIC_OPERATION_COMMANDS.values())
         - {surface.PUBLIC_OPERATION_COMMANDS["live/execute_checkout"]}
     ) | set(surface.RECOVERY_COMMANDS)
+
+
+def _paid_commands(runtime: SimpleNamespace) -> set[str]:
+    surface = sys.modules[f"{runtime.prefix}.ordering_surface"]
+    return set(surface.PUBLIC_OPERATION_COMMANDS.values()) | set(
+        surface.RECOVERY_COMMANDS
+    )
 
 
 def _command_map(runtime: SimpleNamespace) -> dict[str, Any]:
@@ -1143,6 +1151,54 @@ def test_clean_preparation_authority_wires_exact_one_attempt_transport_and_no_fi
     assert state["liveCheckoutAvailable"] is False
 
 
+def test_home8_paid_gates_compose_exact_final_adapter_and_register_admin_submit(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {
+            "allow_ordering": True,
+            "ordering_acknowledged": True,
+            "allow_live_checkout": True,
+            "live_checkout_acknowledged": True,
+        }
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    runtime = entry.runtime_data
+    checkout = sys.modules[f"{ha_runtime.prefix}.ordering_live_checkout"]
+    assert isinstance(
+        runtime.ordering_runtime.flow._final_adapter,
+        checkout.ProductionFinalCheckoutAdapter,
+    )
+    assert callable(runtime.ordering_runtime.flow._final_request_factory)
+    assert runtime.ordering_manager.live_checkout_available is True
+    assert set(_command_map(ha_runtime)) == _paid_commands(ha_runtime)
+    state = _call_ws(
+        ha_runtime, hass, "glovo/ordering/state", {"type": "glovo/ordering/state"}
+    ).results[0][1]
+    assert state["liveCheckoutAvailable"] is True
+
+
+def test_home8_preparation_only_constructs_zero_final_checkout_capability(
+    ha_runtime: SimpleNamespace,
+) -> None:
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {
+            "allow_ordering": True,
+            "ordering_acknowledged": True,
+            "allow_live_checkout": False,
+            "live_checkout_acknowledged": False,
+        }
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    flow = entry.runtime_data.ordering_runtime.flow
+    assert flow is not None
+    assert flow._final_adapter is None
+    assert flow._final_request_factory is None
+    assert "glovo/ordering/live/execute_checkout" not in _command_map(ha_runtime)
+
+
 def test_deterministic_preparation_rejection_keeps_closed_diagnostic_and_no_latch(
     ha_runtime: SimpleNamespace, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1811,7 +1867,7 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         assert entry.options["ordering_acknowledged"] is False
         assert entry.options["allow_live_checkout"] is False
         assert entry.options["live_checkout_acknowledged"] is False
-        assert entry.minor_version == 4
+        assert entry.minor_version == 5
 
         assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
         assert entry.runtime_data.refreshed is True

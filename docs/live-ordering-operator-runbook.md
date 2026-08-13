@@ -1,6 +1,6 @@
 # Guarded live paid-checkout operator runbook
 
-> **Home.7 release policy:** final checkout is unavailable. Home.7 composes no final adapter or request factory and registers no final-submit command. The reviewed one-POST/no-retry seam in [protocol evidence](live-ordering-protocol-evidence.md) is future-only and this runbook authorizes no deployment or live test.
+> **Home.8 release policy:** the strict final adapter/request factory is production-composed only behind four fresh literal default-off gates and healthy durable authority. This offline candidate authorizes no deployment, provider call, basket/quote action, checkout, payment, or live test.
 
 ## Non-negotiable operating model
 
@@ -16,18 +16,18 @@
 
 ## Preflight
 
-- [ ] Artifact is release `1.1.0+home.7` with the reviewed trust identity and all release gates green from a clean tracked archive.
+- [ ] Artifact is release `1.1.0+home.8` with the reviewed trust identity and all release gates green from a clean tracked archive.
 - [ ] Journal and safety state are coherent, with no unresolved/manual/integrity record.
-- [ ] Final checkout state is unavailable and no final-submit command is registered, regardless of paid-option values.
+- [ ] All four gates are false before deployment; enabling paid consent requires a separate named authorization and preparation consent.
 - [ ] Provider app shows no conflicting order or payment.
 - [ ] Selected payment is a saved card and no interactive continuation is anticipated.
 - [ ] Exact quote facts and expiry are visible; operator can manually inspect the provider app immediately.
 - [ ] No private data capture is enabled.
 
-## Future no-payment canary (not authorized in home.7)
+## Future no-payment canary (not authorized by this build task)
 
 Do not perform a live canary, quote request, basket mutation, or final submission as part
-of home.7 release preparation. These steps require a later release and separate explicit
+of home.8 offline release preparation. These steps require separate explicit
 authorization.
 
 Abort on changed identity, stale quote, unexpected mutation, private-data exposure, journal residue, or provider-app conflict.

@@ -71,7 +71,7 @@ class GlovoConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the Glovo config flow."""
 
     VERSION = 1
-    MINOR_VERSION = 4
+    MINOR_VERSION = 5
 
     @staticmethod
     @callback

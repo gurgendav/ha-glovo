@@ -1,6 +1,6 @@
 # Reviewed production final-checkout protocol evidence
 
-**Home.7 verdict:** `productionFinalCheckoutSupported: false`. The reviewed one-POST/manual-reconciliation seam remains isolated and covered offline, but home.7 composes no final adapter or request factory, publishes final checkout unavailable, and registers no final-submit command.
+**Home.8 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation authority is healthy. Defaults, migration, and reauthentication keep all gates false.
 
 This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. No authenticated request and no basket, quote, status, checkout, order, completion, cancellation, or payment call was made while collecting or applying this evidence.
 
@@ -67,7 +67,7 @@ Any future release that composes the reviewed production adapter is limited to t
 6. at most one explicit known-ID status GET per administrator action, with no polling;
 7. provider identifiers and the full address excluded from public/recovery projections and durable privacy-safe summaries.
 
-This evidence does **not** establish provider idempotency and does not enable home.7. A later release may compose the adapter only if it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
+This evidence does **not** establish provider idempotency or authorize a payment. Home.8 only composes the existing strict adapter behind default-off gates; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
 
 ## Principal static sources
 

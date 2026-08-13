@@ -1,11 +1,11 @@
 # Guarded live paid-checkout release checklist
 
-**No deployment or provider call is performed by this checklist.** Home.7 composes no final adapter or request factory and does not register final submit. The isolated reviewed seam is not runtime purchase authority; provider idempotency is not claimed.
+**No deployment or provider call is performed by this checklist.** Home.8 composes the reviewed strict final adapter/request factory only behind all four literal default-off gates and healthy durable authority. Composition is not payment authorization; provider idempotency is not claimed.
 
 ## Repository and release identity
 
 - [ ] Work from a clean tracked candidate; run the explicit staged archive suite and `python scripts/verify_clean_checkout.py` after commit.
-- [ ] Manifest is `1.1.0+home.7`; trust ID matches the documented canonical descriptor.
+- [ ] Manifest is `1.1.0+home.8`; trust ID matches the documented canonical descriptor.
 - [ ] Inspect staged names, stat, and full diff; all intended tests are tracked and no private/credential material is present.
 - [ ] Run focused paid/status/cancellation tests twice and the full suite twice after the last edit.
 - [ ] Run Ruff, compileall, Node syntax, frontend harness, privacy scanner, every release/security verifier, JSON parsing/key parity, and `git diff --check`.
@@ -13,9 +13,9 @@
 ## Configuration and capability
 
 - [ ] Fresh options expose separate preparation and paid controls with separate acknowledgements; paid consent implies preparation consent.
-- [ ] Migration minor version 4 and reauthentication reset all four controls to literal false.
+- [ ] Migration minor version 5 and reauthentication reset all four controls to literal false.
 - [ ] Capability is true only with every gate, adapter/factory, durable authority, and facade healthy; it becomes false on unload, options change, reauth, unresolved state, or integrity fault.
-- [ ] Home.7 always publishes final checkout unavailable and omits `live/execute_checkout`, regardless of paid-option values.
+- [ ] Preparation-only/default gates construct no final adapter and omit `live/execute_checkout`; all gates plus healthy composition expose it only to authenticated administrators.
 - [ ] No public service/entity/event/automation/intent/webhook/MQTT purchase seam exists; only the admin WebSocket workspace is available.
 
 ## Exact checkout and frontend contract
@@ -48,8 +48,8 @@
 - [ ] Verify the [operator runbook](live-ordering-operator-runbook.md) no-payment canary, one-payment authorization, stop criteria, status action, and rollback-preserves-uncertainty procedure.
 - [ ] Any changed source asset, contract, route, schema, action, or continuation requirement blocks release until reviewed.
 
-## Future controlled validation (not available or authorized in home.7)
+## Future controlled validation (not authorized by this home.8 build task)
 
-- [ ] Do not run a live canary, request a quote, or attempt payment from home.7.
-- [ ] A later release must separately compose and verify the final adapter/factory before any named operator can authorize an exact displayed purchase.
+- [ ] Do not deploy, run a live canary, mutate a basket, request a quote, submit checkout, or attempt payment as part of this offline composition task.
+- [ ] A named operator must separately authorize one exact displayed purchase in a future supervised session.
 - [ ] Any future ambiguity must stop without retry, completion/cancel/payment mutation, while preserving durable state for provider-app reconciliation.

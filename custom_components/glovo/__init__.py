@@ -28,6 +28,7 @@ from .ordering_runtime import OrderingRuntime
 from .ordering_manager import OrderingManager
 from .ordering_account import AccountClient
 from .ordering_live_catalog import LiveCatalogClient
+from .ordering_live_checkout import FinalCheckoutRequest, ProductionFinalCheckoutAdapter
 from .ordering_live_api import LiveOrderingFacade
 from .ordering_live_quote import (
     AuthoritativeConfirmationManager,
@@ -48,7 +49,7 @@ from .ordering_state import (
 
 _LOGGER = logging.getLogger(__name__)
 CONFIG_ENTRY_VERSION = 1
-CONFIG_ENTRY_MINOR_VERSION = 4
+CONFIG_ENTRY_MINOR_VERSION = 5
 
 
 def _ordering_options(entry: GlovoConfigEntry) -> dict[str, object]:
@@ -191,11 +192,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         preparation_authority=preparation_authority,
         live_options=lambda: entry.options,
         facade=facade,
-        # Home.7 deliberately composes no final-submit or provider-status adapter.
-        # The isolated reviewed seam remains testable, but this release candidate
-        # cannot dispatch checkout, payment, or status GET operations.
-        final_adapter=None,
-        final_request_factory=None,
+        # A final transport exists only when both literal paid gates and the
+        # separately gated preparation runtime were clean at composition time.
+        # This avoids constructing paid authority for preparation-only entries.
+        final_adapter=(
+            ProductionFinalCheckoutAdapter(api_session)
+            if mutation_ready
+            and options[CONF_ALLOW_LIVE_CHECKOUT] is True
+            and options[CONF_LIVE_CHECKOUT_ACKNOWLEDGED] is True
+            else None
+        ),
+        final_request_factory=(
+            (lambda quote: FinalCheckoutRequest.from_quote(quote, now=time.monotonic()))
+            if mutation_ready
+            and options[CONF_ALLOW_LIVE_CHECKOUT] is True
+            and options[CONF_LIVE_CHECKOUT_ACKNOWLEDGED] is True
+            else None
+        ),
     )
     try:
         await ordering_runtime.async_initialize()

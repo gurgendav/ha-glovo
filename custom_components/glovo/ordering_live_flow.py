@@ -2,7 +2,7 @@
 
 This module is deliberately transport-free.  It composes already reviewed private
 clients, a PreparationMutationAuthority, and an optionally injected final adapter.
-No production setup path provides that adapter.
+Production setup provides that adapter only behind fresh literal paid gates.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class LiveFlowUnavailable(RuntimeError):
 
 
 class OrderingLiveFlow:
-    """Serialize live capability state and preserve a no-adapter production default."""
+    """Serialize live capability state and preserve a default-off paid boundary."""
 
     def __init__(
         self,
