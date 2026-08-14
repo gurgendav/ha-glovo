@@ -74,15 +74,17 @@ class FixtureReadSession:
 
     def __init__(self, *responses: Any) -> None:
         self.responses = list(responses)
-        self.calls: list[tuple[str, str, dict[str, str]]] = []
+        self.calls: list[tuple[str, str, dict[str, str], Any]] = []
 
     async def async_get(
         self,
         family: str,
         path: str,
         query: dict[str, str] | None = None,
+        *,
+        delivery_location: Any = None,
     ) -> Any:
-        self.calls.append((family, path, dict(query or {})))
+        self.calls.append((family, path, dict(query or {}), delivery_location))
         response = self.responses.pop(0)
         if isinstance(response, BaseException):
             raise response
@@ -129,12 +131,24 @@ def client_and_intent(
     return discovery.RemoteBasketDiscoveryClient(fixture), intent, fixture
 
 
-def assert_calls(fixture: FixtureReadSession, *, full: bool) -> None:
+def delivery_location(live: dict[str, ModuleType]) -> Any:
+    return live["api_session"].DeliveryLocation("AM", "YRV", 40.177, 44.513)
+
+
+def discover(client: Any, intent: Any, live: dict[str, ModuleType]) -> Any:
+    return client.async_discover(intent, delivery_location(live))
+
+
+def assert_calls(
+    live: dict[str, ModuleType], fixture: FixtureReadSession, *, full: bool
+) -> None:
+    location = delivery_location(live)
     expected = [
         (
             "basket",
             "/v1/authenticated/customers/42/baskets",
             {},
+            location,
         )
     ]
     if full:
@@ -143,6 +157,7 @@ def assert_calls(fixture: FixtureReadSession, *, full: bool) -> None:
                 "basket",
                 "/v1/authenticated/customers/42/baskets/stores/71",
                 {},
+                location,
             )
         )
     assert fixture.calls == expected
@@ -159,12 +174,12 @@ def test_absent_verified_uses_exactly_one_collection_get(
 ) -> None:
     client, intent, fixture = client_and_intent(live, collection)
 
-    result = run(client.async_discover(intent))
+    result = run(discover(client, intent, live))
 
     discovery = live["ordering_remote_basket_discovery"]
     assert result.status is discovery.RemoteBasketDiscoveryStatus.ABSENT_VERIFIED
     assert result.snapshot is None
-    assert_calls(fixture, full=False)
+    assert_calls(live, fixture, full=False)
 
 
 def test_exact_basket_is_adopted_after_ordered_collection_and_store_gets(
@@ -172,14 +187,14 @@ def test_exact_basket_is_adopted_after_ordered_collection_and_store_gets(
 ) -> None:
     client, intent, fixture = client_and_intent(live, [summary()], basket_payload())
 
-    result = run(client.async_discover(intent))
+    result = run(discover(client, intent, live))
 
     discovery = live["ordering_remote_basket_discovery"]
     assert result.status is discovery.RemoteBasketDiscoveryStatus.ADOPTED
     assert result.snapshot is not None
     assert result.snapshot.intent() == intent
     assert "basket-private" not in repr(result)
-    assert_calls(fixture, full=True)
+    assert_calls(live, fixture, full=True)
 
 
 @pytest.mark.parametrize("difference", ["product", "quantity", "customization"])
@@ -197,12 +212,12 @@ def test_structurally_valid_different_intent_is_closed_conflict(
         )
     client, intent, fixture = client_and_intent(live, [summary()], full)
 
-    result = run(client.async_discover(intent))
+    result = run(discover(client, intent, live))
 
     discovery = live["ordering_remote_basket_discovery"]
     assert result.status is discovery.RemoteBasketDiscoveryStatus.CONFLICT
     assert result.snapshot is None
-    assert_calls(fixture, full=True)
+    assert_calls(live, fixture, full=True)
 
 
 def test_duplicate_selected_store_is_conflict_without_second_get(
@@ -213,12 +228,12 @@ def test_duplicate_selected_store_is_conflict_without_second_get(
         [summary(), summary(basket_id="basket-private-2", version="basket-v2")],
     )
 
-    result = run(client.async_discover(intent))
+    result = run(discover(client, intent, live))
 
     discovery = live["ordering_remote_basket_discovery"]
     assert result.status is discovery.RemoteBasketDiscoveryStatus.CONFLICT
     assert result.snapshot is None
-    assert_calls(fixture, full=False)
+    assert_calls(live, fixture, full=False)
 
 
 def test_collection_local_hard_cap_accepts_20_and_rejects_21(
@@ -235,9 +250,9 @@ def test_collection_local_hard_cap_accepts_20_and_rejects_21(
         for index in range(discovery.MAX_BASKET_SUMMARIES)
     ]
     client, intent, fixture = client_and_intent(live, at_cap)
-    result = run(client.async_discover(intent))
+    result = run(discover(client, intent, live))
     assert result.status is discovery.RemoteBasketDiscoveryStatus.ABSENT_VERIFIED
-    assert_calls(fixture, full=False)
+    assert_calls(live, fixture, full=False)
 
     above_cap = at_cap + [
         summary(
@@ -249,9 +264,9 @@ def test_collection_local_hard_cap_accepts_20_and_rejects_21(
     ]
     client, intent, fixture = client_and_intent(live, above_cap)
     with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
-        run(client.async_discover(intent))
+        run(discover(client, intent, live))
     assert raised.value.category == "contract"
-    assert_calls(fixture, full=False)
+    assert_calls(live, fixture, full=False)
 
 
 @pytest.mark.parametrize(
@@ -273,11 +288,11 @@ def test_malformed_collection_is_redacted_contract_error(
     discovery = live["ordering_remote_basket_discovery"]
 
     with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
-        run(client.async_discover(intent))
+        run(discover(client, intent, live))
 
     assert raised.value.category == "contract"
     assert "basket-private" not in str(raised.value)
-    assert_calls(fixture, full=False)
+    assert_calls(live, fixture, full=False)
 
 
 def test_collection_rejects_oversized_string_and_full_rejects_oversized_items(
@@ -288,15 +303,15 @@ def test_collection_rejects_oversized_string_and_full_rejects_oversized_items(
     oversized["storeName"] = "x" * 161
     client, intent, fixture = client_and_intent(live, [oversized])
     with pytest.raises(discovery.RemoteBasketDiscoveryError):
-        run(client.async_discover(intent))
-    assert_calls(fixture, full=False)
+        run(discover(client, intent, live))
+    assert_calls(live, fixture, full=False)
 
     full = basket_payload()
     full["products"] *= 51
     client, intent, fixture = client_and_intent(live, [summary()], full)
     with pytest.raises(discovery.RemoteBasketDiscoveryError):
-        run(client.async_discover(intent))
-    assert_calls(fixture, full=True)
+        run(discover(client, intent, live))
+    assert_calls(live, fixture, full=True)
 
 
 @pytest.mark.parametrize(
@@ -317,10 +332,10 @@ def test_malformed_full_basket_is_redacted_contract_error(
     discovery = live["ordering_remote_basket_discovery"]
 
     with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
-        run(client.async_discover(intent))
+        run(discover(client, intent, live))
 
     assert raised.value.category == "contract"
-    assert_calls(fixture, full=True)
+    assert_calls(live, fixture, full=True)
 
 
 def test_matching_summary_then_empty_full_is_inconsistency_not_absence(
@@ -330,10 +345,10 @@ def test_matching_summary_then_empty_full_is_inconsistency_not_absence(
     discovery = live["ordering_remote_basket_discovery"]
 
     with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
-        run(client.async_discover(intent))
+        run(discover(client, intent, live))
 
     assert raised.value.category == "inconsistent"
-    assert_calls(fixture, full=True)
+    assert_calls(live, fixture, full=True)
 
 
 @pytest.mark.parametrize(
@@ -370,10 +385,24 @@ def test_every_summary_intent_and_full_summary_identity_mismatch_fails_closed(
     discovery = live["ordering_remote_basket_discovery"]
 
     with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
-        run(client.async_discover(intent))
+        run(discover(client, intent, live))
 
     assert raised.value.category == "contract"
-    assert_calls(fixture, full=expects_full)
+    assert_calls(live, fixture, full=expects_full)
+
+
+def test_missing_or_malformed_location_fails_before_discovery_transport(
+    live: dict[str, ModuleType],
+) -> None:
+    client, intent, fixture = client_and_intent(live, [])
+    discovery = live["ordering_remote_basket_discovery"]
+
+    for malformed in (None, object(), {"countryCode": "AM"}):
+        with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
+            run(client.async_discover(intent, malformed))
+        assert raised.value.category == "contract"
+    assert fixture.calls == []
+    assert fixture.responses == [[]]
 
 
 @pytest.mark.parametrize("stage", ["collection", "full"])
@@ -388,16 +417,18 @@ def test_cancellation_at_each_read_reraises_without_result(
     client, intent, fixture = client_and_intent(live, *responses)
 
     with pytest.raises(asyncio.CancelledError):
-        run(client.async_discover(intent))
+        run(discover(client, intent, live))
 
+    location = delivery_location(live)
     assert fixture.calls == [
-        ("basket", "/v1/authenticated/customers/42/baskets", {})
+        ("basket", "/v1/authenticated/customers/42/baskets", {}, location)
     ] + (
         [
             (
                 "basket",
                 "/v1/authenticated/customers/42/baskets/stores/71",
                 {},
+                location,
             )
         ]
         if stage == "full"
@@ -419,7 +450,7 @@ def test_transport_error_at_each_read_is_redacted_and_never_retried(
     discovery = live["ordering_remote_basket_discovery"]
 
     with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
-        run(client.async_discover(intent))
+        run(discover(client, intent, live))
 
     assert raised.value.category == "transport"
     assert "private" not in str(raised.value).lower()

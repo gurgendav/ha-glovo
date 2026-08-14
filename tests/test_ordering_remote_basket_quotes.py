@@ -87,9 +87,25 @@ class FixtureTransport:
         self.entered: asyncio.Event | None = None
         self.release: asyncio.Event | None = None
 
-    async def get(self, method: str, access: str, path: str, query: dict[str, str]) -> Any:
+    async def get(
+        self, method: str, access: str, path: str, query: dict[str, str]
+    ) -> Any:
         assert method == "GET" and access == "access-ok"
         self.calls.append((method, path, query, None, None))
+        return self._next()
+
+    async def location_get(
+        self,
+        method: str,
+        access: str,
+        path: str,
+        query: dict[str, str],
+        delivery_context: dict[str, str],
+    ) -> Any:
+        assert method == "GET" and access == "access-ok"
+        self.calls.append(
+            (method, path, query, None, copy.deepcopy(delivery_context))
+        )
         return self._next()
 
     async def mutate(
@@ -124,6 +140,7 @@ def session(live: dict[str, ModuleType], transport: FixtureTransport, **override
         "persist_token": lambda value: None,
         "ensure_token": lambda value: ("access-ok", value),
         "transport": transport.get,
+        "location_transport": transport.location_get,
         "mutation_transport": transport.mutate,
     }
     values.update(overrides)
@@ -1048,12 +1065,16 @@ def test_malformed_mutation_response_is_ambiguous_and_reconciliation_is_explicit
         products=intent.products,
         deleted=False,
     )
-    result = run(client.async_reconcile_ambiguous(info.value, expected))
+    location = delivery_location(live)
+    result = run(
+        client.async_reconcile_ambiguous(info.value, expected, location)
+    )
     assert result.snapshot is not None and result.proven is True
     assert [call[0] for call in fixture.calls] == ["POST", "GET"]
     assert fixture.calls[1][1] == (
         "/v1/authenticated/customers/42/baskets/stores/71"
     )
+    assert fixture.calls[1][4] == location.transport_context()
 
 
 def test_reconciliation_mismatch_or_get_failure_stays_ambiguous_and_never_mutates(
@@ -1076,7 +1097,11 @@ def test_reconciliation_mismatch_or_get_failure_stays_ambiguous_and_never_mutate
         fixture.responses = [response]
         client = remote.RemoteBasketClient(session(live, fixture))
         with pytest.raises(remote.RemoteBasketAmbiguous):
-            run(client.async_reconcile_ambiguous(ambiguity, expected))
+            run(
+                client.async_reconcile_ambiguous(
+                    ambiguity, expected, delivery_location(live)
+                )
+            )
         assert [item[0] for item in fixture.calls] == ["GET"]
         assert fixture.calls[0][1] == (
             "/v1/authenticated/customers/42/baskets/stores/71"

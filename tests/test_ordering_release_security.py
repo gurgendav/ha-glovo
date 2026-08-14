@@ -94,8 +94,8 @@ def test_basket_authority_scanner_enforces_private_store_routes_wiring_and_proje
         'root = f"/v2/customers/{intent.customer_id}/carts"',
         1,
     ).replace(
-        "collection_payload = await self._async_get(root)",
-        "for _attempt in range(2):\n            collection_payload = await self._async_get(root)",
+        "collection_payload = await self._async_get(root, delivery_location)",
+        "for _attempt in range(2):\n            collection_payload = await self._async_get(root, delivery_location)",
         1,
     ) + '\nimport logging\nlogging.getLogger(__name__).info("basket", "private")\n'
     tampered[module.RUNTIME_SOURCE] = tampered[module.RUNTIME_SOURCE].replace(

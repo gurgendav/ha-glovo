@@ -1663,12 +1663,14 @@ class RemoteBasketClient:
         self,
         ambiguity: RemoteBasketAmbiguous,
         expected: ReconciliationExpectation,
+        delivery_location: DeliveryLocation,
     ) -> ReconciliationResult:
         """Issue at most one fresh GET and prove exact expected state or fail closed."""
         if (
             not isinstance(ambiguity, RemoteBasketAmbiguous)
             or not isinstance(expected, ReconciliationExpectation)
             or ambiguity.purpose is not expected.purpose
+            or not isinstance(delivery_location, DeliveryLocation)
         ):
             raise BasketContractError
         path = (
@@ -1676,7 +1678,9 @@ class RemoteBasketClient:
             f"stores/{expected.intent.store_id}"
         )
         try:
-            payload = await self._session.async_get("basket", path)
+            payload = await self._session.async_get(
+                "basket", path, delivery_location=delivery_location
+            )
         except ApiSessionError as err:
             if expected.deleted and err.status == 404:
                 return ReconciliationResult(True, None)

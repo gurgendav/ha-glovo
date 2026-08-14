@@ -372,9 +372,9 @@ def scan_basket_authority_contracts(
 
     exact_routes = (
         'root = f"/v1/authenticated/customers/{intent.customer_id}/baskets"',
-        "collection_payload = await self._async_get(root)",
-        'full_payload = await self._async_get(f"{root}/stores/{intent.store_id}")',
-        'return await self._session.async_get("basket", path)',
+        "collection_payload = await self._async_get(root, delivery_location)",
+        'f"{root}/stores/{intent.store_id}", delivery_location',
+        '"basket", path, delivery_location=delivery_location',
     )
     if not all(token in discovery for token in exact_routes):
         findings.append(

@@ -966,9 +966,17 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
         class Discovery:
             calls = 0
 
-            async def async_discover(self, selected: Any) -> Any:
+            async def async_discover(
+                self, selected: Any, delivery_location: Any
+            ) -> Any:
                 self.calls += 1
                 assert selected == basket_intent
+                assert delivery_location.transport_context() == {
+                    "countryCode": "AM",
+                    "cityCode": "YRV",
+                    "latitude": "40.177",
+                    "longitude": "44.513",
+                }
                 return discovery.RemoteBasketDiscoveryResult(
                     discovery.RemoteBasketDiscoveryStatus.ABSENT_VERIFIED
                 )

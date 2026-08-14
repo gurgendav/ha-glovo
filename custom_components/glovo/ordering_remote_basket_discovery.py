@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Final
 
+from .api_session import DeliveryLocation
 from .ordering_remote_basket import (
     BasketContractError,
     BasketIntent,
@@ -170,23 +171,30 @@ class RemoteBasketDiscoveryClient:
     def __init__(self, session: Any) -> None:
         self._session = session
 
-    async def _async_get(self, path: str) -> Any:
+    async def _async_get(
+        self, path: str, delivery_location: DeliveryLocation
+    ) -> Any:
         try:
-            return await self._session.async_get("basket", path)
+            return await self._session.async_get(
+                "basket", path, delivery_location=delivery_location
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
             raise RemoteBasketDiscoveryError("transport") from None
 
-    async def async_discover(self, intent: BasketIntent) -> RemoteBasketDiscoveryResult:
+    async def async_discover(
+        self, intent: BasketIntent, delivery_location: DeliveryLocation
+    ) -> RemoteBasketDiscoveryResult:
         """Discover exact selected-store state without retry, polling, or mutation."""
         if (
             not isinstance(intent, BasketIntent)
             or _CUSTOMER_PATH_RE.fullmatch(intent.customer_id) is None
+            or not isinstance(delivery_location, DeliveryLocation)
         ):
             raise RemoteBasketDiscoveryError
         root = f"/v1/authenticated/customers/{intent.customer_id}/baskets"
-        collection_payload = await self._async_get(root)
+        collection_payload = await self._async_get(root, delivery_location)
         try:
             summaries = _parse_collection(collection_payload)
         except BasketContractError:
@@ -207,7 +215,9 @@ class RemoteBasketDiscoveryClient:
         except BasketContractError:
             raise RemoteBasketDiscoveryError from None
 
-        full_payload = await self._async_get(f"{root}/stores/{intent.store_id}")
+        full_payload = await self._async_get(
+            f"{root}/stores/{intent.store_id}", delivery_location
+        )
         if full_payload is None:
             raise RemoteBasketDiscoveryError("inconsistent")
         try:

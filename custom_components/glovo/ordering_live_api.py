@@ -1156,7 +1156,9 @@ class LiveOrderingFacade:
                 try:
                     # One discovery call owns its bounded summary/full GET sequence.
                     # There is no retry, polling, fallback, or mutation here.
-                    discovered = await discovery.async_discover(intent)
+                    discovered = await discovery.async_discover(
+                        intent, delivery_location
+                    )
                     if not isinstance(discovered, RemoteBasketDiscoveryResult):
                         raise PublicContractError
 

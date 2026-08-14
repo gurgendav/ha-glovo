@@ -202,8 +202,10 @@ class Harness:
                 return None
 
         class Discovery:
-            async def async_discover(self, intent: Any) -> Any:
-                harness.discovery_calls.append(intent)
+            async def async_discover(
+                self, intent: Any, delivery_location: Any
+            ) -> Any:
+                harness.discovery_calls.append((intent, delivery_location))
                 if harness.discovery_entered is not None:
                     harness.discovery_entered.set()
                 if harness.discovery_release is not None:
@@ -370,6 +372,7 @@ def test_public_adoption_installs_each_closed_outcome_and_never_mutates(
         )
         assert absent["status"] == "absent_verified"
         assert len(harness.discovery_calls) == 1
+        assert harness.discovery_calls[0] == (harness.intent(), harness.location)
         assert (harness.create_calls, harness.replace_calls, harness.delete_calls) == (
             0,
             0,

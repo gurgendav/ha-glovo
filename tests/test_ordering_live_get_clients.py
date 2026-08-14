@@ -943,6 +943,86 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
         )
 
 
+def test_basket_location_transport_uses_exact_frozen_web_context_and_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "glovo_basket_location_transport_under_test", GLOVO_ROOT / "glovo.py"
+    )
+    assert spec is not None and spec.loader is not None
+    glovo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(glovo)
+    sent: list[dict[str, Any]] = []
+
+    def request(method: str, url: str, **kwargs: Any) -> dict[str, bool]:
+        sent.append({"method": method, "url": url, **kwargs})
+        return {"ok": True}
+
+    monkeypatch.setattr(glovo, "_request_json", request)
+    context = {
+        "countryCode": "AM",
+        "cityCode": "YRV",
+        "latitude": "40.177",
+        "longitude": "44.513",
+    }
+    paths = (
+        "/v1/authenticated/customers/42/baskets",
+        "/v1/authenticated/customers/42/baskets/stores/71",
+    )
+    for path in paths:
+        assert glovo.single_attempt_authed_location_get(
+            "GET", "access-private", path, {}, context
+        ) == {"ok": True}
+
+    assert [(item["method"], item["url"]) for item in sent] == [
+        ("GET", f"https://api.glovoapp.com{path}") for path in paths
+    ]
+    assert [item["access_token"] for item in sent] == ["access-private"] * 2
+    expected_projection = {
+        "Accept": "application/json, text/plain, */*",
+        "Glovo-Api-Version": "14",
+        "Glovo-App-Context": "web",
+        "Glovo-App-Development-State": "prod",
+        "Glovo-App-Platform": "web",
+        "Glovo-App-Type": "customer",
+        "Glovo-App-Version": "v1.2569.0",
+        "Glovo-Client-Info": "web-customer-web-react/v1.2569.0 project:customer-web",
+        "Glovo-Language-Code": "en",
+        "Accept-Language": "en",
+        "Glovo-Perseus-Consent": "essential_functional_marketing",
+        "Glovo-Location-Country-Code": "AM",
+        "Glovo-Location-City-Code": "YRV",
+        "Glovo-Delivery-Location-Latitude": "40.177",
+        "Glovo-Delivery-Location-Longitude": "44.513",
+        "Glovo-Delivery-Location-Accuracy": "0",
+        "Glovo-Request-TTL": "7500",
+    }
+    for item in sent:
+        headers = item["extra_headers"]
+        assert {key: headers[key] for key in expected_projection} == expected_projection
+    assert sent[0]["extra_headers"]["Glovo-Request-Id"] != sent[1]["extra_headers"][
+        "Glovo-Request-Id"
+    ]
+    for identity in (
+        "Glovo-Device-Urn",
+        "Glovo-Perseus-Client-Id",
+        "Glovo-Perseus-Session-Id",
+        "Glovo-Perseus-Session-Timestamp",
+        "Glovo-Dynamic-Session-Id",
+    ):
+        assert sent[0]["extra_headers"][identity] == sent[1]["extra_headers"][identity]
+
+    for path, query in (
+        ("/v1/authenticated/customers/42/baskets/extra", {}),
+        (paths[0], {"callerSupplied": "forbidden"}),
+    ):
+        with pytest.raises(RuntimeError, match="Basket read route is not approved"):
+            glovo.single_attempt_authed_location_get(
+                "GET", "access-private", path, query, context
+            )
+    assert len(sent) == 2
+
+
 def test_mutation_transport_reuses_exact_delivery_header_builder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1085,24 +1165,29 @@ def test_request_json_adds_json_content_type_only_for_object_body(
     assert requests[1].get_header("Authorization") == "access-private"
 
 
-def test_session_location_context_is_private_catalog_only_and_not_retried(
+def test_session_location_context_is_private_catalog_and_basket_only_and_not_retried(
     live: dict[str, ModuleType],
 ) -> None:
     session_module = live["api_session"]
     location = session_module.DeliveryLocation("AM", "YRV", 40.177, 44.513)
     assert "40.177" not in repr(location)
-    calls: list[tuple[Any, ...]] = []
+    basic_calls: list[tuple[Any, ...]] = []
+    location_calls: list[tuple[Any, ...]] = []
 
-    def get(*args: Any) -> Any:
-        calls.append(args)
+    def basic_get(*args: Any) -> Any:
+        basic_calls.append(args)
+        return {"ok": True}
+
+    def location_get(*args: Any) -> Any:
+        location_calls.append(args)
         return {"ok": True}
 
     session = session_module.SerializedApiSession(
         token_source=lambda: '{"access_token":"access-ok","refresh_token":"r","expires_at":2000000000}',
         persist_token=lambda value: None,
         ensure_token=lambda value: ("access-ok", value),
-        transport=get,
-        location_transport=get,
+        transport=basic_get,
+        location_transport=location_get,
     )
     assert run(
         session.async_get(
@@ -1111,17 +1196,49 @@ def test_session_location_context_is_private_catalog_only_and_not_retried(
             delivery_location=location,
         )
     ) == {"ok": True}
-    assert len(calls) == 1 and len(calls[0]) == 5
-    calls.clear()
-    with pytest.raises(session_module.ApiSessionError):
-        run(session.async_get("catalog", "/v3/stores/fixture-kitchen"))
-    assert calls == []
+    basket_paths = (
+        "/v1/authenticated/customers/42/baskets",
+        "/v1/authenticated/customers/42/baskets/stores/71",
+    )
+    for path in basket_paths:
+        assert run(
+            session.async_get("basket", path, delivery_location=location)
+        ) == {"ok": True}
+    assert basic_calls == []
+    assert [call[2] for call in location_calls] == [
+        "/v3/stores/fixture-kitchen",
+        *basket_paths,
+    ]
+    assert all(len(call) == 5 for call in location_calls)
+    assert [call[4] for call in location_calls] == [location.transport_context()] * 3
+
+    for family, path in (
+        ("catalog", "/v3/stores/fixture-kitchen"),
+        ("basket", basket_paths[0]),
+        ("basket", basket_paths[1]),
+    ):
+        with pytest.raises(session_module.ApiSessionError):
+            run(session.async_get(family, path))
+    for malformed in (object(), {"countryCode": "AM"}):
+        with pytest.raises(session_module.ApiSessionError):
+            run(
+                session.async_get(
+                    "basket", basket_paths[0], delivery_location=malformed
+                )
+            )
     with pytest.raises(session_module.ApiSessionError):
         run(
             session.async_get(
-                "account", "/v3/me", delivery_location=location
+                "basket",
+                basket_paths[0],
+                {"callerSupplied": "forbidden"},
+                delivery_location=location,
             )
         )
+    with pytest.raises(session_module.ApiSessionError):
+        run(session.async_get("account", "/v3/me", delivery_location=location))
+    assert basic_calls == []
+    assert len(location_calls) == 3
     for values in (
         ("am", "YRV", 40.0, 44.0),
         ("AM", "YRV", float("nan"), 44.0),
@@ -1129,6 +1246,58 @@ def test_session_location_context_is_private_catalog_only_and_not_retried(
     ):
         with pytest.raises(session_module.ApiSessionError):
             session_module.DeliveryLocation(*values)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (asyncio.CancelledError(), asyncio.CancelledError),
+        (TimeoutError("private basket transport"), "transport"),
+    ],
+    ids=["cancelled", "transport"],
+)
+def test_session_basket_location_failure_is_one_attempt_without_basic_fallback(
+    live: dict[str, ModuleType], failure: BaseException, expected: Any
+) -> None:
+    session_module = live["api_session"]
+    location = session_module.DeliveryLocation("AM", "YRV", 40.177, 44.513)
+    basic_calls: list[tuple[Any, ...]] = []
+    location_calls: list[tuple[Any, ...]] = []
+
+    def basic_get(*args: Any) -> Any:
+        basic_calls.append(args)
+        raise AssertionError("basket GET fell back to basic transport")
+
+    def location_get(*args: Any) -> Any:
+        location_calls.append(args)
+        raise failure
+
+    session = session_module.SerializedApiSession(
+        token_source=lambda: "stored-token",
+        persist_token=lambda value: None,
+        ensure_token=lambda value: ("access-ok", value),
+        transport=basic_get,
+        location_transport=location_get,
+    )
+    request = session.async_get(
+        "basket",
+        "/v1/authenticated/customers/42/baskets",
+        delivery_location=location,
+    )
+    if expected is asyncio.CancelledError:
+        with pytest.raises(asyncio.CancelledError):
+            run(request)
+    else:
+        with pytest.raises(session_module.ApiSessionError) as raised:
+            run(request)
+        assert raised.value.category == expected
+    assert basic_calls == []
+    assert len(location_calls) == 1
+    assert location_calls[0][2:] == (
+        "/v1/authenticated/customers/42/baskets",
+        {},
+        location.transport_context(),
+    )
 
 
 def test_catalog_client_uses_preferred_get_and_narrow_legacy_fallback(live: dict[str, ModuleType]) -> None:

@@ -50,6 +50,7 @@ _MAX_MUTATION_BYTES: Final = 256_000
 _MAX_MUTATION_DEPTH: Final = 12
 _COUNTRY_CODE_RE: Final = re.compile(r"^[A-Z]{2}$")
 _CITY_CODE_RE: Final = re.compile(r"^[A-Z0-9][A-Z0-9_-]{1,19}$")
+_LOCATION_GET_FAMILIES: Final = frozenset({"catalog", "basket"})
 
 # Keep these literal contracts in lockstep with ``glovo.py``. The transport
 # seam accepts an explicit purpose, whereas the standalone helper uses the
@@ -148,7 +149,7 @@ class MutationDispatchUncertain(ApiSessionError):
 
 @dataclass(frozen=True, slots=True, repr=False)
 class DeliveryLocation:
-    """Private validated delivery context for location-bound catalog reads."""
+    """Private validated delivery context for location-bound web reads."""
 
     country_code: str = field(repr=False)
     city_code: str = field(repr=False)
@@ -392,20 +393,20 @@ class SerializedApiSession:
         delivery_location: DeliveryLocation | None = None,
     ) -> Any:
         """Perform one allowlisted GET; never retry or replay the request."""
+        location_bound = endpoint_family in _LOCATION_GET_FAMILIES
         if (
             endpoint_family not in _ALLOWED_FAMILIES
             or not self._valid_path(endpoint_family, path)
             or not self._valid_query(query or {})
+            or (endpoint_family == "basket" and bool(query))
             or (
-                endpoint_family == "catalog"
+                location_bound
                 and (
                     not isinstance(delivery_location, DeliveryLocation)
                     or self._location_transport is None
                 )
             )
-            or (
-                endpoint_family != "catalog" and delivery_location is not None
-            )
+            or (not location_bound and delivery_location is not None)
         ):
             raise ApiSessionError(
                 category="invalid_request", endpoint_family=endpoint_family

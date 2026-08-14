@@ -150,6 +150,13 @@ ORDERING_WEB_VERSION = "v1.2569.0"
 _DELIVERY_CONTEXT_KEYS = frozenset(
     {"countryCode", "cityCode", "latitude", "longitude"}
 )
+_BASKET_LOCATION_GET_PATHS = (
+    re.compile(r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets$"),
+    re.compile(
+        r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/stores/"
+        r"[1-9]\d{0,9}$"
+    ),
+)
 _WEB_DEVICE_URN = f"glv:device:{uuid.uuid4()}"
 _WEB_PERSEUS_CLIENT_ID = str(uuid.uuid4())
 _WEB_PERSEUS_SESSION_ID = str(uuid.uuid4())
@@ -493,24 +500,35 @@ def _delivery_headers(context: Mapping[str, str]) -> dict[str, str]:
 
 def single_attempt_authed_location_get(
     method: str,
-    _access_token: str,
+    access_token: str,
     path: str,
     query: dict[str, str],
     delivery_context: dict[str, str],
 ) -> Any:
-    """Perform one guest catalog GET with validated private delivery headers."""
+    """Perform one location-bound catalog or authenticated basket GET."""
     if method != "GET":
         raise RuntimeError("Only GET is available through this request seam")
     if not isinstance(path, str) or not path.startswith("/"):
         raise RuntimeError("Invalid API path")
+    basket_route = any(
+        pattern.fullmatch(path) for pattern in _BASKET_LOCATION_GET_PATHS
+    )
+    if path.startswith("/v1/authenticated/customers/") and (
+        not basket_route
+        or query != {}
+        or not isinstance(access_token, str)
+        or not access_token
+    ):
+        raise RuntimeError("Basket read route is not approved")
     url = f"{API_URL}{path}"
     if query:
         url = f"{url}?{urllib.parse.urlencode(query)}"
-    return _request_json(
-        "GET",
-        url,
-        extra_headers=_delivery_headers(delivery_context),
-    )
+    headers = _delivery_headers(delivery_context)
+    if basket_route:
+        return _request_json(
+            "GET", url, access_token=access_token, extra_headers=headers
+        )
+    return _request_json("GET", url, extra_headers=headers)
 
 
 # Must exactly match api_session._PHASE_MUTATION_ALLOWLIST. This standalone

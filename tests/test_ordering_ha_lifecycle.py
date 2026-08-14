@@ -1856,7 +1856,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         "latitude": "40.177",
         "longitude": "44.513",
     }
-    assert location_contexts == [expected_location] * 9
+    assert location_contexts == [expected_location] * 10
     assert ledger[8][2] == {} and ledger[12][2] == {}
     runtime = entry.runtime_data
     assert runtime.ordering_runtime.live_checkout_available is False
