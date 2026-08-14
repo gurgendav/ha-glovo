@@ -20,6 +20,11 @@ from .const import (
 )
 from .coordinator import GlovoConfigEntry, GlovoDataUpdateCoordinator
 from .ordering_journal import AttemptJournal, HomeAssistantJournalStorage
+from .ordering_basket_authority_store import (
+    BasketAuthorityFault,
+    DurableBasketAuthority,
+    HomeAssistantBasketAuthorityStorage,
+)
 from .ordering_prep_authority import (
     HomeAssistantPreparationStorage,
     PreparationMutationAuthority,
@@ -104,6 +109,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         await preparation_authority.async_load()
     except Exception:  # noqa: BLE001 - retain tracking/recovery, fail preparation closed
         _LOGGER.exception("Glovo preparation authority is unavailable; ordering disabled")
+    basket_authority = DurableBasketAuthority(
+        HomeAssistantBasketAuthorityStorage(hass, entry.entry_id), clock=time.time
+    )
+    basket_store_ready = False
+    try:
+        # Persisted evidence is loaded before constructing any facade, but it is
+        # never adopted. OrderingLiveFlow overwrites it with current-generation
+        # UNKNOWN before publishing the dispatcher.
+        await basket_authority.async_load()
+        basket_store_ready = True
+    except BasketAuthorityFault:
+        _LOGGER.error("Glovo basket evidence is unavailable; ordering disabled")
 
     ordering_manager = OrderingManager(
         allow_ordering=options[CONF_ALLOW_ORDERING],
@@ -120,6 +137,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         preparation_authority=preparation_authority,
     )
     await ordering_manager.async_initialize()
+    if not basket_store_ready:
+        await ordering_manager.async_set_enabled(False)
     if ordering_manager.integrity_fault:
         _LOGGER.warning(
             "Glovo ordering remains safely blocked after legacy migration check: %s",
@@ -130,6 +149,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         and preparation_authority.loaded
         and not preparation_authority.integrity_fault
         and not preparation_authority.unresolved
+        and basket_store_ready
     )
 
     async def persist_token(token_json: str) -> None:
@@ -186,6 +206,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
             preparation_authority=preparation_authority,
             package_library=package_library,
             discovery_client=RemoteBasketDiscoveryClient(api_session),
+            basket_authority=basket_authority,
         )
         facade_ref["facade"] = facade
 
@@ -194,6 +215,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
         preparation_authority=preparation_authority,
         live_options=lambda: entry.options,
         facade=facade,
+        basket_authority=basket_authority,
         # A final transport exists only when both literal paid gates and the
         # separately gated preparation runtime were clean at composition time.
         # This avoids constructing paid authority for preparation-only entries.
@@ -253,6 +275,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
     coordinator.ordering_runtime = ordering_runtime
     coordinator.ordering_surface = ordering_surface
     coordinator.ordering_package_library = package_library
+    coordinator.ordering_basket_authority = basket_authority
     coordinator.api_session = api_session
     # Config-entry update listeners run for both options and internal data. Keep
     # the options applied to this runtime so token persistence can be ignored

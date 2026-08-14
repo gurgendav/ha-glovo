@@ -10,6 +10,7 @@ import asyncio
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
+from .ordering_basket_authority_store import BasketAuthorityFault, DurableBasketAuthority
 from .ordering_live_api import PackageSaveStageError, PublicContractError, validate_public_request
 from .ordering_prep_authority import PreparationMutationAuthority
 
@@ -40,6 +41,7 @@ class OrderingLiveFlow:
         final_adapter: FinalDispatchAdapter | None = None,
         final_request_factory: Callable[[str], Any] | None = None,
         manager: Any | None = None,
+        basket_authority: DurableBasketAuthority | None = None,
     ) -> None:
         self._facade = facade
         self._authority = preparation_authority
@@ -47,10 +49,18 @@ class OrderingLiveFlow:
         self._final_adapter = final_adapter
         self._final_request_factory = final_request_factory
         self._manager = manager
+        self._basket_authority = basket_authority
         self._lock = asyncio.Lock()
         self._loaded = False
         self._active = False
         self._invalidated_generation: int | None = None
+
+    def _basket_store_available(self) -> bool:
+        authority = self._basket_authority
+        return bool(
+            authority is None
+            or (authority.loaded and not authority.integrity_fault)
+        )
 
     @property
     def live_checkout_available(self) -> bool:
@@ -64,6 +74,7 @@ class OrderingLiveFlow:
                 and self._authority.loaded
                 and not self._authority.integrity_fault
                 and not self._authority.unresolved
+                and self._basket_store_available()
                 and options.get("allow_ordering", False) is True
                 and options.get("ordering_acknowledged", False) is True
                 and options.get("allow_live_checkout", False) is True
@@ -86,6 +97,7 @@ class OrderingLiveFlow:
                 and self._authority.loaded
                 and not self._authority.integrity_fault
                 and not self._authority.unresolved
+                and self._basket_store_available()
                 and self._active
             )
         except Exception:
@@ -162,6 +174,31 @@ class OrderingLiveFlow:
             if self._loaded:
                 return
             await self._authority.async_load()
+            basket_authority = self._basket_authority
+            if basket_authority is not None:
+                if not basket_authority.loaded:
+                    await basket_authority.async_load()
+                generation = getattr(self._manager, "generation", None)
+                if (
+                    isinstance(generation, bool)
+                    or not isinstance(generation, int)
+                    or generation < 1
+                ):
+                    raise LiveFlowUnavailable("live ordering is unavailable")
+                try:
+                    # Loaded evidence never restores runtime authority, including
+                    # an old UNKNOWN from this same durable generation.
+                    await basket_authority.async_record_unknown(
+                        generation=generation
+                    )
+                except BasketAuthorityFault:
+                    if (
+                        basket_authority.integrity_fault
+                        or not basket_authority.transient_write_fault
+                    ):
+                        raise
+                    # A transient save fault exposes only explicit read-only
+                    # adoption, which retries UNKNOWN before its provider GET.
             self._loaded = True
             self._active = True
 
@@ -175,6 +212,10 @@ class OrderingLiveFlow:
             invalidate = getattr(self._facade, "invalidate_all", None)
             if callable(invalidate):
                 invalidate()
+            if self._basket_authority is not None:
+                await self._basket_authority.async_record_unknown(
+                    generation=generation
+                )
 
     async def _async_install_basket_authority(
         self, hook_name: str, *, generation: int, values: Mapping[str, Any]

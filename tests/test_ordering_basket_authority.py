@@ -28,6 +28,7 @@ MODULES = (
     "ordering_live_selection",
     "ordering_packages",
     "ordering_prep_authority",
+    "ordering_basket_authority_store",
     "ordering_live_api",
     "ordering_live_flow",
 )

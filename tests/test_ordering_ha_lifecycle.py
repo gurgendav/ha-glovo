@@ -306,6 +306,7 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         "ordering_journal",
         "ordering_state",
         "ordering_prep_authority",
+        "ordering_basket_authority_store",
         "ordering_live_api",
         "ordering_live_flow",
         "ordering_runtime",
