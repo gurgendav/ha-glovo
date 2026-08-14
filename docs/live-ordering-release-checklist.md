@@ -1,55 +1,55 @@
 # Guarded live paid-checkout release checklist
 
-**No deployment or provider call is performed by this checklist.** Home.9 composes the reviewed strict final adapter/request factory only behind all four literal default-off gates and healthy durable authority. Composition is not payment authorization; provider idempotency is not claimed.
+**No deployment or provider call is performed by this checklist.** Home.10 is an offline release candidate at `1.1.0+home.10`; it does not claim a deployment, live canary, quote, basket adoption, checkout, payment, or provider idempotency.
 
 ## Repository and release identity
 
-- [ ] Work from a clean tracked candidate; run the explicit staged archive suite and `python scripts/verify_clean_checkout.py` after commit.
-- [ ] Manifest is `1.1.0+home.9`; trust ID matches the documented canonical descriptor.
-- [ ] Inspect staged names, stat, and full diff; all intended tests are tracked and no private/credential material is present.
-- [ ] Run focused paid/status/cancellation tests twice and the full suite twice after the last edit.
-- [ ] Run Ruff, compileall, Node syntax, frontend harness, privacy scanner, every release/security verifier, JSON parsing/key parity, and `git diff --check`.
+- [ ] Work from a clean tracked candidate and run `python scripts/verify_clean_checkout.py` after commit.
+- [ ] Manifest is exactly `1.1.0+home.10`.
+- [ ] Canonical descriptor is exactly `ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|version=1.1.0+home.10|profile=coordinator-source-provenance-v1`.
+- [ ] Independently hash the descriptor and obtain SHA-256 `452d7aaf4c2f618154d1ffc8e52661553b4b0365d2eb46fd5fad19b7b6390268`; the runtime trust ID embeds the same version and digest.
+- [ ] `ORDERING_WEB_VERSION` remains `v1.2569.0`, the latest reproducibly preserved authenticated first-party evidence. Public landing and marketplace bundles did not expose a newer authenticated basket constant, so no newer version is claimed.
+- [ ] Inspect staged names, stat, and full diff; only intended release, migration, documentation, scanner, and test paths are present.
+- [ ] Run focused migration/foundation/release/privacy tests, full pytest, Ruff, compileall, Node syntax and frontend harness, privacy scanner, clean-checkout verifier, and `git diff --check`.
 
-## Configuration and capability
+## Migration and fresh consent
 
-- [ ] Fresh options expose separate preparation and paid controls with separate acknowledgements; paid consent implies preparation consent.
-- [ ] Migration minor version 5 and reauthentication reset all four controls to literal false.
-- [ ] Capability is true only with every gate, adapter/factory, durable authority, and facade healthy; it becomes false on unload, options change, reauth, unresolved state, or integrity fault.
-- [ ] Preparation-only/default gates construct no final adapter and omit `live/execute_checkout`; all gates plus healthy composition expose it only to authenticated administrators.
-- [ ] No public service/entity/event/automation/intent/webhook/MQTT purchase seam exists; only the admin WebSocket workspace is available.
+- [ ] Config-entry minor version is 6 in both integration and config flow.
+- [ ] Migration from every prior minor—including installed historical Home.8/Home.9 no-go candidates with all four gates true—forces `allow_ordering`, ordering acknowledgement, `allow_live_checkout`, and checkout acknowledgement to literal false while preserving unrelated options.
+- [ ] A current v6 entry with four valid booleans may preserve only the normalized dependency-consistent gate state; missing or malformed gates fail closed.
+- [ ] Reauthentication and new setup keep all four gates false.
+- [ ] After migration, require fresh re-opt-in through the options flow. Never infer consent from historical values.
 
-## Exact checkout and frontend contract
+## Durable account-scoped basket authority
 
-- [ ] Saved-card-only payment; authoritative fresh template/quote projection preserved exactly.
-- [ ] Confirmation shows store, items/quantities/options, admin-only ephemeral full address, masked card, price lines, exact total/currency, ETA, and expiry.
-- [ ] Currency formatting covers configured 0/2/3 exponents (including JPY, AMD/EUR, KWD); unsupported currencies fail display closed.
-- [ ] Acknowledgement is bound to exact minor units and currency; submit is challenge-bound, single-flight, and disabled while capability is unresolved.
+- [ ] Basket authority is account-scoped, not administrator-scoped, and whole operations are cross-administrator serialized.
+- [ ] The runtime exposes the closed knowledge states `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, and `CONFLICT`; `UNKNOWN` is never projected as an empty writable basket.
+- [ ] Discovery is read-only and bounded: exactly one collection GET and at most one conditional full per-store GET, using only the reviewed routes, with no query, polling, fallback, retry, or mutation.
+- [ ] The private Home Assistant Store uses its dedicated v1 key and persists hash-only account/store/intent/snapshot evidence plus generation, state, and observation time. It persists no provider IDs, products, addresses, handles, payloads, credentials, or raw values.
+- [ ] Loaded durable evidence is not write authority. Every setup/reload starts runtime knowledge at `UNKNOWN` and requires fresh provider re-adoption using fresh account, address, store, menu, and product context.
+- [ ] Require an explicit read-only adoption action before any basket mutation. Only fresh `ABSENT_VERIFIED` may permit one explicit create; exact `ADOPTED` may permit continuation; mismatch, multiple, malformed, oversized, inconsistent, failed reads, or `CONFLICT` block.
+- [ ] Deterministic rejected replace/delete never degrades into create. Any ambiguous mutation is durably blocked and never retried.
+- [ ] A second administrator cannot create independent basket authority or bypass an in-flight/account recovery block.
 
-## Dispatch and reconciliation safety
+## Quote, confirmation, and paid checkout
 
-- [ ] Unresolved preparation authority exposes only the admin state and local-attestation recovery controls; normal mutation and final-submit controls remain absent.
-- [ ] Preparation attestation is challenge/revision/state/generation/administrator bound, short-lived, one-shot, privacy-safe, makes no provider request, and never retries the original write.
-- [ ] Terminal operator resolution persists authority history, refreshes the exact paired binding, then atomically clears it while advancing generation; simultaneous manual recovery remains visible and independently blocked.
-- [ ] A preparatory post-dispatch exception becomes terminal provider failure only with `category=provider_rejection` and exact status in `{400,401,403,404,405,406,409,410,415,422,429}`; all other exceptions durably require reconciliation.
-- [ ] Class names, missing/unallowlisted status, 5xx, transport/cancellation, and malformed/mismatched success cannot bypass the preparation reconciliation latch; outcome-persistence failure remains an integrity fault.
-- [ ] Exactly one `POST /v3/checkouts/order/1`; no automatic retry, token refresh/replay, fallback, or duplicate dispatch.
-- [ ] No `/complete`, checkout/payment cancellation, redirect, capture, wallet, or payment mutation is implemented.
-- [ ] Durable prepared/reserved and dispatching authority precedes network invocation; all literal gates, generation, freshness, and fingerprints are rechecked.
-- [ ] Terminal `COMPLETED` requires exact basket, amount, and currency; `FAILED`/`CANCELLED` requires non-contradictory terminal evidence.
-- [ ] Pending/auth/`PROCESS_PAYMENT`, malformed, transport/cancellation, mismatch, and persistence uncertainty remain manual.
-- [ ] No learned checkout ID means zero status GETs. A learned ID means exactly one GET per explicit admin action and no polling.
-- [ ] Provider terminal reconciliation persists journal and safety state coherently; paired persistence faults retain manual state or enter integrity fault.
-- [ ] Public/recovery projections expose only `hasCheckoutId`, never provider IDs; full address remains ephemeral and absent from journals/logs/recovery.
+- [ ] Basket adoption/mutation, paid quote creation, exact confirmation, and final checkout remain separate administrator actions.
+- [ ] Read-only adoption never requests a quote and never mutates a basket.
+- [ ] Paid submission requires a fresh authoritative exact quote and separate amount/currency-bound confirmation showing exact store, items/quantities/options, admin-only ephemeral full address, masked saved card, provider price lines, total/currency, ETA, and expiry.
+- [ ] Preparation-only/default gates construct no final adapter and omit `live/execute_checkout`; all four gates plus healthy durable composition are still required.
+- [ ] Exactly one final `POST /v3/checkouts/order/1`; no automatic retry, token refresh/replay, fallback, completion, cancellation, redirect, capture, wallet, or other payment mutation.
+- [ ] Pending/auth/`PROCESS_PAYMENT`, malformed, transport/cancellation, mismatch, and persistence uncertainty remain manual. A known private checkout ID allows at most one explicit status GET per administrator action and no polling.
+- [ ] Public/recovery schemas and logs expose no provider IDs or raw persisted values. Full addresses and low-entropy private fingerprints are not public or logged.
 
 ## Protocol and operational review
 
-- [ ] Reconfirm the dated static source hashes in [protocol evidence](live-ordering-protocol-evidence.md).
-- [ ] Explicitly acknowledge that provider idempotency and lookup by `checkoutSessionId` remain unproven.
-- [ ] Verify the [operator runbook](live-ordering-operator-runbook.md) no-payment canary, one-payment authorization, stop criteria, status action, and rollback-preserves-uncertainty procedure.
-- [ ] Any changed source asset, contract, route, schema, action, or continuation requirement blocks release until reviewed.
+- [ ] Reconfirm the dated static source hashes and exact collection/per-store routes in [protocol evidence](live-ordering-protocol-evidence.md).
+- [ ] Explicitly acknowledge no provider idempotency or lookup by `checkoutSessionId` is established.
+- [ ] Follow the [operator runbook](live-ordering-operator-runbook.md): fresh re-opt-in, read-only adoption before mutation, separate exact quote confirmation, stop criteria, and rollback that preserves uncertainty.
+- [ ] Any changed route, schema, source asset, action, continuation requirement, privacy projection, or persistence image blocks release until reviewed.
 
-## Future controlled validation (not authorized by this home.9 build task)
+## Future controlled validation (not authorized by this Home.10 build task)
 
-- [ ] Do not deploy, run a live canary, mutate a basket, request a quote, submit checkout, or attempt payment as part of this offline composition task.
-- [ ] A named operator must separately authorize one exact displayed purchase in a future supervised session.
-- [ ] Any future ambiguity must stop without retry, completion/cancel/payment mutation, while preserving durable state for provider-app reconciliation.
+- [ ] Do not deploy, run a live canary, adopt a live basket, mutate a basket, request a quote, submit checkout, or attempt payment as part of this offline release task.
+- [ ] A named operator must separately authorize each future consequential step and one exact displayed purchase.
+- [ ] Any future ambiguity stops without retry while preserving durable state for provider-app reconciliation.

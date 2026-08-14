@@ -60,45 +60,65 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
-### Guarded live paid checkout in home.9
+### Guarded live paid checkout in Home.10
 
-Release `1.1.0+home.9` production-composes the reviewed strict final request factory
+Release `1.1.0+home.10` production-composes the reviewed strict final request factory
 and one-attempt adapter only when fresh preparation and paid-checkout switch/
-acknowledgement pairs are all literally true and durable authority is healthy. All four
-controls default false; migration and reauthentication reset them false. Preparation
-consent alone constructs no final adapter, publishes final checkout unavailable, and
-registers no final-submit command.
+acknowledgement pairs are all literally true and durable authority is healthy. Config
+entry migration v6 closes all four gates—even for installed Home.8/Home.9 entries that
+had all four true—while preserving unrelated options. New setup and reauthentication
+also close them. The administrator must complete a fresh re-opt-in after migration.
+Preparation consent alone constructs no final adapter, publishes final checkout
+unavailable, and registers no final-submit command.
 
-Home.6 conservatively classifies preparatory post-dispatch failures. Only a closed
+Home.10 adds durable account-scoped basket authority. The closed runtime states are
+`UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, and `CONFLICT`; missing runtime memory is never
+projected as an empty writable basket. All administrators share one authority and whole
+operations are cross-administrator serialized. Discovery performs one collection GET
+plus at most one conditional full per-store GET, with no query, polling, fallback,
+retry, or mutation. It strictly rejects multiple, malformed, oversized, inconsistent,
+or mismatched provider state.
+
+A dedicated private Home Assistant Store retains only hash-only account, store, intent,
+and provider-snapshot evidence with its generation/state/time metadata. It retains no
+provider IDs, products, addresses, handles, payloads, credentials, or raw persisted
+values. Durable evidence is not mutation authority: after every setup or reload,
+ephemeral handles are invalidated and the runtime requires fresh provider re-adoption
+against a fresh account, saved address, store, menu, and product context. An explicit
+read-only adoption action must precede any basket mutation. Only fresh verified absence
+may select one explicit create; a different/multiple/ambiguous basket is `CONFLICT` and
+blocks. A deterministic rejected replace/delete never degrades into create, and no
+ambiguous mutation is retried.
+
+Historical Home.8 and Home.9 builds are unsafe/no-go release candidates for provider
+basket mutation: Home.8 stopped on the documented provider rejection, while Home.9 did
+not yet provide this durable reload/re-adoption boundary. Neither identity should be
+used to infer writable basket absence or consent.
+
+Home.10 keeps `ORDERING_WEB_VERSION` at `v1.2569.0`, the latest reproducibly preserved
+authenticated first-party evidence. Later public landing and marketplace bundles did not
+expose a newer authenticated basket constant, so this release does not claim one.
+
+Preparatory post-dispatch failures remain conservative. Only a closed
 `provider_rejection` with an explicitly allowlisted deterministic HTTP status becomes
 terminal provider failure. Missing or unapproved status, transport/5xx/cancellation,
 malformed success, parser mismatch, and every other unknown outcome durably require
 reconciliation and block later ordering; exception class names carry no authority.
 
-Home.8 retains home.7's unresolved preparatory-write recovery while every normal
-mutation and final submission remains blocked. An administrator may record one local,
-challenge-bound observation; this performs no provider request and never re-submits the
-original write. The authority record, exact account binding, and durable generation are
-updated in fail-closed order. Manual paid-checkout recovery remains independently visible
-when both recovery kinds coexist, and no private preparation identity is exposed.
+An unresolved preparatory write keeps every normal mutation and final submission
+blocked. An administrator may record one local, challenge-bound observation; this
+performs no provider request and never re-submits the original write. The authority
+record, exact account binding, and durable generation are updated in fail-closed order.
+Manual paid-checkout recovery remains independently visible when both recovery kinds
+coexist, and no private preparation identity is exposed.
 
-Home.9 updates the pinned first-party web client version used by the authenticated
-location-aware request context from `v1.2567.1` to `v1.2569.0`. The public basket,
-generic header, and retry-middleware chunks were re-fetched with unchanged hashes;
-no basket, quote, or checkout schema was changed by this release.
-
-Release `1.1.0+home.3` was withdrawn after its stop-before-submit canary detected
-provider basket-contract drift. No final checkout was dispatched. This release restores
-the current nested basket product, customization, quantity, and response contracts while
-retaining the same one-attempt and fail-closed paid-checkout boundaries. Composition is
-offline readiness only; it does not authorize deployment, a provider call, or payment.
-
-Only a provider-selected saved card is supported. The final review displays the exact
-store, items/quantities/options, provider price lines, total and ISO currency, ETA,
-expiry, masked card, and full saved address. The full address is admin-only and
-**ephemeral**: it is not written to journals, logs, diagnostics, or recovery payloads.
-The administrator must type an acknowledgement bound to the exact minor-unit amount and
-currency.
+Paid quote creation, exact confirmation, and checkout are separate actions from basket
+adoption or mutation. Only a provider-selected saved card is supported. The final review
+displays the exact store, items/quantities/options, provider price lines, total and ISO
+currency, ETA, expiry, masked card, and full saved address. The full address is admin-only
+and **ephemeral**: it is not written to journals, logs, diagnostics, or recovery payloads.
+The administrator must type an acknowledgement bound to the fresh exact quote's
+minor-unit amount and currency.
 
 Final submission is exactly one `POST /v3/checkouts/order/1` using the server template's
 exact quoted projection. There is no automatic retry, refresh-and-replay, fallback,
@@ -113,12 +133,13 @@ With no learned ID it performs zero GETs. Public and recovery projections reveal
 `hasCheckoutId`, never the identifier. Provider-confirmed success additionally requires
 an exact basket, amount, and currency match; all other ambiguity remains manual.
 
-The [reviewed static protocol evidence](docs/live-ordering-protocol-evidence.md) does
-**not** claim provider idempotency or lookup by `checkoutSessionId`. The adapter is
-supportable only because it never retries an ambiguous paid POST and requires manual
-provider-app reconciliation. Follow the [operator runbook](docs/live-ordering-operator-runbook.md)
-and [release checklist](docs/live-ordering-release-checklist.md); disabling or rolling
-back never clears unresolved durable state.
+The [reviewed static protocol evidence](docs/live-ordering-protocol-evidence.md) makes no
+provider idempotency claim and does **not** establish lookup by `checkoutSessionId`.
+Home.10 is offline release readiness only: it does not claim deployment, a live canary,
+quote, basket adoption, checkout, payment, or provider call. Follow the
+[operator runbook](docs/live-ordering-operator-runbook.md) and
+[release checklist](docs/live-ordering-release-checklist.md); disabling or rolling back
+never clears unresolved durable state.
 
 ## Installation
 

@@ -1938,21 +1938,34 @@ def test_shared_session_token_rotation_persists_without_reload_or_generation_bum
 def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
     ha_runtime: SimpleNamespace,
 ) -> None:
-    for options in (
-        {},
-        {"allow_ordering": "yes", "ordering_acknowledged": True},
-        {"allow_ordering": True},
-        {"allow_ordering": True, "ordering_acknowledged": True},
+    for minor_version, options in (
+        (1, {}),
+        (4, {"allow_ordering": "yes", "ordering_acknowledged": True}),
+        (5, {"allow_ordering": True}),
+        (
+            5,
+            {
+                "scan_interval": 37,
+                "unrelated_home_option": "preserved",
+                "allow_ordering": True,
+                "ordering_acknowledged": True,
+                "allow_live_checkout": True,
+                "live_checkout_acknowledged": True,
+            },
+        ),
     ):
         hass = ha_runtime.FakeHass()
         entry = ha_runtime.FakeEntry(options)
-        assert entry.minor_version == 1
+        entry.minor_version = minor_version
         assert run(ha_runtime.integration.async_migrate_entry(hass, entry)) is True
         assert entry.options["allow_ordering"] is False
         assert entry.options["ordering_acknowledged"] is False
         assert entry.options["allow_live_checkout"] is False
         assert entry.options["live_checkout_acknowledged"] is False
-        assert entry.minor_version == 5
+        assert entry.minor_version == 6
+        if "scan_interval" in options:
+            assert entry.options["scan_interval"] == 37
+            assert entry.options["unrelated_home_option"] == "preserved"
 
         assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
         assert entry.runtime_data.refreshed is True
@@ -1961,6 +1974,41 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         assert hass.config_entries.forwarded
 
     assert not ha_runtime.panel_calls
+
+
+@pytest.mark.parametrize(
+    ("gates", "expected"),
+    [
+        ((True, True, True, True), (True, True, True, True)),
+        ((False, True, True, True), (False, False, False, False)),
+        ((True, False, True, True), (True, False, False, False)),
+        ((True, True, False, True), (True, True, False, False)),
+    ],
+)
+def test_current_v6_migration_preserves_only_normalized_boolean_gate_state(
+    ha_runtime: SimpleNamespace,
+    gates: tuple[bool, bool, bool, bool],
+    expected: tuple[bool, bool, bool, bool],
+) -> None:
+    keys = (
+        "allow_ordering",
+        "ordering_acknowledged",
+        "allow_live_checkout",
+        "live_checkout_acknowledged",
+    )
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"scan_interval": 23, "unrelated_home_option": "preserved"}
+        | dict(zip(keys, gates, strict=True))
+    )
+    entry.minor_version = 6
+
+    assert run(ha_runtime.integration.async_migrate_entry(hass, entry)) is True
+
+    assert tuple(entry.options[key] for key in keys) == expected
+    assert entry.options["scan_interval"] == 23
+    assert entry.options["unrelated_home_option"] == "preserved"
+    assert entry.minor_version == 6
 
 
 def test_reauth_refresh_resets_both_ordering_options_false(

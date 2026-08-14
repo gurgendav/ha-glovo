@@ -1,8 +1,8 @@
 # Reviewed production final-checkout protocol evidence
 
-**Home.9 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation authority is healthy. Defaults, migration, and reauthentication keep all gates false.
+**Home.10 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v6, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
 
-This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. No authenticated request and no basket, quote, status, checkout, order, completion, cancellation, or payment call was made while collecting or applying this evidence.
+This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. Home.10 preparation made no deployment and no authenticated/provider request: no live canary, basket adoption or mutation, quote, status, checkout, order, completion, cancellation, or payment call occurred while preparing this release.
 
 ## Home.8 supervised preparation stop (2026-08-14)
 
@@ -16,9 +16,17 @@ Anonymous first-party revalidation then fetched the current store route (SHA-256
 `4cfa79c2e23bd4e53cf46f1ae48cb186cae75eb8377ec6711da56e98ed59a6c0`) and pinned web
 version `v1.2569.0`. The basket chunk `86937-d352ebf5782090c3.js`, generic header chunk
 `91816-c3afd29330038219.js`, and retry middleware `26219-8c5c0fadda959f4a.js` retained
-their previously reviewed SHA-256 values. Home.9 therefore changes only the literal web
-version used by `Glovo-App-Version` and `Glovo-Client-Info`; it does not infer that this
-alone resolves the provider rejection or authorize another live mutation.
+their previously reviewed SHA-256 values. The historical Home.8 no-go candidate changed only the literal web
+version used by `Glovo-App-Version` and `Glovo-Client-Info`; that did not resolve the
+provider rejection or authorize another live mutation.
+
+## Historical Home.9 basket-authority no-go
+
+Home.9 preserved the authenticated `v1.2569.0` request identity but did not yet provide
+durable account-scoped basket evidence plus mandatory fresh provider re-adoption after
+runtime reload. Missing local memory could therefore not safely prove remote absence.
+Home.9 is retained only as a historical unsafe/no-go candidate for provider basket
+mutation; Home.10 does not inherit its consent or writable basket authority.
 
 ## Withdrawn home.5 canary (2026-08-13)
 
@@ -49,50 +57,46 @@ The common basket response requires basket/customer/store identities, `products`
 
 Replacement follows the first-party clone-current-basket/change-products PUT behavior. Quantity PATCH is exactly `{handlingStrategy, basketVersion, products:[{basketProductId, quantity}]}`. Whole-basket DELETE is bodyless. A post-dispatch exception is terminal provider rejection only when it carries `category=provider_rejection` and an exact allowlisted status in `{400,401,403,404,405,406,409,410,415,422,429}`. Missing or unapproved status, transport, 5xx, cancellation, malformed/mismatched successful responses, and every other unknown outcome remain ambiguous, durably latch reconciliation, and are never replayed. Exception class names alone are not evidence.
 
-## Current-basket collection blocker (2026-08-14)
+## Authenticated current-basket discovery evidence (2026-08-14)
 
-Anonymous first-party revalidation fetched
-`https://glovoapp.com/en/am/yerevan/stores/rena-restaurant-complex` at
-`2026-08-14T11:44:22Z` (SHA-256
-`cde9030159e69f415df41aa6a22bc7e6d29040117d854847ada341331ec58021`),
-which pins web version `v1.2570.0`, and fetched the still-current basket chunk
-`https://glovoapp.com/_next/static/chunks/86937-d352ebf5782090c3.js` at the
-same second (SHA-256
-`5830b8a8e5a98a9de1233eb165bc771822970d2665cc088c4ccf2a63006af0cc`).
-No authenticated or Glovo API request was made.
+Anonymous public landing and marketplace bundles did not expose a newer authenticated
+basket constant. They therefore do not supersede the reproducibly preserved
+authenticated first-party request version `v1.2569.0`, which remains the exact
+`ORDERING_WEB_VERSION` for Home.10. No authenticated or Glovo API request was made.
 
 Module `52500` establishes the authenticated collection read as exactly
-`GET /v1/authenticated/customers/{customerId}/baskets`, with no query, and
-passes the fetcher's `response.data` directly to `BasketInfoArraySchema`
-(chunk offsets `21218–21396`). Module `80621` defines that root as a bare array,
-not an object envelope (module offset `36413`, array declaration at `39292`).
-Each array member is a basket **summary** requiring:
+`GET /v1/authenticated/customers/{customerId}/baskets`, with no query, and passes the
+fetcher's `response.data` directly to `BasketInfoArraySchema` (chunk offsets
+`21218–21396`). Module `80621` defines that root as a bare array, not an object envelope
+(module offset `36413`, array declaration at `39292`). Each array member is a basket
+summary requiring:
 
-- `basketId`, `basketVersion`, `storeId`, `storeAddressId`, and
-  `storeCategoryId`;
-- `basketItems`, `basketPriceFormatted`, `customerId`, nullable
-  `deliveryFeeInfo`, optional nullable `distance`, nullable `eta`,
-  `handlingStrategy`, `outOfDeliveryArea`, `storeName`, nullish `storeImage`,
-  and `updatedAt`.
+- `basketId`, `basketVersion`, `storeId`, `storeAddressId`, and `storeCategoryId`;
+- `basketItems`, `basketPriceFormatted`, `customerId`, nullable `deliveryFeeInfo`,
+  optional nullable `distance`, nullable `eta`, `handlingStrategy`,
+  `outOfDeliveryArea`, `storeName`, nullish `storeImage`, and `updatedAt`.
 
-The same helper and validator independently distinguish the per-store rich
-read: `GET /v1/authenticated/customers/{customerId}/baskets/stores/{storeId}`
-returns either empty data or one full `BasketSchema` object (helper offset
-`21409`). That is a different route and response cardinality from the bare
-summary collection.
+The same helper and validator independently distinguish the per-store rich read:
+`GET /v1/authenticated/customers/{customerId}/baskets/stores/{storeId}` returns either
+empty data or one full `BasketSchema` object (helper offset `21409`). That is a different
+route and cardinality from the bare summary collection.
 
-This evidence blocks the planned one-call collection adapter. The collection
-validator permits an array of summaries and does not prove a maximum
-cardinality, uniqueness per store, `products`, `basketPrice`, `mbs`, or the
-other fields required to construct and identity-check `RemoteBasketSnapshot`.
-Conversely, treating collection members as rich `BasketSchema` objects would
-contradict the current validator. Safely turning a collection member into a
-snapshot would require a separately approved second per-store or by-ID GET and
-a defined cross-response consistency policy; returning the summary as a
-snapshot would invent provider authority. Therefore no parser/client or
-fixture vectors are added in this change. `ABSENT` versus `ONE(snapshot)`,
-multiple-member handling, and the required one-call/no-retry behavior remain
-unimplementable from the established collection contract without guessing.
+Home.10 implements only the bounded read policy justified by those two routes: one
+collection GET and at most one conditional full per-store GET, with no query, retry,
+polling, fallback, or mutation. The local collection proof is capped at 20 summaries.
+Zero matching summaries yields `ABSENT_VERIFIED`; exactly one identity-consistent full
+basket matching the exact intended products, quantities, and options yields `ADOPTED`;
+multiple matching summaries or a structurally valid different basket yields `CONFLICT`.
+Malformed, oversized, inconsistent, mismatched, or failed reads remain blocked and never
+select a create path.
+
+Authority is account-scoped and cross-administrator serialized. The runtime closed states
+are `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, and `CONFLICT`; `UNKNOWN` is never false
+empty. A separate private Home Assistant Store retains hash-only account/store/intent/
+snapshot evidence and no provider IDs or raw provider projection. Loaded evidence cannot
+restore mutation authority. Every setup/reload invalidates ephemeral context and requires
+fresh provider re-adoption with fresh account/address/store/menu/product handles before
+any basket mutation or paid quote. An ambiguous mutation is never retried.
 
 ## Frozen final-checkout evidence (2026-08-13)
 
@@ -118,17 +122,19 @@ Pending, authentication, `PROCESS_PAYMENT`, malformed data, transport failure, c
 
 ## Safety consequence
 
-Any future release that composes the reviewed production adapter is limited to this policy:
+Any future release operation using the reviewed production adapter is limited to this policy:
 
-1. two fresh, default-off administrator controls (preparation consent and separate paid-checkout consent), each explicitly acknowledged;
-2. a fresh authoritative quote, exact store/items/options/full admin-only ephemeral address/masked saved card/price lines/total/currency/ETA/expiry display, and amount-bound acknowledgement;
-3. durable prepared/dispatching authority before exactly one final POST;
-4. no final POST retry, replay, fallback, speculative completion, cancellation, or payment mutation;
-5. terminal evidence persisted, or all ambiguity latched for manual reconciliation;
-6. at most one explicit known-ID status GET per administrator action, with no polling;
-7. provider identifiers and the full address excluded from public/recovery projections and durable privacy-safe summaries.
+1. migration v6 closes all four gates and requires a fresh default-off administrator re-opt-in;
+2. account-scoped `UNKNOWN`/`ABSENT_VERIFIED`/`ADOPTED`/`CONFLICT` authority with cross-administrator serialization;
+3. fresh read-only provider re-adoption after every setup/reload using one collection GET and at most one conditional per-store full GET before any basket mutation;
+4. a fresh authoritative exact paid quote, separate confirmation, exact store/items/options/full admin-only ephemeral address/masked saved card/price lines/total/currency/ETA/expiry display, and amount-bound acknowledgement;
+5. durable prepared/dispatching authority before exactly one final POST;
+6. no basket or final POST retry, replay, fallback, speculative completion, cancellation, or payment mutation;
+7. terminal evidence persisted, or all ambiguity latched for manual reconciliation;
+8. at most one explicit known-ID status GET per administrator action, with no polling;
+9. provider identifiers and the full address excluded from public/recovery projections, logs, and hash-only basket evidence.
 
-This evidence does **not** establish provider idempotency or authorize a payment. Home.9 only composes the existing strict adapter behind default-off gates; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
+This evidence does **not** establish provider idempotency or authorize a payment. Home.10 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
 
 ## Principal static sources
 

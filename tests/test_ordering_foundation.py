@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -824,8 +825,16 @@ def test_documentation_calls_feature_default_off_admin_only_preparation() -> Non
 def test_manifest_version_and_trust_identity_match_paid_checkout_release() -> None:
     manifest = json.loads((ROOT / "custom_components/glovo/manifest.json").read_text())
     const_source = (ROOT / "custom_components/glovo/const.py").read_text()
-    assert manifest["version"] == "1.1.0+home.9"
-    assert "1.1.0+home.9" in const_source
+    descriptor = (
+        "ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|"
+        "version=1.1.0+home.10|profile=coordinator-source-provenance-v1"
+    )
+    digest = hashlib.sha256(descriptor.encode()).hexdigest()
+    assert digest == "452d7aaf4c2f618154d1ffc8e52661553b4b0365d2eb46fd5fad19b7b6390268"
+    assert manifest["version"] == "1.1.0+home.10"
+    assert descriptor in const_source
+    assert "ha-glovo:1.1.0+home.10:sha256:" in const_source
+    assert digest in const_source
     assert datetime.now(UTC).tzinfo is UTC
 
 

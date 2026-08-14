@@ -1,51 +1,64 @@
 # Guarded live paid-checkout operator runbook
 
-> **Home.9 release policy:** the strict final adapter/request factory is production-composed only behind four fresh literal default-off gates and healthy durable authority. This offline candidate authorizes no deployment, provider call, basket/quote action, checkout, payment, or live test.
+> **Home.10 release policy:** this offline candidate authorizes no deployment, provider call, basket adoption or mutation, quote, checkout, payment, or live test. It makes no provider idempotency claim. Home.8 and Home.9 remain historical unsafe/no-go candidates, not deployable identities.
 
 ## Non-negotiable operating model
 
-1. **Two fresh default-off controls.** Preparation consent and its acknowledgement permit remote basket/template preparation. Separate paid-checkout consent and acknowledgement permit one paid submission. Paid consent implies both preparation controls; migration and reauthentication reset all four values.
-2. **Preparation can change remote state.** Basket and template operations are consequential and are not described as dry-run or idempotent.
-3. **Exact payment authority.** Use only the provider-selected saved card. Immediately before submit, show the exact store, items/quantities/options, admin-only ephemeral full address, masked card, provider price lines, total with ISO currency, ETA, and expiry. Require the exact amount-bound acknowledgement.
-4. **One final POST.** Dispatch `POST /v3/checkouts/order/1` once. Never retry, refresh-and-replay, fall back, or compensate after dispatch.
-5. **No payment continuations.** Never issue checkout completion, checkout/payment cancellation, redirect, capture, wallet, 3DS, split-payment, or other payment mutation.
-6. **Manual ambiguity.** Pending/auth/`PROCESS_PAYMENT`, timeout, cancellation, transport loss, malformed/unknown/contradictory response, exact-identity mismatch, or persistence uncertainty becomes `MANUAL_CHECK_REQUIRED`. Do not place another order.
-7. **Status is explicit and read-only.** If and only if the private journal learned a checkout ID, one administrator action may issue exactly one `GET /v3/checkouts/order/{checkoutId}`. There is no polling. Without an ID, use the provider app.
-8. **Privacy.** Public and recovery projections expose only `hasCheckoutId`, never provider IDs. The full address is admin-only and ephemeral; never put it, credentials, card data, IDs, request bodies, or raw responses in logs, journals, screenshots, issues, or chat.
-9. **Rollback preserves uncertainty.** Disable access, but never clear/retry/overwrite an unresolved attempt. An integrity fault is fail-closed and not normally clearable.
+1. **Fresh default-off consent after migration.** Config-entry migration v6 closes preparation consent/acknowledgement and paid-checkout consent/acknowledgement, even if all four were true in Home.8/Home.9. Preserve unrelated options, then require fresh re-opt-in. Reauthentication also closes all four gates.
+2. **One account authority.** Basket authority is account-scoped and cross-administrator serialized. A second administrator shares the same `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, or `CONFLICT` state and cannot create a parallel writable basket.
+3. **Read before any write.** After setup or reload, runtime state is `UNKNOWN`. Reacquire fresh account/address/store/menu/product context and perform explicit read-only adoption before any basket mutation.
+4. **Bounded discovery.** Adoption issues one collection GET plus at most one conditional full per-store GET. It does not poll, retry, fall back, request a quote, or mutate provider state.
+5. **Closed outcomes.** `ABSENT_VERIFIED` may authorize one separately requested create. Exact `ADOPTED` binds the provider basket to fresh runtime handles. `CONFLICT`, malformed/multiple/mismatched/oversized/inconsistent responses, failed reads, and `UNKNOWN` block mutation.
+6. **Hash-only durability.** The private Home Assistant Store keeps only domain-separated account/store/intent/snapshot hashes and closed metadata. Provider IDs, products, addresses, handles, payloads, credentials, and raw persisted values are forbidden. Loaded evidence requires fresh provider re-adoption and never directly restores write authority.
+7. **No ambiguous retry.** Basket and final-checkout mutations get one attempt. A deterministic rejected replace/delete never becomes create; any ambiguous outcome is durably blocked and is never retried.
+8. **Paid quote and confirmation are separate.** Basket adoption does not authorize a quote. A fresh authoritative exact quote does not authorize checkout until a separate amount/currency-bound confirmation is shown and accepted.
+9. **One final POST.** Dispatch `POST /v3/checkouts/order/1` once. Never refresh-and-replay, fall back, compensate, complete, cancel, redirect, capture, or issue another payment mutation.
+10. **Privacy and rollback.** Public/recovery projections and logs expose no provider IDs. Full addresses remain admin-only and ephemeral. Rollback closes access but preserves every unresolved attempt and integrity block.
 
-## Preflight
+## Preflight for any separately authorized future operation
 
-- [ ] Artifact is release `1.1.0+home.9` with the reviewed trust identity and all release gates green from a clean tracked archive.
-- [ ] Journal and safety state are coherent, with no unresolved/manual/integrity record.
-- [ ] All four gates are false before deployment; enabling paid consent requires a separate named authorization and preparation consent.
-- [ ] Provider app shows no conflicting order or payment.
-- [ ] Selected payment is a saved card and no interactive continuation is anticipated.
-- [ ] Exact quote facts and expiry are visible; operator can manually inspect the provider app immediately.
-- [ ] No private data capture is enabled.
+- [ ] Artifact is exactly `1.1.0+home.10` with canonical trust digest `452d7aaf4c2f618154d1ffc8e52661553b4b0365d2eb46fd5fad19b7b6390268` and clean release gates.
+- [ ] `ORDERING_WEB_VERSION` is `v1.2569.0`; no newer authenticated basket client constant is claimed.
+- [ ] Migration completed at minor v6 and all four gates are false.
+- [ ] Journal, preparation authority, ordering safety state, and basket evidence Store are coherent with no unresolved/manual/integrity fault.
+- [ ] Named administrator performs fresh re-opt-in; paid consent remains separate from preparation consent.
+- [ ] Provider app is available for independent inspection and shows no conflicting order/payment.
+- [ ] No private data capture, debug payload logging, screenshots, or raw response retention is enabled.
 
-## Future no-payment canary (not authorized by this build task)
+## Read-only adoption before basket mutation
 
-Do not perform a live canary, quote request, basket mutation, or final submission as part
-of home.9 offline release preparation. These steps require separate explicit
-authorization.
+1. Start from `UNKNOWN` after every integration/Core setup or reload, even if hash-only `PRESENT_OBSERVED` evidence exists.
+2. Select a fresh saved-address handle, reacquire the exact store and menu, and reconcile the intended products/options with current catalog handles.
+3. Invoke **Adopt current basket** once. Under the account-wide/cross-administrator lock, it performs one collection GET and at most one per-store full GET.
+4. If the result is `ABSENT_VERIFIED`, stop and review before separately invoking a create. If `ADOPTED`, inspect the sanitized basket projection before any replace/delete/quote action.
+5. On `CONFLICT`, `UNKNOWN`, transport error, malformed/oversized/inconsistent response, multiple matching summaries, or context mismatch, stop. Do not mutate, retry, or treat the basket as empty.
+6. Any reload invalidates ephemeral handles and the adopted lease. Repeat fresh provider re-adoption before a later mutation.
 
-Abort on changed identity, stale quote, unexpected mutation, private-data exposure, journal residue, or provider-app conflict.
+## Basket mutation stop rules
 
-## Deliberately authorized one-payment validation (future release only)
+- Preparation can change remote state and is never described as dry-run or provider-idempotent.
+- Exactly one explicit create/replace/delete attempt is allowed under account-wide serialization.
+- After any ambiguous mutation, stop immediately, preserve durable reconciliation authority, inspect the provider app, and never retry.
+- A deterministic rejected replace/delete retains prior knowledge or closes to `UNKNOWN`; it never selects a create path.
+- Another administrator must observe the same block and may not bypass it with a different browser/session.
 
-1. Repeat preflight and obtain explicit human authorization for the displayed store, items/options, full destination, saved card, exact amount, and currency.
-2. Confirm the amount-bound acknowledgement exactly and invoke the paid control once.
-3. If terminal `COMPLETED` exactly matches durable basket/amount/currency, preserve provider-confirmed success evidence. If terminal `FAILED`/`CANCELLED` is schema-valid and non-contradictory, preserve provider-confirmed failure evidence.
-4. For every other result, stop immediately. Do not retry or issue completion/cancellation/payment mutations. Inspect the provider app.
-5. If an ID was learned, the operator may use **Check provider status** once per deliberate action. Pending/malformed/transport/mismatch remains manual. With no learned ID, this action performs no GET.
-6. Disable both consent groups after the validation. Rollback never clears unresolved state.
+## Separate exact quote and confirmation
 
-## Recovery
+1. After a freshly adopted exact basket, request a quote as a separate action. Adoption itself must issue no quote call.
+2. Confirm quote freshness and exact store, items/quantities/options, admin-only ephemeral full destination, masked saved card, provider price lines, total in minor units and ISO currency, ETA, and expiry.
+3. Prepare a separate confirmation bound to the exact quote, amount, currency, generation, runtime epoch, and basket authority.
+4. Any basket/context change, reload, expiry, mismatch, or stale generation invalidates quote and confirmation. Return to read-only adoption; do not reuse prior authority.
+5. A future named operator may submit only after separately authorizing the exact displayed purchase.
 
-- An unresolved preparation write exposes a separate local-observation recovery. It does not issue a provider GET, retry, clear a basket, or submit an order. Record only what was directly observed; `still_unknown` preserves the block.
-- `MANUAL_CHECK_REQUIRED` blocks further ordering across restart, browser, and administrator.
-- Use privacy-safe recovery facts and `hasCheckoutId`; never copy provider IDs into public channels.
-- Provider-confirmed terminal status can durably clear the manual latch only after coherent journal and safety persistence.
-- If either persistence layer fails, retain manual state or enter permanent integrity fault. Do not infer an outcome.
-- Manual administrator resolution requires direct provider-app/account/payment inspection and the existing challenge-bound acknowledgement. `still_unknown` preserves the block.
+## Final checkout and recovery
+
+- Final submission is one `POST /v3/checkouts/order/1` with the exact quoted server projection.
+- `COMPLETED` is accepted only with exact basket, amount, and currency. Non-contradictory terminal `FAILED`/`CANCELLED` is failure. Everything else is manual.
+- Pending/auth/`PROCESS_PAYMENT`, timeout, cancellation, transport loss, malformed/unknown/contradictory data, mismatch, or persistence uncertainty becomes `MANUAL_CHECK_REQUIRED`; do not place another order.
+- If and only if a private checkout ID was learned, each deliberate administrator status action may issue at most one exact GET. There is no polling and no public ID projection.
+- Preparation recovery records only directly observed local evidence and performs no provider GET or replay. `still_unknown` preserves the block.
+- Disable both consent groups after any separately authorized validation. Rollback never clears unresolved or integrity state.
+
+## Current release boundary
+
+Do not deploy, run a canary, perform live read-only adoption, mutate a basket, request a paid quote, confirm checkout, submit payment, or call provider status as part of Home.10 release preparation. Those steps require a separate explicit authorization and are not claimed by this artifact.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -55,6 +56,69 @@ def test_privacy_scanner_allows_public_checkout_operation_but_catches_private_re
     assert "async_execute_live_final" in runtime
 
 
+def test_basket_authority_scanner_enforces_private_store_routes_wiring_and_projection() -> None:
+    script = ROOT / "scripts" / "scan_ordering_privacy.py"
+    spec = importlib.util.spec_from_file_location("ordering_privacy_basket_scan", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    sources = module.load_basket_authority_sources()
+    clean: list[str] = []
+    module.scan_basket_authority_contracts(clean, sources=sources)
+    assert clean == []
+
+    raw_tampered = dict(sources)
+    raw_tampered[module.BASKET_STORE_SOURCE] = raw_tampered[
+        module.BASKET_STORE_SOURCE
+    ].replace(
+        '"observed_at": float(validated.observed_at),',
+        '"observed_at": float(validated.observed_at),\n            "provider_id": "raw-private",',
+        1,
+    )
+    raw_findings: list[str] = []
+    module.scan_basket_authority_contracts(raw_findings, sources=raw_tampered)
+    assert "serialized hash-only basket Store image" in "\n".join(raw_findings)
+
+    tampered = dict(sources)
+    tampered[module.BASKET_STORE_SOURCE] = tampered[module.BASKET_STORE_SOURCE].replace(
+        '"snapshot_digest",', '"basket_id",', 1
+    ).replace(
+        'f"glovo.ordering_basket_authority_v1.{entry_key}"',
+        'f"glovo.public_basket.{entry_key}"',
+        1,
+    )
+    tampered[module.BASKET_DISCOVERY_SOURCE] = tampered[
+        module.BASKET_DISCOVERY_SOURCE
+    ].replace(
+        'root = f"/v1/authenticated/customers/{intent.customer_id}/baskets"',
+        'root = f"/v2/customers/{intent.customer_id}/carts"',
+        1,
+    ).replace(
+        "collection_payload = await self._async_get(root)",
+        "for _attempt in range(2):\n            collection_payload = await self._async_get(root)",
+        1,
+    ) + '\nimport logging\nlogging.getLogger(__name__).info("basket", "private")\n'
+    tampered[module.RUNTIME_SOURCE] = tampered[module.RUNTIME_SOURCE].replace(
+        "discovery_client=RemoteBasketDiscoveryClient(api_session),", "", 1
+    )
+    tampered[module.PUBLIC_SCHEMA_SOURCES[0]] += (
+        '\nLEAK = {"providerId": "private"}\n'
+    )
+    findings: list[str] = []
+    module.scan_basket_authority_contracts(findings, sources=tampered)
+    encoded = "\n".join(findings)
+    for required in (
+        "hash-only basket Store schema",
+        "private basket Store key",
+        "exact basket GET allowlist",
+        "basket discovery retry/polling construct",
+        "basket authority source logging",
+        "basket authority runtime wiring",
+        "public schema exposes provider identifier",
+    ):
+        assert required in encoded
+
+
 def test_release_evidence_composes_guarded_final_seam_without_idempotency_claim() -> None:
     evidence = (ROOT / "docs" / "live-ordering-protocol-evidence.md").read_text(encoding="utf-8")
     assert "productionFinalCheckoutSupported: true" in evidence
@@ -70,6 +134,51 @@ def test_release_evidence_composes_guarded_final_seam_without_idempotency_claim(
         "does **not** establish provider idempotency",
     ):
         assert required in evidence
+
+
+def test_home10_release_identity_basket_evidence_and_no_action_claims_are_frozen() -> None:
+    descriptor = (
+        "ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|"
+        "version=1.1.0+home.10|profile=coordinator-source-provenance-v1"
+    )
+    expected = "452d7aaf4c2f618154d1ffc8e52661553b4b0365d2eb46fd5fad19b7b6390268"
+    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
+    const = (COMPONENT / "const.py").read_text(encoding="utf-8")
+    glovo = (COMPONENT / "glovo.py").read_text(encoding="utf-8")
+    documents = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            ROOT / "README.md",
+            ROOT / "docs/live-ordering-release-checklist.md",
+            ROOT / "docs/live-ordering-operator-runbook.md",
+            ROOT / "docs/live-ordering-protocol-evidence.md",
+        )
+    )
+
+    assert hashlib.sha256(descriptor.encode()).hexdigest() == expected
+    assert manifest["version"] == "1.1.0+home.10"
+    assert descriptor in const and expected in const
+    assert 'ORDERING_WEB_VERSION = "v1.2569.0"' in glovo
+    assert "v1.2570.0" not in documents
+    for required in (
+        "Home.10",
+        "UNKNOWN",
+        "ABSENT_VERIFIED",
+        "ADOPTED",
+        "CONFLICT",
+        "account-scoped",
+        "hash-only",
+        "fresh provider re-adoption",
+        "cross-administrator",
+        "one collection GET",
+        "at most one",
+        "read-only adoption",
+        "fresh re-opt-in",
+        "exact quote",
+        "No deployment",
+        "no provider idempotency",
+    ):
+        assert required.casefold() in documents.casefold()
 
 
 def test_reviewed_final_path_has_no_completion_cancel_payment_mutation_or_retry() -> None:
