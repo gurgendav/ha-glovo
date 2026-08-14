@@ -27,6 +27,52 @@ assert.deepEqual(
   Object.keys(panel._model),
   ["lifecycle", "capability", "context", "menu", "draft", "basket", "payments", "quote", "overlay", "library", "recovery"],
 );
+assert.equal(panel._model.basket.status, "unknown");
+
+// Basket authority is a closed four-state frontend contract. The adoption
+// adapter sends only current opaque handles, whitelists its response, and never
+// retains provider-private identifiers.
+const authorityStatuses = ["unknown", "absent_verified", "adopted", "conflict"];
+for (const status of authorityStatuses) {
+  assert.equal(panel._parseBasketAdoptionResponse({ status }).status, status);
+}
+assert.equal(panel._parseBasketAdoptionResponse({ status: "surprise" }).status, "unknown");
+panel._generation = 41;
+panel._model.context.addressHandle = "address-current";
+panel._model.context.store = { storeHandle: "store-current", isOpen: true, orderingAvailable: true };
+panel._model.draft.lines = [{
+  productHandle: "product-current",
+  label: "Current meal",
+  quantity: 2,
+  unitPriceMinor: 100,
+  currency: "EUR",
+  options: [{ groupHandle: "group-current", optionHandles: ["option-current"], optionLabels: ["Current option"], deltaMinor: 0 }],
+}];
+assert.deepEqual(panel._basketAdoptionRequest(), {
+  generation: 41,
+  addressKey: "address-current",
+  storeHandle: "store-current",
+  products: [{
+    productHandle: "product-current",
+    quantity: 2,
+    options: [{ groupHandle: "group-current", optionHandles: ["option-current"] }],
+  }],
+});
+const privateResponse = panel._parseBasketAdoptionResponse({
+  status: "adopted",
+  revision: 7,
+  itemCount: 2,
+  currency: "EUR",
+  providerTotal: 200,
+  lines: [],
+  providerId: "must-not-survive",
+  checkoutSession: "must-not-survive",
+});
+assert.deepEqual(privateResponse, {
+  status: "adopted",
+  basket: { revision: 7, itemCount: 2, currency: "EUR", providerTotal: 200, linesAvailable: true },
+});
+assert.equal(JSON.stringify(privateResponse).includes("must-not-survive"), false);
 
 assert.equal(panel._normalizeSearch("Crème BRÛLÉE"), "creme brulee");
 panel._model.menu.products = [
@@ -121,11 +167,171 @@ releaseFlight();
 assert.deepEqual(await Promise.all([one, two]), ["done", "done"]);
 assert.equal(panel._singleFlights.size, 0);
 
+// The fresh unknown state is fail-closed. A delegated desktop/mobile action uses
+// the same handler, and one click makes exactly one adoption call with zero
+// provider mutation commands.
+for (const role of ["desktop", "mobile"]) {
+  let delegatedCalls = 0;
+  const delegatedPanel = new Panel();
+  delegatedPanel._adoptBasket = () => { delegatedCalls += 1; };
+  delegatedPanel._onClick({ target: { closest: () => ({ dataset: { action: "adopt-basket", role } }) } });
+  assert.equal(delegatedCalls, 1, `${role} adoption control must use delegated action handling`);
+}
+
+const adoptionPanel = new Panel();
+adoptionPanel._generation = 51;
+adoptionPanel._model.context.addressHandle = "address-adoption";
+adoptionPanel._model.context.store = { storeHandle: "store-adoption", isOpen: true, orderingAvailable: true };
+adoptionPanel._model.draft.lines = [{ productHandle: "product-adoption", label: "Meal", quantity: 1, unitPriceMinor: 450, currency: "EUR", options: [] }];
+adoptionPanel._model.quote = { challenge: "stale-quote" };
+adoptionPanel._confirmation = { kind: "clear-basket" };
+adoptionPanel._renderBasketSurfaces = () => {};
+adoptionPanel._renderAll = () => {};
+adoptionPanel._setLifecycle = () => {};
+const adoptionRequests = [];
+let releaseAdoption;
+const adoptionGate = new Promise((resolveGate) => { releaseAdoption = resolveGate; });
+adoptionPanel._request = async (operation, request) => {
+  adoptionRequests.push({ operation, request });
+  await adoptionGate;
+  return {
+    status: "adopted",
+    revision: 8,
+    itemCount: 1,
+    currency: "EUR",
+    providerTotal: 450,
+    providerId: "private-provider-value",
+  };
+};
+adoptionPanel._onClick({ target: { closest: () => ({ dataset: { action: "adopt-basket", role: "desktop" } }) } });
+await Promise.resolve();
+assert.equal(adoptionRequests.length, 1);
+assert.equal(adoptionRequests[0].operation, "live/basket_adopt");
+assert.deepEqual(adoptionRequests[0].request, {
+  generation: 51,
+  addressKey: "address-adoption",
+  storeHandle: "store-adoption",
+  products: [{ productHandle: "product-adoption", quantity: 1, options: [] }],
+});
+assert.equal(adoptionPanel._model.quote, null, "adoption invalidates quote authority before I/O completes");
+assert.equal(adoptionPanel._confirmation, null, "adoption invalidates pending confirmation before I/O completes");
+releaseAdoption();
+await adoptionPanel._singleFlights.get("basket-adopt");
+assert.equal(adoptionPanel._model.basket.status, "adopted");
+assert.equal(JSON.stringify(adoptionPanel._model).includes("private-provider-value"), false);
+assert.equal(adoptionRequests.filter(({ operation }) => ["live/basket_set", "live/basket_clear", "live/create_quote", "live/execute_checkout"].includes(operation)).length, 0);
+
+// A selection change while adoption is in flight rejects the stale result even
+// if the generation is unchanged.
+const staleAdoptionPanel = new Panel();
+staleAdoptionPanel._generation = 52;
+staleAdoptionPanel._model.context.addressHandle = "address-stale";
+staleAdoptionPanel._model.context.store = { storeHandle: "store-stale", isOpen: true, orderingAvailable: true };
+staleAdoptionPanel._model.draft.lines = [{ productHandle: "product-before", label: "Before", quantity: 1, unitPriceMinor: 100, currency: "EUR", options: [] }];
+staleAdoptionPanel._renderBasketSurfaces = () => {};
+staleAdoptionPanel._renderAll = () => {};
+staleAdoptionPanel._setLifecycle = () => {};
+let releaseStaleAdoption;
+const staleAdoptionGate = new Promise((resolveGate) => { releaseStaleAdoption = resolveGate; });
+staleAdoptionPanel._request = async () => { await staleAdoptionGate; return { status: "adopted", revision: 9, itemCount: 1 }; };
+const staleAdoption = staleAdoptionPanel._adoptBasket();
+await Promise.resolve();
+staleAdoptionPanel._model.draft.lines[0].productHandle = "product-after";
+staleAdoptionPanel._invalidateBasketAdoption();
+releaseStaleAdoption();
+await staleAdoption;
+assert.equal(staleAdoptionPanel._model.basket.status, "unknown");
+assert.equal(staleAdoptionPanel._model.basket.revision, 0);
+
+// Address, store, and draft changes each invalidate basket adoption plus any
+// quote/confirmation authority.
+const boundaryPanel = new Panel();
+boundaryPanel._generation = 55;
+boundaryPanel._renderAll = () => {};
+boundaryPanel._setLifecycle = () => {};
+boundaryPanel._model.basket.status = "adopted";
+boundaryPanel._model.quote = { challenge: "draft-quote" };
+boundaryPanel._confirmation = { kind: "clear-basket" };
+boundaryPanel._draftChanged("Synthetic draft change.");
+assert.equal(boundaryPanel._model.basket.status, "unknown");
+assert.equal(boundaryPanel._model.quote, null);
+assert.equal(boundaryPanel._confirmation, null);
+boundaryPanel._model.basket.status = "adopted";
+boundaryPanel._model.quote = { challenge: "address-quote" };
+boundaryPanel._confirmation = { kind: "clear-basket" };
+boundaryPanel._onChange({ target: { id: "address-select", value: "address-new", selectedOptions: [{ textContent: "New address" }], dataset: {} } });
+assert.equal(boundaryPanel._model.basket.status, "unknown");
+assert.equal(boundaryPanel._model.quote, null);
+assert.equal(boundaryPanel._confirmation, null);
+boundaryPanel._model.context.addressHandle = "address-new";
+boundaryPanel._model.context.store = { storeHandle: "store-old", isOpen: true, orderingAvailable: true };
+boundaryPanel._model.basket.status = "adopted";
+boundaryPanel._model.quote = { challenge: "store-quote" };
+boundaryPanel._confirmation = { kind: "clear-basket" };
+boundaryPanel._request = async () => ({ storeHandle: "store-new", isOpen: true, orderingAvailable: true, products: [] });
+await boundaryPanel._loadStoreMenu({ storeHandle: "store-new", isOpen: true, orderingAvailable: true });
+assert.equal(boundaryPanel._model.basket.status, "unknown");
+assert.equal(boundaryPanel._model.quote, null);
+assert.equal(boundaryPanel._confirmation, null);
+
+// Unknown/conflict block every sync/quote/payment/pay path when methods are
+// invoked directly, not only through disabled controls.
+for (const status of ["unknown", "conflict"]) {
+  const blockedPanel = new Panel();
+  blockedPanel._generation = 53;
+  blockedPanel._model.basket.status = status;
+  blockedPanel._model.context.addressHandle = "address-blocked";
+  blockedPanel._model.context.store = { storeHandle: "store-blocked", isOpen: true, orderingAvailable: true };
+  blockedPanel._model.draft.lines = [{ productHandle: "product-blocked", quantity: 1, options: [] }];
+  blockedPanel._model.payments.selected = "payment-blocked";
+  blockedPanel._model.capability.liveCheckoutAvailable = true;
+  blockedPanel._model.quote = { typed: "ACK", challenge: "challenge", ackText: "ACK" };
+  blockedPanel._ackText = "ACK";
+  blockedPanel._setLifecycle = () => {};
+  let blockedRequests = 0;
+  blockedPanel._request = async () => { blockedRequests += 1; return {}; };
+  await blockedPanel._syncBasket();
+  await blockedPanel._loadPayments();
+  await blockedPanel._createQuote();
+  await blockedPanel._prepareConfirmation();
+  await blockedPanel._submitCheckout();
+  assert.equal(blockedRequests, 0, `${status} must block all mutation/quote/payment calls`);
+}
+
+// An adopted exact selection can quote directly without creating a basket.
+const adoptedQuotePanel = new Panel();
+adoptedQuotePanel._generation = 54;
+adoptedQuotePanel._model.basket.status = "adopted";
+adoptedQuotePanel._model.context.addressHandle = "address-quote";
+adoptedQuotePanel._model.payments.selected = "payment-quote";
+adoptedQuotePanel._setLifecycle = () => {};
+adoptedQuotePanel._renderAll = () => {};
+adoptedQuotePanel._startQuoteExpiry = () => {};
+const adoptedQuoteRequests = [];
+adoptedQuotePanel._request = async (operation, request) => {
+  adoptedQuoteRequests.push({ operation, request });
+  return { purchaseTotalCents: 777, currencyCode: "EUR", items: [] };
+};
+await adoptedQuotePanel._createQuote();
+assert.deepEqual(adoptedQuoteRequests.map(({ operation }) => operation), ["live/create_quote"]);
+assert.equal(adoptedQuoteRequests.some(({ operation }) => operation === "live/basket_set"), false);
+assert.ok(adoptedQuotePanel._model.quote);
+
+// All direct basket-status writes remain inside the closed public state set.
+const directBasketStatuses = [...source.matchAll(/this\._model\.basket(?:\.status\s*=|\s*=\s*\{\s*status:)\s*"([^"]+)"/g)].map((match) => match[1]);
+assert.ok(directBasketStatuses.length > 0);
+assert.deepEqual([...new Set(directBasketStatuses.filter((status) => !authorityStatuses.includes(status)))], []);
+const shellIds = [...source.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+assert.equal(new Set(shellIds).size, shellIds.length, "static shell IDs must be unique");
+const adoptionButtonSource = source.slice(source.indexOf("_basketAdoptionButton(role)"), source.indexOf("_renderBasketInto", source.indexOf("_basketAdoptionButton(role)")));
+assert.equal(adoptionButtonSource.includes(".id ="), false, "responsive adoption controls use delegated roles, not duplicate IDs");
+
 // The paid acknowledgement is bound to exact minor units and currency. Submit
 // itself is single-flight, consumes the challenge before I/O, and is inert while
 // capability is unresolved/false.
 const checkoutPanel = new Panel();
 checkoutPanel._generation = 19;
+checkoutPanel._model.basket.status = "adopted";
 checkoutPanel._model.quote = {
   projection: {
     store: "Synthetic Store",
@@ -266,6 +472,7 @@ authorityPanel._invalidateAuthority = () => {};
 authorityPanel._model.context.addressHandle = "address-current";
 authorityPanel._model.context.store = { storeHandle: "store-current", isOpen: true, orderingAvailable: true };
 authorityPanel._model.draft.lines = [{ productHandle: "product-current", quantity: 1, options: [] }];
+authorityPanel._model.basket.status = "absent_verified";
 let authorityRequests = [];
 authorityPanel._request = async (operation) => {
   authorityRequests.push(operation);
@@ -285,6 +492,7 @@ authorityPanel._handlesIssuedAt = Date.now() - 241000;
 authorityPanel._model.context.addressHandle = "address-expired";
 authorityPanel._model.context.store = { storeHandle: "store-expired", isOpen: true, orderingAvailable: true };
 authorityPanel._model.draft.lines = [{ productHandle: "product-expired", quantity: 1, options: [] }];
+authorityPanel._model.basket.status = "absent_verified";
 authorityRequests = [];
 authorityPanel._request = async (operation) => {
   authorityRequests.push(operation);
@@ -307,6 +515,7 @@ freshPanel._loadPayments = async () => {};
 freshPanel._model.context.addressHandle = "address-fresh";
 freshPanel._model.context.store = { storeHandle: "store-fresh", isOpen: true, orderingAvailable: true };
 freshPanel._model.draft.lines = [{ productHandle: "product-fresh", quantity: 1, options: [] }];
+freshPanel._model.basket.status = "absent_verified";
 const freshRequests = [];
 freshPanel._request = async (operation) => {
   freshRequests.push(operation);
@@ -316,7 +525,7 @@ freshPanel._request = async (operation) => {
 };
 await freshPanel._syncBasket();
 assert.deepEqual(freshRequests, ["state", "live/basket_set"]);
-assert.equal(freshPanel._model.basket.status, "synced");
+assert.equal(freshPanel._model.basket.status, "adopted");
 
 // Saving a multi-line local draft creates an address-independent package and does
 // not mutate the provider basket.
@@ -454,10 +663,14 @@ panel._rendered = false;
 panel._invalidateAuthority = Panel.prototype._invalidateAuthority.bind(panel);
 panel._model.overlay = { type: "customizer" };
 panel._model.quote = { challenge: "memory-only" };
+panel._confirmation = { kind: "clear-basket" };
+panel._model.basket.status = "adopted";
 panel._model.draft.lines = [{ productHandle: "ephemeral", quantity: 1, options: [] }];
 panel._resetEphemeralGeneration("");
 assert.equal(panel._model.overlay, null);
 assert.equal(panel._model.quote, null);
+assert.equal(panel._confirmation, null);
+assert.equal(panel._model.basket.status, "unknown");
 assert.deepEqual(panel._model.draft.lines, []);
 
 console.log("frontend interaction harness: PASS");
