@@ -1247,15 +1247,16 @@ def _products_match(
     return True
 
 
-def parse_remote_basket(
+def _parse_remote_basket(
     payload: object,
     intent: BasketIntent,
     *,
     expected_basket_id: str | None = None,
     expected_basket_version: str | None = None,
     expected_products: tuple[RemoteBasketProduct, ...] | None = None,
+    require_product_match: bool,
 ) -> RemoteBasketSnapshot:
-    """Parse one current rich response and cross-check every order identity."""
+    """Parse one rich response with identity and optional intent matching."""
     if not isinstance(intent, BasketIntent):
         _fail()
     _bounded_payload(payload)
@@ -1292,7 +1293,7 @@ def parse_remote_basket(
         or store_id != intent.store_id
         or store_address_id != intent.store_address_id
         or store_category_id != intent.store_category_id
-        or not _products_match(expected, products)
+        or (require_product_match and not _products_match(expected, products))
         or (
             expected_basket_id is not None
             and basket_id != _opaque_id(expected_basket_id)
@@ -1347,13 +1348,87 @@ def parse_remote_basket(
         store_category_id=store_category_id,
         handling_strategy="DELIVERY",
         products=products,
-        intent_products=expected,
+        intent_products=(
+            expected
+            if require_product_match
+            else tuple(
+                RemoteBasketProduct(
+                    product_id=item.product_id,
+                    external_id=item.external_id,
+                    legacy_id=item.legacy_id,
+                    store_product_id=item.store_product_id,
+                    basket_product_id=item.basket_product_id,
+                    quantity=item.quantity.increments,
+                    customizations=item.customizations,
+                )
+                for item in products
+            )
+        ),
         basket_price=basket_price,
         product_suggestions=suggestions,
         city_code=cast(str | None, city_code),
         is_prime_subscription_simulated=prime,
         using_dh_basket=using_dh_basket,
         provider_projection_bytes=_projection_bytes(projection),
+    )
+
+
+def parse_remote_basket(
+    payload: object,
+    intent: BasketIntent,
+    *,
+    expected_basket_id: str | None = None,
+    expected_basket_version: str | None = None,
+    expected_products: tuple[RemoteBasketProduct, ...] | None = None,
+) -> RemoteBasketSnapshot:
+    """Parse one current rich response and cross-check every order identity."""
+    return _parse_remote_basket(
+        payload,
+        intent,
+        expected_basket_id=expected_basket_id,
+        expected_basket_version=expected_basket_version,
+        expected_products=expected_products,
+        require_product_match=True,
+    )
+
+
+def parse_remote_basket_identity(
+    payload: object,
+    intent: BasketIntent,
+    *,
+    expected_basket_id: str,
+    expected_basket_version: str,
+) -> RemoteBasketSnapshot:
+    """Parse a full basket and bind provider identity, but not selected items.
+
+    This narrow parser supports read-only discovery: a structurally valid basket
+    with different products must be classified as a closed conflict rather than
+    conflated with malformed or cross-store provider data.
+    """
+    return _parse_remote_basket(
+        payload,
+        intent,
+        expected_basket_id=expected_basket_id,
+        expected_basket_version=expected_basket_version,
+        require_product_match=False,
+    )
+
+
+def remote_basket_matches_intent(
+    snapshot: RemoteBasketSnapshot, intent: BasketIntent
+) -> bool:
+    """Return whether a validated snapshot exactly represents an intent."""
+    if not isinstance(snapshot, RemoteBasketSnapshot) or not isinstance(
+        intent, BasketIntent
+    ):
+        _fail()
+    return (
+        snapshot.customer_id == intent.customer_id
+        and snapshot.store_id == intent.store_id
+        and snapshot.store_address_id == intent.store_address_id
+        and snapshot.store_category_id == intent.store_category_id
+        and snapshot.handling_strategy == intent.handling_strategy
+        and _products_match(intent.products, snapshot.products)
     )
 
 
