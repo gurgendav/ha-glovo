@@ -1,11 +1,11 @@
 # Guarded live paid-checkout release checklist
 
-**No deployment or provider call is performed by this checklist.** Home.8 composes the reviewed strict final adapter/request factory only behind all four literal default-off gates and healthy durable authority. Composition is not payment authorization; provider idempotency is not claimed.
+**No deployment or provider call is performed by this checklist.** Home.9 composes the reviewed strict final adapter/request factory only behind all four literal default-off gates and healthy durable authority. Composition is not payment authorization; provider idempotency is not claimed.
 
 ## Repository and release identity
 
 - [ ] Work from a clean tracked candidate; run the explicit staged archive suite and `python scripts/verify_clean_checkout.py` after commit.
-- [ ] Manifest is `1.1.0+home.8`; trust ID matches the documented canonical descriptor.
+- [ ] Manifest is `1.1.0+home.9`; trust ID matches the documented canonical descriptor.
 - [ ] Inspect staged names, stat, and full diff; all intended tests are tracked and no private/credential material is present.
 - [ ] Run focused paid/status/cancellation tests twice and the full suite twice after the last edit.
 - [ ] Run Ruff, compileall, Node syntax, frontend harness, privacy scanner, every release/security verifier, JSON parsing/key parity, and `git diff --check`.
@@ -48,7 +48,7 @@
 - [ ] Verify the [operator runbook](live-ordering-operator-runbook.md) no-payment canary, one-payment authorization, stop criteria, status action, and rollback-preserves-uncertainty procedure.
 - [ ] Any changed source asset, contract, route, schema, action, or continuation requirement blocks release until reviewed.
 
-## Future controlled validation (not authorized by this home.8 build task)
+## Future controlled validation (not authorized by this home.9 build task)
 
 - [ ] Do not deploy, run a live canary, mutate a basket, request a quote, submit checkout, or attempt payment as part of this offline composition task.
 - [ ] A named operator must separately authorize one exact displayed purchase in a future supervised session.

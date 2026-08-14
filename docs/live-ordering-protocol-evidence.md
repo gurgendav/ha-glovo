@@ -1,8 +1,24 @@
 # Reviewed production final-checkout protocol evidence
 
-**Home.8 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation authority is healthy. Defaults, migration, and reauthentication keep all gates false.
+**Home.9 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation authority is healthy. Defaults, migration, and reauthentication keep all gates false.
 
 This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. No authenticated request and no basket, quote, status, checkout, order, completion, cancellation, or payment call was made while collecting or applying this evidence.
+
+## Home.8 supervised preparation stop (2026-08-14)
+
+A separately authorized supervised preparation attempt stopped after one basket-create
+mutation returned deterministic HTTP 400. After the operator manually verified and
+cleared the provider basket, one separately authorized fresh create also returned HTTP
+400. Neither attempt was retried. No quote template, checkout, payment, order, status,
+completion, or cancellation call was made; no active order resulted.
+
+Anonymous first-party revalidation then fetched the current store route (SHA-256
+`4cfa79c2e23bd4e53cf46f1ae48cb186cae75eb8377ec6711da56e98ed59a6c0`) and pinned web
+version `v1.2569.0`. The basket chunk `86937-d352ebf5782090c3.js`, generic header chunk
+`91816-c3afd29330038219.js`, and retry middleware `26219-8c5c0fadda959f4a.js` retained
+their previously reviewed SHA-256 values. Home.9 therefore changes only the literal web
+version used by `Glovo-App-Version` and `Glovo-Client-Info`; it does not infer that this
+alone resolves the provider rejection or authorize another live mutation.
 
 ## Withdrawn home.5 canary (2026-08-13)
 
@@ -67,7 +83,7 @@ Any future release that composes the reviewed production adapter is limited to t
 6. at most one explicit known-ID status GET per administrator action, with no polling;
 7. provider identifiers and the full address excluded from public/recovery projections and durable privacy-safe summaries.
 
-This evidence does **not** establish provider idempotency or authorize a payment. Home.8 only composes the existing strict adapter behind default-off gates; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
+This evidence does **not** establish provider idempotency or authorize a payment. Home.9 only composes the existing strict adapter behind default-off gates; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
 
 ## Principal static sources
 

@@ -146,7 +146,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 API_URL = "https://api.glovoapp.com"
-ORDERING_WEB_VERSION = "v1.2567.1"
+ORDERING_WEB_VERSION = "v1.2569.0"
 _DELIVERY_CONTEXT_KEYS = frozenset(
     {"countryCode", "cityCode", "latitude", "longitude"}
 )

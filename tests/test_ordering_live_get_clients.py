@@ -923,11 +923,11 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
     assert headers["Glovo-Location-City-Code"] == "YRV"
     assert headers["Accept"] == "application/json, text/plain, */*"
     assert headers["Accept-Language"] == headers["Glovo-Language-Code"] == "en"
-    assert headers["Glovo-App-Version"] == "v1.2567.1"
+    assert headers["Glovo-App-Version"] == "v1.2569.0"
     assert headers["Glovo-Api-Version"] == "14"
     assert headers["Glovo-Request-TTL"] == "7500"
     assert headers["Glovo-Client-Info"] == (
-        "web-customer-web-react/v1.2567.1 project:customer-web"
+        "web-customer-web-react/v1.2569.0 project:customer-web"
     )
     assert re.fullmatch(r"glv:device:[0-9a-f-]{36}", headers["Glovo-Device-Urn"])
     assert headers["Glovo-Perseus-Client-Id"] != headers["Glovo-Perseus-Session-Id"]

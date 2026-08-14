@@ -60,9 +60,9 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
-### Guarded live paid checkout in home.8
+### Guarded live paid checkout in home.9
 
-Release `1.1.0+home.8` production-composes the reviewed strict final request factory
+Release `1.1.0+home.9` production-composes the reviewed strict final request factory
 and one-attempt adapter only when fresh preparation and paid-checkout switch/
 acknowledgement pairs are all literally true and durable authority is healthy. All four
 controls default false; migration and reauthentication reset them false. Preparation
@@ -81,6 +81,11 @@ challenge-bound observation; this performs no provider request and never re-subm
 original write. The authority record, exact account binding, and durable generation are
 updated in fail-closed order. Manual paid-checkout recovery remains independently visible
 when both recovery kinds coexist, and no private preparation identity is exposed.
+
+Home.9 updates the pinned first-party web client version used by the authenticated
+location-aware request context from `v1.2567.1` to `v1.2569.0`. The public basket,
+generic header, and retry-middleware chunks were re-fetched with unchanged hashes;
+no basket, quote, or checkout schema was changed by this release.
 
 Release `1.1.0+home.3` was withdrawn after its stop-before-submit canary detected
 provider basket-contract drift. No final checkout was dispatched. This release restores

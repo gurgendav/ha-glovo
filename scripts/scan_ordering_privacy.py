@@ -155,7 +155,7 @@ def scan_capabilities(findings: list[str]) -> None:
         for name, pattern in CAPABILITY_DENYLIST:
             if pattern.search(text):
                 findings.append(f"{path.relative_to(ROOT)}: {name}")
-    # Home.8 must compose the exact reviewed adapter and request factory while
+    # Home.9 must compose the exact reviewed adapter and request factory while
     # retaining the durable final coordinator. Runtime tests prove gate absence.
     runtime_text = {
         path.name: path.read_text(encoding="utf-8")

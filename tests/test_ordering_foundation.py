@@ -824,8 +824,8 @@ def test_documentation_calls_feature_default_off_admin_only_preparation() -> Non
 def test_manifest_version_and_trust_identity_match_paid_checkout_release() -> None:
     manifest = json.loads((ROOT / "custom_components/glovo/manifest.json").read_text())
     const_source = (ROOT / "custom_components/glovo/const.py").read_text()
-    assert manifest["version"] == "1.1.0+home.8"
-    assert "1.1.0+home.8" in const_source
+    assert manifest["version"] == "1.1.0+home.9"
+    assert "1.1.0+home.9" in const_source
     assert datetime.now(UTC).tzinfo is UTC
 
 

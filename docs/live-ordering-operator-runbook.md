@@ -1,6 +1,6 @@
 # Guarded live paid-checkout operator runbook
 
-> **Home.8 release policy:** the strict final adapter/request factory is production-composed only behind four fresh literal default-off gates and healthy durable authority. This offline candidate authorizes no deployment, provider call, basket/quote action, checkout, payment, or live test.
+> **Home.9 release policy:** the strict final adapter/request factory is production-composed only behind four fresh literal default-off gates and healthy durable authority. This offline candidate authorizes no deployment, provider call, basket/quote action, checkout, payment, or live test.
 
 ## Non-negotiable operating model
 
@@ -16,7 +16,7 @@
 
 ## Preflight
 
-- [ ] Artifact is release `1.1.0+home.8` with the reviewed trust identity and all release gates green from a clean tracked archive.
+- [ ] Artifact is release `1.1.0+home.9` with the reviewed trust identity and all release gates green from a clean tracked archive.
 - [ ] Journal and safety state are coherent, with no unresolved/manual/integrity record.
 - [ ] All four gates are false before deployment; enabling paid consent requires a separate named authorization and preparation consent.
 - [ ] Provider app shows no conflicting order or payment.
@@ -27,7 +27,7 @@
 ## Future no-payment canary (not authorized by this build task)
 
 Do not perform a live canary, quote request, basket mutation, or final submission as part
-of home.8 offline release preparation. These steps require separate explicit
+of home.9 offline release preparation. These steps require separate explicit
 authorization.
 
 Abort on changed identity, stale quote, unexpected mutation, private-data exposure, journal residue, or provider-app conflict.
