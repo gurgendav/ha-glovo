@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const panelPath = resolve(process.argv[2] || "custom_components/glovo/frontend/glovo-ordering-panel.js");
 const source = await readFile(panelPath, "utf8");
@@ -10,7 +11,8 @@ const registry = new Map();
 globalThis.HTMLElement = class {
   attachShadow(options) {
     shadowMode = options.mode;
-    return {};
+    this.shadowRoot = { querySelector: () => null };
+    return this.shadowRoot;
   }
 };
 globalThis.customElements = {
@@ -18,11 +20,22 @@ globalThis.customElements = {
   get(name) { return registry.get(name); },
 };
 
-await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+await import(`${pathToFileURL(panelPath).href}?harness=${Date.now()}`);
 const Panel = registry.get("glovo-ordering-panel");
 assert.ok(Panel, "component registered");
 const panel = new Panel();
 assert.equal(shadowMode, "open");
+
+if (process.argv.includes("--emit-adoption-payload")) {
+  const emitPanel = new Panel();
+  emitPanel._generation = 7;
+  emitPanel._model.context.addressHandle = "address-admin-a";
+  emitPanel._model.context.store = { storeHandle: "store-admin-a", isOpen: true, orderingAvailable: true };
+  emitPanel._model.draft.lines = [{ productHandle: "product-admin-a", quantity: 2, options: [] }];
+  process.stdout.write(`${JSON.stringify(emitPanel._basketAdoptionRequest())}\n`);
+  process.exit(0);
+}
+
 assert.deepEqual(
   Object.keys(panel._model),
   ["lifecycle", "capability", "context", "menu", "draft", "basket", "payments", "quote", "overlay", "library", "recovery"],
@@ -50,7 +63,7 @@ panel._model.draft.lines = [{
 }];
 assert.deepEqual(panel._basketAdoptionRequest(), {
   generation: 41,
-  addressKey: "address-current",
+  addressHandle: "address-current",
   storeHandle: "store-current",
   products: [{
     productHandle: "product-current",
@@ -209,7 +222,7 @@ assert.equal(adoptionRequests.length, 1);
 assert.equal(adoptionRequests[0].operation, "live/basket_adopt");
 assert.deepEqual(adoptionRequests[0].request, {
   generation: 51,
-  addressKey: "address-adoption",
+  addressHandle: "address-adoption",
   storeHandle: "store-adoption",
   products: [{ productHandle: "product-adoption", quantity: 1, options: [] }],
 });
@@ -220,6 +233,92 @@ await adoptionPanel._singleFlights.get("basket-adopt");
 assert.equal(adoptionPanel._model.basket.status, "adopted");
 assert.equal(JSON.stringify(adoptionPanel._model).includes("private-provider-value"), false);
 assert.equal(adoptionRequests.filter(({ operation }) => ["live/basket_set", "live/basket_clear", "live/create_quote", "live/execute_checkout"].includes(operation)).length, 0);
+
+// An exact adopted basket remains the immutable replace baseline while local
+// quantity/customization/removal edits alter only the outgoing draft. One
+// explicit update uses the adopted revision and never re-adopts or falls back to
+// create; quote/payment continuation remains blocked until replacement succeeds.
+const replacementPanel = new Panel();
+replacementPanel._generation = 61;
+replacementPanel._runtimeEpoch = "runtime-replacement";
+replacementPanel._handlesIssuedAt = Date.now();
+replacementPanel._model.context.addressHandle = "address-replacement";
+replacementPanel._model.context.store = { storeHandle: "store-replacement", isOpen: true, orderingAvailable: true };
+replacementPanel._model.menu.products = [{
+  productHandle: "product-custom",
+  label: "Custom meal",
+  priceMinor: 500,
+  currency: "EUR",
+  optionGroups: [{
+    groupHandle: "group-sauce",
+    label: "Sauce",
+    min: 1,
+    max: 1,
+    options: [
+      { optionHandle: "option-mild", label: "Mild", priceMinor: 0, currency: "EUR" },
+      { optionHandle: "option-hot", label: "Hot", priceMinor: 25, currency: "EUR" },
+    ],
+  }],
+}];
+replacementPanel._model.draft.lines = [
+  { productHandle: "product-custom", label: "Custom meal", quantity: 1, unitPriceMinor: 500, currency: "EUR", options: [{ groupHandle: "group-sauce", optionHandles: ["option-mild"], optionLabels: ["Mild"], deltaMinor: 0 }] },
+  { productHandle: "product-remove", label: "Remove me", quantity: 1, unitPriceMinor: 100, currency: "EUR", options: [] },
+];
+replacementPanel._renderBasketSurfaces = () => {};
+replacementPanel._renderAll = () => {};
+replacementPanel._setLifecycle = () => {};
+const replacementRequests = [];
+replacementPanel._request = async (operation, request) => {
+  replacementRequests.push({ operation, request });
+  if (operation === "live/basket_adopt") return { status: "adopted", revision: 1, itemCount: 2, currency: "EUR", providerTotal: 600, lines: [] };
+  if (operation === "state") return { generation: 61, runtimeEpoch: "runtime-replacement", liveOrderingAvailable: true };
+  if (operation === "live/basket_set") return { status: "adopted", revision: 2, itemCount: 2, currency: "EUR", providerTotal: 1050, lines: [] };
+  if (operation === "live/payment_methods") return { paymentMethods: [] };
+  throw new Error(`unexpected operation: ${operation}`);
+};
+await replacementPanel._adoptBasket();
+assert.equal(replacementPanel._model.basket.status, "adopted");
+assert.equal(replacementPanel._model.basket.revision, 1);
+replacementRequests.length = 0;
+replacementPanel._model.quote = { challenge: "must-be-discarded" };
+replacementPanel._model.payments = { status: "ready", items: [{ key: "payment-before-edit" }], selected: "payment-before-edit" };
+replacementPanel._confirmation = { kind: "clear-basket" };
+replacementPanel._stepLine("product-custom", 1);
+replacementPanel._model.overlay = {
+  type: "customizer",
+  editing: true,
+  product: replacementPanel._model.menu.products[0],
+  quantity: 2,
+  selections: new Map([["group-sauce", new Set(["option-hot"])]]),
+  errors: new Map(),
+};
+replacementPanel._commitCustomization();
+replacementPanel._removeLine("product-remove");
+assert.equal(replacementPanel._model.basket.status, "adopted");
+assert.equal(replacementPanel._model.basket.revision, 1);
+assert.equal(replacementPanel._model.quote, null);
+assert.equal(replacementPanel._confirmation, null);
+assert.deepEqual(replacementPanel._model.payments, { status: "idle", items: [], selected: "" });
+await replacementPanel._loadPayments();
+await replacementPanel._createQuote();
+assert.deepEqual(replacementRequests, [], "dirty adopted drafts block quote/payment before replacement");
+await replacementPanel._syncBasket();
+assert.deepEqual(replacementRequests.map(({ operation }) => operation), ["state", "live/basket_set", "live/payment_methods"]);
+const replaceRequest = replacementRequests.find(({ operation }) => operation === "live/basket_set").request;
+assert.deepEqual(replaceRequest, {
+  generation: 61,
+  expectedRevision: 1,
+  storeHandle: "store-replacement",
+  addressHandle: "address-replacement",
+  products: [{ productHandle: "product-custom", quantity: 2, options: [{ groupHandle: "group-sauce", optionHandles: ["option-hot"] }] }],
+});
+assert.equal(replacementRequests.filter(({ operation }) => operation === "live/basket_adopt").length, 0);
+assert.equal(replacementRequests.filter(({ operation }) => operation === "live/create_quote").length, 0);
+assert.equal(replacementPanel._model.basket.status, "adopted");
+assert.equal(replacementPanel._model.basket.revision, 2);
+assert.equal(replacementPanel._model.draft.dirty, false);
+assert.equal(replacementPanel._adoptedBasketBaseline.revision, 2);
+assert.deepEqual(replacementPanel._adoptedBasketBaseline.products, replaceRequest.products);
 
 // A selection change while adoption is in flight rejects the stale result even
 // if the generation is unchanged.
@@ -243,19 +342,33 @@ await staleAdoption;
 assert.equal(staleAdoptionPanel._model.basket.status, "unknown");
 assert.equal(staleAdoptionPanel._model.basket.revision, 0);
 
-// Address, store, and draft changes each invalidate basket adoption plus any
-// quote/confirmation authority.
+// Adopted draft edits retain the exact provider baseline while invalidating all
+// draft-derived continuation. Verified absence remains selection-bound.
 const boundaryPanel = new Panel();
 boundaryPanel._generation = 55;
 boundaryPanel._renderAll = () => {};
 boundaryPanel._setLifecycle = () => {};
+boundaryPanel._model.context.addressHandle = "address-boundary";
+boundaryPanel._model.context.store = { storeHandle: "store-boundary", isOpen: true, orderingAvailable: true };
 boundaryPanel._model.basket.status = "adopted";
+boundaryPanel._model.basket.revision = 1;
+boundaryPanel._recordAdoptedBasketBaseline({ generation: 55, addressHandle: "address-boundary", storeHandle: "store-boundary", products: [] }, 1);
+boundaryPanel._model.payments = { status: "ready", items: [{ key: "payment-draft" }], selected: "payment-draft" };
 boundaryPanel._model.quote = { challenge: "draft-quote" };
 boundaryPanel._confirmation = { kind: "clear-basket" };
 boundaryPanel._draftChanged("Synthetic draft change.");
-assert.equal(boundaryPanel._model.basket.status, "unknown");
+assert.equal(boundaryPanel._model.basket.status, "adopted");
+assert.equal(boundaryPanel._model.basket.revision, 1);
+assert.deepEqual(boundaryPanel._model.payments, { status: "idle", items: [], selected: "" });
 assert.equal(boundaryPanel._model.quote, null);
 assert.equal(boundaryPanel._confirmation, null);
+boundaryPanel._model.basket.status = "absent_verified";
+boundaryPanel._model.basket.revision = 0;
+boundaryPanel._draftChanged("Synthetic absence-bound draft change.");
+assert.equal(boundaryPanel._model.basket.status, "unknown");
+assert.equal(boundaryPanel._model.basket.revision, 0);
+
+// Address and store boundaries still discard adoption completely.
 boundaryPanel._model.basket.status = "adopted";
 boundaryPanel._model.quote = { challenge: "address-quote" };
 boundaryPanel._confirmation = { kind: "clear-basket" };

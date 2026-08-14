@@ -8,6 +8,7 @@ class GlovoOrderingPanel extends HTMLElement {
     this._generation = undefined;
     this._runtimeEpoch = undefined;
     this._handlesIssuedAt = 0;
+    this._adoptedBasketBaseline = null;
     this._rendered = false;
   }
 
@@ -327,6 +328,7 @@ class GlovoOrderingPanel extends HTMLElement {
     this._handlesIssuedAt = 0;
     this._closeAllDialogs(false);
     this._invalidateAuthority("");
+    this._adoptedBasketBaseline = null;
     this._model.overlay = null;
     this._confirmation = null;
     this._model.context = { addresses: [], addressHandle: "", addressLabel: "", storeInput: "", stores: [], store: null };
@@ -352,6 +354,7 @@ class GlovoOrderingPanel extends HTMLElement {
     this._beginLatestRead("basket-adopt");
     this._beginLatestRead("payments");
     this._model.basket = { status: "unknown", revision: 0, itemCount: 0, currency: "", providerTotal: null, linesAvailable: true };
+    this._adoptedBasketBaseline = null;
     this._model.payments = { status: "idle", items: [], selected: "" };
     this._invalidateAuthority("");
   }
@@ -800,7 +803,19 @@ class GlovoOrderingPanel extends HTMLElement {
 
   _draftChanged(message) {
     this._model.draft.dirty = true;
-    this._invalidateBasketAdoption(); this._setLifecycle("ready", `${message} Check provider basket for this exact selection before syncing.`); this._renderAll();
+    this._beginLatestRead("basket-adopt");
+    this._beginLatestRead("payments");
+    this._model.payments = { status: "idle", items: [], selected: "" };
+    this._invalidateAuthority("");
+    const retainedAdoption = this._model.basket.status === "adopted" && this._currentAdoptedBasketBaseline() !== null;
+    if (!retainedAdoption) {
+      this._model.basket = { status: "unknown", revision: 0, itemCount: 0, currency: "", providerTotal: null, linesAvailable: true };
+      this._adoptedBasketBaseline = null;
+    }
+    const continuation = retainedAdoption
+      ? "The adopted provider baseline was preserved. Choose Update basket to replace it explicitly."
+      : "Check provider basket for this exact selection before syncing.";
+    this._setLifecycle("ready", `${message} ${continuation}`); this._renderAll();
   }
 
   _draftQuantity() { return this._model.draft.lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0); }
@@ -809,10 +824,34 @@ class GlovoOrderingPanel extends HTMLElement {
     return this._model.draft.lines.map((line) => ({ productHandle: line.productHandle, quantity: line.quantity, options: line.options.map((group) => ({ groupHandle: group.groupHandle, optionHandles: [...group.optionHandles] })) }));
   }
 
+  _copyBasketProducts(products) {
+    return products.map((line) => ({
+      productHandle: line.productHandle,
+      quantity: line.quantity,
+      options: line.options.map((group) => ({ groupHandle: group.groupHandle, optionHandles: [...group.optionHandles] })),
+    }));
+  }
+
+  _recordAdoptedBasketBaseline(request, revision) {
+    this._adoptedBasketBaseline = {
+      generation: request.generation,
+      addressHandle: request.addressHandle,
+      storeHandle: request.storeHandle,
+      products: this._copyBasketProducts(request.products),
+      revision,
+    };
+  }
+
+  _currentAdoptedBasketBaseline() {
+    const baseline = this._adoptedBasketBaseline;
+    if (!baseline || this._model.basket.status !== "adopted" || baseline.generation !== this._generation || baseline.addressHandle !== this._model.context.addressHandle || baseline.storeHandle !== this._model.context.store?.storeHandle || baseline.revision !== this._model.basket.revision) return null;
+    return baseline;
+  }
+
   _basketAdoptionRequest() {
     return {
       ...this._withGeneration(),
-      ["address" + "Key"]: this._model.context.addressHandle,
+      addressHandle: this._model.context.addressHandle,
       storeHandle: this._model.context.store?.storeHandle || "",
       products: this._serializeBasket(),
     };
@@ -833,7 +872,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   _basketAdoptionSignature(request = this._basketAdoptionRequest()) {
-    return JSON.stringify([request.generation, request["address" + "Key"], request.storeHandle, request.products]);
+    return JSON.stringify([request.generation, request.addressHandle, request.storeHandle, request.products]);
   }
 
   _estimatedSubtotal() {
@@ -859,7 +898,9 @@ class GlovoOrderingPanel extends HTMLElement {
     const labels = {
       unknown: "Provider basket unchecked",
       absent_verified: "Provider basket absent · sync enabled once",
-      adopted: `Adopted · Provider-synced${this._model.basket.revision ? ` · revision ${this._model.basket.revision}` : ""}`,
+      adopted: this._model.draft.dirty
+        ? `Adopted baseline · update pending${this._model.basket.revision ? ` · revision ${this._model.basket.revision}` : ""}`
+        : `Adopted · Provider-synced${this._model.basket.revision ? ` · revision ${this._model.basket.revision}` : ""}`,
       conflict: "Provider basket conflict",
     };
     return labels[this._model.basket.status] || labels.unknown;
@@ -881,7 +922,9 @@ class GlovoOrderingPanel extends HTMLElement {
     } else if (this._model.basket.status === "absent_verified") {
       host.append(this._el("p", "success", "No provider basket exists for this exact selection. One explicit sync is enabled."));
     } else if (this._model.basket.status === "adopted") {
-      host.append(this._el("p", "success", "The existing provider basket matches this exact selection. You can continue to an authoritative quote without creating it again."));
+      host.append(this._el("p", "success", this._model.draft.dirty
+        ? "The existing provider basket remains adopted at the exact baseline. Review the changed draft, then choose Update basket for one guarded replacement."
+        : "The existing provider basket matches this exact selection. You can continue to an authoritative quote without creating it again."));
     } else if (this._model.basket.status === "conflict") {
       const warning = this._el("p", "warning", "The provider basket differs from this selection. Clear it in Glovo, then recheck. Sync, quote, and payment are blocked."); warning.setAttribute("role", "alert"); host.append(warning);
     }
@@ -907,10 +950,12 @@ class GlovoOrderingPanel extends HTMLElement {
     const actions = this._el("div", "basket-actions");
     if (this._model.draft.lines.length) actions.append(this._button("Save as package", "new-package"));
     if (this._model.basket.status === "unknown" || this._model.basket.status === "conflict") actions.append(this._basketAdoptionButton(role));
-    const sync = this._button(this._singleFlights.has("basket-sync") ? "Syncing…" : "Sync basket", "sync-basket", "primary"); sync.disabled = !this._model.draft.lines.length || this._model.basket.status !== "absent_verified" || this._singleFlights.has("basket-sync") || !this._model.context.store || !this._model.context.addressHandle || !this._storeAllowsOrdering(); actions.append(sync);
+    const syncable = this._model.basket.status === "absent_verified" || (this._model.basket.status === "adopted" && this._model.draft.dirty);
+    const syncLabel = this._singleFlights.has("basket-sync") ? "Syncing…" : (this._model.basket.status === "adopted" ? "Update basket" : "Sync basket");
+    const sync = this._button(syncLabel, "sync-basket", "primary"); sync.disabled = !this._model.draft.lines.length || !syncable || this._singleFlights.has("basket-sync") || !this._model.context.store || !this._model.context.addressHandle || !this._storeAllowsOrdering(); actions.append(sync);
     if ((this._model.basket.status === "adopted" || this._model.basket.status === "conflict") && (this._model.basket.revision > 0 || this._model.basket.itemCount > 0)) actions.append(this._button("Clear provider basket", "ask-clear-basket", "danger"));
     if (this._model.basket.status === "absent_verified" || this._model.basket.status === "adopted") actions.append(this._basketAdoptionButton(role));
-    if (this._model.basket.status === "adopted" && (this._model.basket.itemCount > 0 || this._draftQuantity() > 0)) {
+    if (this._model.basket.status === "adopted" && !this._model.draft.dirty && (this._model.basket.itemCount > 0 || this._draftQuantity() > 0)) {
       if (this._model.payments.status !== "ready") actions.append(this._button("Load provider-selected card", "load-payments"));
       else {
         const payment = this._el("select"); payment.dataset.role = "payment-select"; payment.setAttribute("aria-label", "Provider-selected masked card");
@@ -938,7 +983,7 @@ class GlovoOrderingPanel extends HTMLElement {
 
   async _adoptBasket() {
     const request = this._basketAdoptionRequest();
-    if (!request.generation || !request["address" + "Key"] || !request.storeHandle) {
+    if (!request.generation || !request.addressHandle || !request.storeHandle) {
       this._setLifecycle("ready", "Choose a current address and store before checking the provider basket. Nothing was submitted.", "warning");
       return;
     }
@@ -948,6 +993,7 @@ class GlovoOrderingPanel extends HTMLElement {
       const signature = this._basketAdoptionSignature(request);
       if (capturedGeneration !== request.generation || signature !== this._basketAdoptionSignature()) return;
       this._model.basket = { status: "unknown", revision: 0, itemCount: 0, currency: "", providerTotal: null, linesAvailable: true };
+      this._adoptedBasketBaseline = null;
       this._model.payments = { status: "idle", items: [], selected: "" };
       this._beginLatestRead("payments");
       this._invalidateAuthority("");
@@ -958,6 +1004,8 @@ class GlovoOrderingPanel extends HTMLElement {
         if (!this._isLatestRead("basket-adopt", token, capturedGeneration) || signature !== this._basketAdoptionSignature()) return;
         const parsed = this._parseBasketAdoptionResponse(response);
         this._applyBasketProjection(parsed.basket, parsed.status);
+        if (parsed.status === "adopted") this._recordAdoptedBasketBaseline(request, this._model.basket.revision);
+        else this._adoptedBasketBaseline = null;
         this._model.draft.dirty = parsed.status !== "adopted";
         this._invalidateAuthority("");
         const messages = {
@@ -971,6 +1019,7 @@ class GlovoOrderingPanel extends HTMLElement {
       } catch (_error) {
         if (!this._isLatestRead("basket-adopt", token, capturedGeneration) || signature !== this._basketAdoptionSignature()) return;
         this._model.basket.status = "unknown";
+        this._adoptedBasketBaseline = null;
         this._setLifecycle("ready", "Provider basket could not be checked. No mutation was attempted; sync, quote, and payment remain blocked.", "error"); this._renderAll();
       }
     });
@@ -1006,21 +1055,31 @@ class GlovoOrderingPanel extends HTMLElement {
 
   async _syncBasket() {
     if (!this._storeAllowsOrdering()) { this._setLifecycle("ready", "The store is closed. Basket synchronization is unavailable and no provider request was sent.", "warning"); return; }
-    if (this._model.basket.status !== "absent_verified") { this._setLifecycle("ready", "Check the provider basket for this exact selection before syncing. No provider mutation was sent.", "warning"); return; }
+    const initialStatus = this._model.basket.status;
+    if (initialStatus !== "absent_verified" && initialStatus !== "adopted") { this._setLifecycle("ready", "Check the provider basket for this exact selection before syncing. No provider mutation was sent.", "warning"); return; }
+    if (initialStatus === "adopted" && this._currentAdoptedBasketBaseline() === null) {
+      this._invalidateBasketAdoption(); this._setLifecycle("ready", "The adopted basket baseline is unavailable or stale. Recheck the provider basket before syncing.", "warning"); this._renderAll(); return;
+    }
     return this._runSingleFlight("basket-sync", async () => {
       if (!await this._basketAuthorityPreflight()) return;
-      if (this._model.basket.status !== "absent_verified") return;
+      const authorityStatus = this._model.basket.status;
+      if (authorityStatus !== "absent_verified" && authorityStatus !== "adopted") return;
+      const baseline = authorityStatus === "adopted" ? this._currentAdoptedBasketBaseline() : null;
+      if (authorityStatus === "adopted" && baseline === null) { this._invalidateBasketAdoption(); this._renderAll(); return; }
       const capturedGeneration = this._generation;
       const products = this._serializeBasket(); const storeHandle = this._model.context.store?.storeHandle; const addressHandle = this._model.context.addressHandle;
       if (!products.length || !storeHandle || !addressHandle) { this._setLifecycle("ready", "Choose an address, store, and at least one item before syncing.", "warning"); return; }
+      const expectedRevision = baseline?.revision ?? 0;
+      const request = { ...this._withGeneration(), expectedRevision, storeHandle, addressHandle, products };
       this._invalidateAuthority(""); this._renderBasketSurfaces();
       try {
-        const basket = await this._request("live/basket_set", { ...this._withGeneration(), expectedRevision: this._model.basket.revision || 0, storeHandle, addressHandle, products });
+        const basket = await this._request("live/basket_set", request);
         if (capturedGeneration !== this._generation) return;
-        this._applyBasketProjection(basket, "adopted"); this._model.draft.dirty = false; this._setLifecycle("ready", "Provider basket synced once and adopted. Provider status and total are authoritative; the catalog estimate is not."); this._renderAll();
+        this._applyBasketProjection(basket, "adopted"); this._recordAdoptedBasketBaseline(request, this._model.basket.revision); this._model.draft.dirty = false; this._setLifecycle("ready", authorityStatus === "adopted" ? "Provider basket replaced once and the new revision was adopted. Provider status and total are authoritative; the catalog estimate is not." : "Provider basket synced once and adopted. Provider status and total are authoritative; the catalog estimate is not."); this._renderAll();
         await this._loadPayments();
       } catch (_error) {
         if (capturedGeneration !== this._generation) return;
+        this._adoptedBasketBaseline = null;
         this._model.basket.status = "conflict";
         this._setLifecycle("ready", "Basket sync outcome is unknown or unconfirmed. The local draft was preserved; clear/recheck manually because this panel will not retry automatically.", "error");
         this._renderAll(); await this._refreshStateAfterMutationFailure();
@@ -1034,9 +1093,9 @@ class GlovoOrderingPanel extends HTMLElement {
     try {
       const basket = await this._request("live/basket", this._withGeneration());
       if (!this._isLatestRead("basket", token, capturedGeneration)) return;
-      const parsed = this._parseBasketAdoptionResponse(basket); this._applyBasketProjection(parsed.basket, parsed.status); this._invalidateAuthority(""); this._renderBasketSurfaces();
+      const parsed = this._parseBasketAdoptionResponse(basket); this._applyBasketProjection(parsed.basket, parsed.status); if (parsed.status !== "adopted") this._adoptedBasketBaseline = null; this._invalidateAuthority(""); this._renderBasketSurfaces();
     } catch (_error) {
-      if (this._isLatestRead("basket", token, capturedGeneration)) { this._model.basket.status = "unknown"; this._setLifecycle("ready", "Provider basket status is unavailable. No mutation was attempted.", "error"); this._renderBasketSurfaces(); }
+      if (this._isLatestRead("basket", token, capturedGeneration)) { this._model.basket.status = "unknown"; this._adoptedBasketBaseline = null; this._setLifecycle("ready", "Provider basket status is unavailable. No mutation was attempted.", "error"); this._renderBasketSurfaces(); }
     }
   }
 
@@ -1061,10 +1120,12 @@ class GlovoOrderingPanel extends HTMLElement {
       try {
         const result = await this._request("live/basket_clear", { ...this._withGeneration(), expectedRevision: this._model.basket.revision });
         if (capturedGeneration !== this._generation) return;
-        this._model.draft = { lines: [], dirty: false }; this._model.basket = { status: "absent_verified", revision: Number.isInteger(result?.revision) ? result.revision : 0, itemCount: 0, currency: "", providerTotal: null, linesAvailable: true };
-        this._model.payments = { status: "idle", items: [], selected: "" }; this._invalidateAuthority(""); this._setLifecycle("ready", "Provider basket cleared after explicit confirmation."); this._renderAll();
+        this._model.draft = { lines: [], dirty: false }; this._model.basket = { status: "unknown", revision: 0, itemCount: 0, currency: "", providerTotal: null, linesAvailable: true };
+        this._adoptedBasketBaseline = null;
+        this._model.payments = { status: "idle", items: [], selected: "" }; this._invalidateAuthority(""); this._setLifecycle("ready", "Provider basket clear completed. Provider absence is not inferred; recheck before any new sync."); this._renderAll();
       } catch (_error) {
         if (capturedGeneration !== this._generation) return;
+        this._adoptedBasketBaseline = null;
         this._model.basket.status = "conflict"; this._setLifecycle("ready", "Basket clear outcome is unknown. This panel will not retry; verify provider state manually.", "error"); this._renderAll(); await this._refreshStateAfterMutationFailure();
       }
     });
@@ -1076,8 +1137,8 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   async _loadPayments() {
-    if (!this._generation || this._model.basket.status !== "adopted") {
-      this._setLifecycle("ready", "Payment loading is blocked until the exact provider basket is adopted.", "warning");
+    if (!this._generation || this._model.basket.status !== "adopted" || this._model.draft.dirty) {
+      this._setLifecycle("ready", "Payment loading is blocked until the exact current draft is provider-synced and adopted.", "warning");
       return;
     }
     const token = this._beginLatestRead("payments"); const capturedGeneration = this._generation; this._model.payments.status = "loading";
@@ -1090,8 +1151,8 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   async _createQuote() {
-    if (this._model.basket.status !== "adopted") {
-      this._setLifecycle("ready", "Authoritative quote is blocked until the exact provider basket is adopted.", "warning");
+    if (this._model.basket.status !== "adopted" || this._model.draft.dirty) {
+      this._setLifecycle("ready", "Authoritative quote is blocked until the exact current draft is provider-synced and adopted.", "warning");
       return;
     }
     return this._runSingleFlight("quote", async () => {
@@ -1120,7 +1181,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   _renderQuoteInto(host) {
-    const model = this._model.quote; if (this._model.basket.status !== "adopted" || !model) return;
+    const model = this._model.quote; if (this._model.basket.status !== "adopted" || this._model.draft.dirty || !model) return;
     const quote = model.projection; const box = this._el("section", "quote-box"); box.append(this._el("h3", "", "Authoritative quote"));
     box.append(this._el("p", "", `Store: ${quote.store || "Unavailable"}`));
     const items = this._el("ul", "confirmation-items");
@@ -1143,7 +1204,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   async _prepareConfirmation() {
-    if (this._model.basket.status !== "adopted" || !this._model.quote) return;
+    if (this._model.basket.status !== "adopted" || this._model.draft.dirty || !this._model.quote) return;
     return this._runSingleFlight("quote-confirmation", async () => {
       const capturedGeneration = this._generation;
       const quote = this._model.quote;
@@ -1160,7 +1221,7 @@ class GlovoOrderingPanel extends HTMLElement {
   }
 
   async _submitCheckout() {
-    if (this._model.basket.status !== "adopted" || this._model.capability.liveCheckoutAvailable !== true || !this._model.quote) return;
+    if (this._model.basket.status !== "adopted" || this._model.draft.dirty || this._model.capability.liveCheckoutAvailable !== true || !this._model.quote) return;
     const typed = this._model.quote.typed;
     if (typed !== this._ackText || !this._model.quote.challenge) { this._setLifecycle("ready", "Type the exact displayed acknowledgement before submitting.", "warning"); return; }
     return this._runSingleFlight("checkout", async () => {
