@@ -49,6 +49,51 @@ The common basket response requires basket/customer/store identities, `products`
 
 Replacement follows the first-party clone-current-basket/change-products PUT behavior. Quantity PATCH is exactly `{handlingStrategy, basketVersion, products:[{basketProductId, quantity}]}`. Whole-basket DELETE is bodyless. A post-dispatch exception is terminal provider rejection only when it carries `category=provider_rejection` and an exact allowlisted status in `{400,401,403,404,405,406,409,410,415,422,429}`. Missing or unapproved status, transport, 5xx, cancellation, malformed/mismatched successful responses, and every other unknown outcome remain ambiguous, durably latch reconciliation, and are never replayed. Exception class names alone are not evidence.
 
+## Current-basket collection blocker (2026-08-14)
+
+Anonymous first-party revalidation fetched
+`https://glovoapp.com/en/am/yerevan/stores/rena-restaurant-complex` at
+`2026-08-14T11:44:22Z` (SHA-256
+`cde9030159e69f415df41aa6a22bc7e6d29040117d854847ada341331ec58021`),
+which pins web version `v1.2570.0`, and fetched the still-current basket chunk
+`https://glovoapp.com/_next/static/chunks/86937-d352ebf5782090c3.js` at the
+same second (SHA-256
+`5830b8a8e5a98a9de1233eb165bc771822970d2665cc088c4ccf2a63006af0cc`).
+No authenticated or Glovo API request was made.
+
+Module `52500` establishes the authenticated collection read as exactly
+`GET /v1/authenticated/customers/{customerId}/baskets`, with no query, and
+passes the fetcher's `response.data` directly to `BasketInfoArraySchema`
+(chunk offsets `21218–21396`). Module `80621` defines that root as a bare array,
+not an object envelope (module offset `36413`, array declaration at `39292`).
+Each array member is a basket **summary** requiring:
+
+- `basketId`, `basketVersion`, `storeId`, `storeAddressId`, and
+  `storeCategoryId`;
+- `basketItems`, `basketPriceFormatted`, `customerId`, nullable
+  `deliveryFeeInfo`, optional nullable `distance`, nullable `eta`,
+  `handlingStrategy`, `outOfDeliveryArea`, `storeName`, nullish `storeImage`,
+  and `updatedAt`.
+
+The same helper and validator independently distinguish the per-store rich
+read: `GET /v1/authenticated/customers/{customerId}/baskets/stores/{storeId}`
+returns either empty data or one full `BasketSchema` object (helper offset
+`21409`). That is a different route and response cardinality from the bare
+summary collection.
+
+This evidence blocks the planned one-call collection adapter. The collection
+validator permits an array of summaries and does not prove a maximum
+cardinality, uniqueness per store, `products`, `basketPrice`, `mbs`, or the
+other fields required to construct and identity-check `RemoteBasketSnapshot`.
+Conversely, treating collection members as rich `BasketSchema` objects would
+contradict the current validator. Safely turning a collection member into a
+snapshot would require a separately approved second per-store or by-ID GET and
+a defined cross-response consistency policy; returning the summary as a
+snapshot would invent provider authority. Therefore no parser/client or
+fixture vectors are added in this change. `ABSENT` versus `ONE(snapshot)`,
+multiple-member handling, and the required one-call/no-retry behavior remain
+unimplementable from the established collection contract without guessing.
+
 ## Frozen final-checkout evidence (2026-08-13)
 
 | Area | Reviewed first-party static evidence | Adapter policy |
