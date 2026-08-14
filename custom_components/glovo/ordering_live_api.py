@@ -10,10 +10,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import secrets
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Final
 
 from .api_session import ApiSessionError, DeliveryLocation
@@ -38,12 +41,13 @@ from .ordering_packages import (
     reconcile_recipe,
     store_digest,
 )
-from .ordering_remote_basket import RemoteBasketClient, RemoteBasketSnapshot
+from .ordering_remote_basket import BasketIntent, RemoteBasketClient, RemoteBasketSnapshot
 
 _LOGGER = logging.getLogger(__name__)
 _DETERMINISTIC_REJECTION_STATUSES: Final = frozenset(
     {400, 401, 403, 404, 405, 406, 409, 410, 415, 422, 429}
 )
+BASKET_AUTHORITY_LEASE_SECONDS: Final = 60.0
 
 
 @contextmanager
@@ -155,6 +159,30 @@ class _BasketState:
     delivery_location: DeliveryLocation = field(repr=False)
 
 
+class _BasketAuthorityMode(Enum):
+    """Closed account-wide knowledge about the one remote basket."""
+
+    UNKNOWN = "UNKNOWN"
+    ABSENT_VERIFIED = "ABSENT_VERIFIED"
+    ADOPTED = "ADOPTED"
+    CONFLICT = "CONFLICT"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _BasketAuthority:
+    """Short-lived account binding; provider and selection identity stay private."""
+
+    mode: _BasketAuthorityMode
+    generation: int | None = None
+    account_digest: str | None = field(default=None, repr=False)
+    intent_fingerprint: str | None = field(default=None, repr=False)
+    selection_fingerprint: str | None = field(default=None, repr=False)
+    store_handle: str | None = field(default=None, repr=False)
+    address_handle: str | None = field(default=None, repr=False)
+    expires_at: float | None = field(default=None, repr=False)
+    state: _BasketState | None = field(default=None, repr=False)
+
+
 @dataclass(slots=True, repr=False)
 class _QuoteState:
     generation: int
@@ -221,6 +249,7 @@ class LiveOrderingFacade:
         preparation_authority: Any | None = None,
         preparation_attempt_source: Any | None = None,
         package_library: PackageLibrary | None = None,
+        basket_authority_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._account = account
         self._catalog = catalog
@@ -236,29 +265,32 @@ class LiveOrderingFacade:
             lambda: f"prep-{secrets.token_hex(16)}"
         )
         self._package_library = package_library
-        self._basket: dict[str, _BasketState] = {}
+        self._basket_authority_clock = basket_authority_clock
+        self._basket_authority = _BasketAuthority(_BasketAuthorityMode.UNKNOWN)
         self._quote: dict[str, _QuoteState] = {}
 
     def invalidate_all(self) -> None:
         """Discard every ephemeral handle/quote/basket on a lifecycle change."""
         self.invalidate_basket_mutation_authority()
         self._account.invalidate()
+        self._selections.invalidate()
 
     def invalidate_preparation_authority(self) -> None:
         """Backward-compatible alias for a basket-changing provider write."""
         self.invalidate_basket_mutation_authority()
 
     def invalidate_basket_mutation_authority(self) -> None:
-        """Discard state that a basket-changing provider write can make stale.
+        """Make account basket knowledge unknown before a provider write.
 
         Saved address/payment bindings are deliberately retained until the quote
         response has been revalidated against the provider; clearing them here
         would turn that mandatory post-template verification into an impossible
-        local lookup. Lifecycle invalidation uses :meth:`invalidate_all`.
+        local lookup. The exact catalog handles used by a successful basket write
+        are also retained for the authority's shorter lease. Lifecycle
+        invalidation uses :meth:`invalidate_all` to clear every handle.
         """
-        self._basket.clear()
+        self._set_basket_unknown()
         self._quote.clear()
-        self._selections.invalidate()
         self._confirmations.invalidate_all()
 
     def invalidate_quote_mutation_authority(self) -> None:
@@ -269,15 +301,214 @@ class LiveOrderingFacade:
         delete that remote basket after quote preparation.
         """
         self._quote.clear()
-        self._selections.invalidate()
         self._confirmations.invalidate_all()
 
     def _owner(self, owner: object) -> str:
         return _handle(owner)
 
-    def _state(self, owner: str, generation: int) -> _BasketState:
-        state = self._basket.get(owner)
-        if state is None or state.generation != generation:
+    def _set_basket_unknown(self) -> None:
+        self._basket_authority = _BasketAuthority(_BasketAuthorityMode.UNKNOWN)
+
+    def _authority_now(self) -> float:
+        try:
+            now = float(self._basket_authority_clock())
+        except (TypeError, ValueError, OverflowError):
+            raise PublicContractError from None
+        if not math.isfinite(now):
+            raise PublicContractError
+        return now
+
+    def _lease_expiry(self) -> float:
+        limits = (
+            BASKET_AUTHORITY_LEASE_SECONDS,
+            getattr(self._account, "selection_ttl_seconds", BASKET_AUTHORITY_LEASE_SECONDS),
+            getattr(self._selections, "selection_ttl_seconds", BASKET_AUTHORITY_LEASE_SECONDS),
+        )
+        try:
+            lease = min(float(value) for value in limits)
+        except (TypeError, ValueError, OverflowError):
+            raise PublicContractError from None
+        now = self._authority_now()
+        expires_at = now + lease
+        if not math.isfinite(lease) or lease <= 0 or not math.isfinite(expires_at):
+            raise PublicContractError
+        return expires_at
+
+    def _active_basket_authority(self, generation: int) -> _BasketAuthority:
+        authority = self._basket_authority
+        if authority.mode is _BasketAuthorityMode.UNKNOWN:
+            raise PublicContractError
+        if authority.generation != generation:
+            self._set_basket_unknown()
+            raise PublicContractError
+        if authority.expires_at is None or self._authority_now() >= authority.expires_at:
+            self._set_basket_unknown()
+            raise PublicContractError
+        return authority
+
+    @classmethod
+    def _selection_fingerprint(
+        cls,
+        *,
+        store_handle: object,
+        address_handle: object,
+        products: object,
+    ) -> str:
+        store = _handle(store_handle)
+        address = _handle(address_handle)
+        parsed = parse_selected_products(products)
+        canonical = [
+            {
+                "productHandle": item.product_handle,
+                "quantity": item.quantity,
+                "options": [
+                    {"groupHandle": group, "optionHandles": list(options)}
+                    for group, options in item.option_groups
+                ],
+            }
+            for item in parsed
+        ]
+        return cls._expectation_hash(
+            "basket_selection",
+            {"storeHandle": store, "addressHandle": address, "products": canonical},
+        )
+
+    @classmethod
+    def _basket_binding(
+        cls,
+        *,
+        generation: object,
+        customer: object,
+        intent: object,
+        store_handle: object,
+        address_handle: object,
+        products: object,
+    ) -> tuple[int, str, str, str, str, str]:
+        current_generation = _generation(generation)
+        if not isinstance(customer, CustomerIdentity) or not isinstance(intent, BasketIntent):
+            raise PublicContractError
+        if str(customer.customer_id) != intent.customer_id:
+            raise PublicContractError
+        store = _handle(store_handle)
+        address = _handle(address_handle)
+        try:
+            current_account = account_digest(customer)
+        except Exception:
+            raise PublicContractError from None
+        return (
+            current_generation,
+            current_account,
+            cls._expectation_hash("basket_intent", intent),
+            cls._selection_fingerprint(
+                store_handle=store, address_handle=address, products=products
+            ),
+            store,
+            address,
+        )
+
+    def _record_basket_absent_verified(
+        self,
+        *,
+        generation: int,
+        customer: CustomerIdentity,
+        intent: BasketIntent,
+        store_handle: str,
+        address_handle: str,
+        products: object,
+    ) -> None:
+        """Install a short exact absence proof supplied by later GET integration."""
+        bound = self._basket_binding(
+            generation=generation,
+            customer=customer,
+            intent=intent,
+            store_handle=store_handle,
+            address_handle=address_handle,
+            products=products,
+        )
+        self._basket_authority = _BasketAuthority(
+            _BasketAuthorityMode.ABSENT_VERIFIED,
+            generation=bound[0],
+            account_digest=bound[1],
+            intent_fingerprint=bound[2],
+            selection_fingerprint=bound[3],
+            store_handle=bound[4],
+            address_handle=bound[5],
+            expires_at=self._lease_expiry(),
+        )
+        self._quote.clear()
+        self._confirmations.invalidate_all()
+
+    def _adopt_basket_snapshot(
+        self,
+        *,
+        generation: int,
+        customer: CustomerIdentity,
+        intent: BasketIntent,
+        state: _BasketState,
+        products: object,
+    ) -> None:
+        """Adopt exactly one verified snapshot without performing provider I/O."""
+        if not isinstance(state, _BasketState) or state.generation != generation:
+            raise PublicContractError
+        bound = self._basket_binding(
+            generation=generation,
+            customer=customer,
+            intent=intent,
+            store_handle=state.store_handle,
+            address_handle=state.address_handle,
+            products=products,
+        )
+        try:
+            expected_handles = tuple(
+                item.product_handle for item in parse_selected_products(products)
+            )
+            state_handles = tuple(line["productHandle"] for line in state.lines)
+        except (KeyError, TypeError, LiveSelectionError):
+            raise PublicContractError from None
+        if state_handles != expected_handles:
+            raise PublicContractError
+        try:
+            snapshot_fingerprint = self._expectation_hash(
+                "basket_intent", state.snapshot.intent()
+            )
+        except Exception:
+            raise PublicContractError from None
+        if snapshot_fingerprint != bound[2]:
+            raise PublicContractError
+        self._basket_authority = _BasketAuthority(
+            _BasketAuthorityMode.ADOPTED,
+            generation=bound[0],
+            account_digest=bound[1],
+            intent_fingerprint=bound[2],
+            selection_fingerprint=bound[3],
+            store_handle=bound[4],
+            address_handle=bound[5],
+            expires_at=self._lease_expiry(),
+            state=state,
+        )
+
+    def _record_basket_conflict(
+        self, *, generation: int, customer: CustomerIdentity
+    ) -> None:
+        """Record non-unique/ambiguous discovery without exposing provider data."""
+        current_generation = _generation(generation)
+        try:
+            current_account = account_digest(customer)
+        except Exception:
+            raise PublicContractError from None
+        self._basket_authority = _BasketAuthority(
+            _BasketAuthorityMode.CONFLICT,
+            generation=current_generation,
+            account_digest=current_account,
+            expires_at=self._lease_expiry(),
+        )
+        self._quote.clear()
+        self._confirmations.invalidate_all()
+
+    def _state(self, generation: int) -> _BasketState:
+        authority = self._active_basket_authority(generation)
+        state = authority.state
+        if authority.mode is not _BasketAuthorityMode.ADOPTED or state is None:
             raise PublicContractError
         return state
 
@@ -439,6 +670,7 @@ class LiveOrderingFacade:
     ) -> AuthoritativeQuote:
         """Consume an exact current confirmation for an injected final seam only."""
         owner = self._owner(owner)
+        self._state(generation)
         state = self._quote.get(owner)
         if state is None or state.generation != generation or not isinstance(challenge, str):
             raise PublicContractError
@@ -666,19 +898,35 @@ class LiveOrderingFacade:
                 menu = await self._catalog.async_menu(store, delivery_address)
                 return self._selections.issue_menu(handle, menu, owner=owner, generation=generation)
             if operation == "live/basket":
-                state = self._basket.get(owner)
+                authority = self._basket_authority
+                if authority.mode is _BasketAuthorityMode.UNKNOWN:
+                    return {"status": "unknown"}
+                authority = self._active_basket_authority(generation)
+                if authority.mode is _BasketAuthorityMode.CONFLICT:
+                    return {"status": "conflict"}
+                if authority.mode is _BasketAuthorityMode.ABSENT_VERIFIED:
+                    result = self._empty_basket_public()
+                    result["status"] = "absent_verified"
+                    return result
+                state = authority.state
                 if state is None:
-                    return self._empty_basket_public()
-                if state.generation != generation:
+                    self._set_basket_unknown()
                     raise PublicContractError
                 return self._basket_public(state)
             if operation == "live/basket_set":
                 with _basket_sync_stage("request"):
                     expected = _revision(request["expectedRevision"])
-                existing = self._basket.get(owner)
-                if existing is not None and (
-                    existing.generation != generation or existing.revision != expected
-                ):
+                authority = self._active_basket_authority(generation)
+                if authority.mode not in {
+                    _BasketAuthorityMode.ABSENT_VERIFIED,
+                    _BasketAuthorityMode.ADOPTED,
+                }:
+                    raise PublicContractError
+                existing = authority.state
+                if authority.mode is _BasketAuthorityMode.ABSENT_VERIFIED:
+                    if existing is not None or expected != 0:
+                        raise PublicContractError
+                elif existing is None or existing.revision != expected:
                     raise PublicContractError
                 with _basket_sync_stage("address"):
                     store_handle = _handle(request["storeHandle"])
@@ -732,33 +980,94 @@ class LiveOrderingFacade:
                         generation=generation,
                         store_handle=store_handle,
                     )
+                bound = self._basket_binding(
+                    generation=generation,
+                    customer=customer,
+                    intent=intent,
+                    store_handle=store_handle,
+                    address_handle=address_handle,
+                    products=request["products"],
+                )
+                if bound[1] != authority.account_digest:
+                    self._set_basket_unknown()
+                    raise PublicContractError
+                if authority.mode is _BasketAuthorityMode.ABSENT_VERIFIED and (
+                    bound[2] != authority.intent_fingerprint
+                    or bound[3] != authority.selection_fingerprint
+                    or bound[4] != authority.store_handle
+                    or bound[5] != authority.address_handle
+                ):
+                    raise PublicContractError
+                if (
+                    authority.mode is _BasketAuthorityMode.ADOPTED
+                    and bound[2] == authority.intent_fingerprint
+                ):
+                    assert existing is not None
+                    rebound = _BasketState(
+                        generation=generation,
+                        revision=existing.revision,
+                        store_handle=store_handle,
+                        address_handle=address_handle,
+                        currency=currency,
+                        store_label=store.name,
+                        lines=tuple(lines),
+                        snapshot=existing.snapshot,
+                        store=store,
+                        address_fingerprint=address_fingerprint,
+                        delivery_location=delivery_location,
+                    )
+                    self._basket_authority = _BasketAuthority(
+                        _BasketAuthorityMode.ADOPTED,
+                        generation=generation,
+                        account_digest=bound[1],
+                        intent_fingerprint=bound[2],
+                        selection_fingerprint=bound[3],
+                        store_handle=bound[4],
+                        address_handle=bound[5],
+                        # A local no-op must never extend provider knowledge.
+                        expires_at=authority.expires_at,
+                        state=rebound,
+                    )
+                    return self._basket_public(rebound)
                 with _basket_sync_stage("fresh_store"):
                     await self._async_require_store_open(store, delivery_address)
-                with _basket_sync_stage("provider_mutation"):
-                    snapshot = await self._async_preparation_mutation(
-                        operation="live/basket_set",
-                        generation=generation,
-                        purpose_name=(
-                            "basket_create" if existing is None else "basket_replace"
-                        ),
-                        expected_category="expected_present",
-                        expected=intent,
-                        invoke=(
-                            (
-                                lambda: self._baskets.async_create(
-                                    intent, delivery_location
+                try:
+                    with _basket_sync_stage("provider_mutation"):
+                        snapshot = await self._async_preparation_mutation(
+                            operation="live/basket_set",
+                            generation=generation,
+                            purpose_name=(
+                                "basket_create" if existing is None else "basket_replace"
+                            ),
+                            expected_category="expected_present",
+                            expected=intent,
+                            invoke=(
+                                (
+                                    lambda: self._baskets.async_create(
+                                        intent, delivery_location
+                                    )
                                 )
-                            )
-                            if existing is None
-                            else (
-                                lambda: self._baskets.async_replace(
-                                    existing.snapshot,
-                                    intent.products,
-                                    delivery_location,
+                                if existing is None
+                                else (
+                                    lambda: self._baskets.async_replace(
+                                        existing.snapshot,
+                                        intent.products,
+                                        delivery_location,
+                                    )
                                 )
-                            )
-                        ),
+                            ),
+                        )
+                except PreparationMutationRejected:
+                    # A closed replace rejection proves the old snapshot survived.
+                    self._basket_authority = (
+                        authority if existing is not None else _BasketAuthority(_BasketAuthorityMode.UNKNOWN)
                     )
+                    raise
+                except BaseException:
+                    # Cancellation, transport/schema ambiguity, and outcome-record
+                    # failure can all mean the provider changed remotely.
+                    self._set_basket_unknown()
+                    raise
                 state = _BasketState(
                     generation=generation,
                     revision=expected + 1,
@@ -772,13 +1081,28 @@ class LiveOrderingFacade:
                     address_fingerprint=address_fingerprint,
                     delivery_location=delivery_location,
                 )
-                self._basket[owner] = state
-                self._quote.pop(owner, None)
-                self._confirmations.invalidate(owner)
+                self._adopt_basket_snapshot(
+                    generation=generation,
+                    customer=customer,
+                    intent=intent,
+                    state=state,
+                    products=request["products"],
+                )
+                self._quote.clear()
+                self._confirmations.invalidate_all()
                 return self._basket_public(state)
             if operation == "live/basket_clear":
-                state = self._state(owner, generation)
+                authority = self._active_basket_authority(generation)
+                state = self._state(generation)
                 if state.revision != _revision(request["expectedRevision"]):
+                    raise PublicContractError
+                customer = await self._account.async_customer()
+                try:
+                    current_account_digest = account_digest(customer)
+                except Exception:
+                    raise PublicContractError from None
+                if current_account_digest != authority.account_digest:
+                    self._set_basket_unknown()
                     raise PublicContractError
                 address = self._account.resolve_address(
                     state.address_handle, owner_key=owner, generation=generation
@@ -794,27 +1118,37 @@ class LiveOrderingFacade:
                     != state.delivery_location
                 ):
                     raise PublicContractError
-                await self._async_preparation_mutation(
-                    operation="live/basket_clear",
-                    generation=generation,
-                    purpose_name="basket_delete",
-                    expected_category="expected_absent",
-                    expected=state.snapshot,
-                    invoke=lambda: self._baskets.async_delete(
-                        state.snapshot,
-                        explicit_user_intent=True,
-                        delivery_location=state.delivery_location,
-                    ),
-                )
-                self._basket.pop(owner, None)
-                self._quote.pop(owner, None)
-                self._confirmations.invalidate(owner)
+                try:
+                    await self._async_preparation_mutation(
+                        operation="live/basket_clear",
+                        generation=generation,
+                        purpose_name="basket_delete",
+                        expected_category="expected_absent",
+                        expected=state.snapshot,
+                        invoke=lambda: self._baskets.async_delete(
+                            state.snapshot,
+                            explicit_user_intent=True,
+                            delivery_location=state.delivery_location,
+                        ),
+                    )
+                except PreparationMutationRejected:
+                    self._basket_authority = authority
+                    raise
+                except BaseException:
+                    self._set_basket_unknown()
+                    raise
+                # A successful delete is not a fresh selection-bound absence
+                # discovery. Require the explicit GET integration hook before a
+                # later create can become enabled.
+                self._set_basket_unknown()
+                self._quote.clear()
+                self._confirmations.invalidate_all()
                 return {"cleared": True, "revision": state.revision + 1}
             if operation == "live/basket_reconcile":
                 # No public ambiguity token or provider state is exposed.
                 return {"status": "unsupported"}
             if operation == "live/payment_methods":
-                state = self._state(owner, generation)
+                state = self._state(generation)
                 address = self._account.resolve_address(
                     state.address_handle, owner_key=owner, generation=generation
                 )
@@ -827,7 +1161,7 @@ class LiveOrderingFacade:
                 methods = await self._account.async_saved_payments(owner_key=owner, generation=generation, amount_minor=minor, currency=state.currency, store_address_id=state.snapshot.store_address_id, client_supports=("CREDIT_CARD",), client_ready=True)
                 return {"paymentMethods": [item.public_dict() for item in methods]}
             if operation == "live/create_quote":
-                state = self._state(owner, generation)
+                state = self._state(generation)
                 address_handle = _handle(request["addressHandle"])
                 payment_handle = _handle(request["paymentHandle"])
                 address = self._account.resolve_address(address_handle, owner_key=owner, generation=generation)
@@ -896,7 +1230,7 @@ class LiveOrderingFacade:
                 state = self._quote.get(owner)
                 if state is None or state.generation != generation:
                     raise PublicContractError
-                basket_state = self._state(owner, generation)
+                basket_state = self._state(generation)
                 address = self._account.resolve_address(
                     basket_state.address_handle,
                     owner_key=owner,
@@ -915,7 +1249,7 @@ class LiveOrderingFacade:
                 state = self._quote.get(owner)
                 if state is None or state.generation != generation:
                     raise PublicContractError
-                basket_state = self._state(owner, generation)
+                basket_state = self._state(generation)
                 address = self._account.resolve_address(
                     basket_state.address_handle,
                     owner_key=owner,

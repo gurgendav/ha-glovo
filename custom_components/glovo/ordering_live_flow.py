@@ -122,6 +122,56 @@ class OrderingLiveFlow:
             if callable(invalidate):
                 invalidate()
 
+    async def _async_install_basket_authority(
+        self, hook_name: str, *, generation: int, values: Mapping[str, Any]
+    ) -> None:
+        """Serialize one transport-free discovery result into the facade core."""
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+            raise LiveFlowUnavailable("live ordering is unavailable")
+        async with self._lock:
+            if (
+                not self._loaded
+                or not self._active
+                or (
+                    self._invalidated_generation is not None
+                    and generation < self._invalidated_generation
+                )
+            ):
+                raise LiveFlowUnavailable("live ordering is unavailable")
+            hook = getattr(self._facade, hook_name, None)
+            if not callable(hook):
+                raise LiveFlowUnavailable("live ordering is unavailable")
+            try:
+                hook(generation=generation, **dict(values))
+            except Exception:
+                raise LiveFlowUnavailable("live ordering is unavailable") from None
+
+    async def _async_record_basket_absent_verified(
+        self, *, generation: int, **values: Any
+    ) -> None:
+        """Install an exact verified-absence binding; performs no discovery itself."""
+        await self._async_install_basket_authority(
+            "_record_basket_absent_verified",
+            generation=generation,
+            values=values,
+        )
+
+    async def _async_adopt_basket_snapshot(
+        self, *, generation: int, **values: Any
+    ) -> None:
+        """Install one exact snapshot binding; performs no provider call itself."""
+        await self._async_install_basket_authority(
+            "_adopt_basket_snapshot", generation=generation, values=values
+        )
+
+    async def _async_record_basket_conflict(
+        self, *, generation: int, **values: Any
+    ) -> None:
+        """Install a closed conflict result; performs no provider call itself."""
+        await self._async_install_basket_authority(
+            "_record_basket_conflict", generation=generation, values=values
+        )
+
     async def async_live_dispatch(
         self, owner_key: str, operation: str, request: Mapping[str, Any]
     ) -> dict[str, Any]:
