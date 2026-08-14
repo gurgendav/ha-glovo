@@ -30,6 +30,7 @@ def modules() -> Generator[dict[str, ModuleType], None, None]:
             "ordering_contracts",
             "api_session",
             "ordering_remote_basket",
+            "ordering_remote_basket_discovery",
             "ordering_live_quote",
             "ordering_account",
             "ordering_live_catalog",
@@ -885,9 +886,26 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
 ) -> None:
     async def scenario() -> None:
         api = modules["ordering_live_api"]
+        discovery = modules["ordering_remote_basket_discovery"]
+        remote = modules["ordering_remote_basket"]
         objects = domain_objects(modules["ordering_contracts"])
         create_calls = 0
         replace_calls = 0
+
+        from test_ordering_remote_basket_quotes import basket_payload, intent_payload
+
+        def intent(quantity: int = 1) -> Any:
+            intent_data = intent_payload()
+            intent_data.update(
+                customerId=99,
+                storeId=11,
+                storeAddressId=12,
+                storeCategoryId=13,
+            )
+            intent_data["products"][0]["quantity"]["increments"] = quantity
+            return remote.parse_basket_intent(intent_data)
+
+        basket_intent = intent()
 
         class Account:
             def resolve_address(self, handle: str, **_kwargs: Any) -> Any:
@@ -908,25 +926,25 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
                 assert handle in {"store-first", "store-fresh"}
                 return objects["store"]
 
-            def capture_selection(self, **_kwargs: Any) -> tuple[Any, ...]:
-                return ((objects["product"], 1, ()),)
+            def capture_selection(self, **kwargs: Any) -> tuple[Any, ...]:
+                return ((objects["product"], kwargs["selections"][0].quantity, ()),)
 
             def safe_lines(
-                self, _captured: Any, product_handles: list[str]
+                self, captured: Any, product_handles: list[str]
             ) -> list[dict[str, Any]]:
                 return [
                     {
                         "productHandle": product_handles[0],
                         "label": "Meal",
-                        "quantity": 1,
+                        "quantity": captured[0][1],
                         "unitPriceMinor": 500,
                         "currency": "AMD",
                         "options": [],
                     }
                 ]
 
-            def compile_intent(self, **_kwargs: Any) -> Any:
-                return SimpleNamespace(products=(SimpleNamespace(quantity=1),))
+            def compile_intent(self, **kwargs: Any) -> Any:
+                return intent(kwargs["selections"][0].quantity)
 
             def product_currency(self, *_args: Any, **_kwargs: Any) -> str:
                 return "AMD"
@@ -934,13 +952,28 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
             def invalidate(self) -> None:
                 return None
 
-        def snapshot(total: int | None) -> Any:
-            return SimpleNamespace(
-                basket_price=SimpleNamespace(minor=total),
-                products=(
-                    SimpleNamespace(quantity=SimpleNamespace(increments=1)),
-                ),
+        def snapshot(total: int | None, *, version: str, quantity: int = 1) -> Any:
+            payload = basket_payload(version=version, quantity=quantity)
+            payload.update(
+                customerId=99,
+                storeId=11,
+                storeAddressId=12,
+                storeCategoryId=13,
             )
+            payload["basketPrice"]["final"]["minor"] = total
+            return remote.parse_remote_basket(payload, intent(quantity))
+
+        class Discovery:
+            calls = 0
+
+            async def async_discover(self, selected: Any) -> Any:
+                self.calls += 1
+                assert selected == basket_intent
+                return discovery.RemoteBasketDiscoveryResult(
+                    discovery.RemoteBasketDiscoveryStatus.ABSENT_VERIFIED
+                )
+
+        discovery_client = Discovery()
 
         class Baskets:
             async def async_create(self, _intent: Any, delivery_location: Any) -> Any:
@@ -952,7 +985,7 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
                     "longitude": "44.513",
                 }
                 create_calls += 1
-                return snapshot(500)
+                return snapshot(500, version="basket-v1")
 
             async def async_replace(
                 self, previous: Any, products: Any, delivery_location: Any
@@ -967,7 +1000,11 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
                 replace_calls += 1
                 assert previous.basket_price.minor == 500
                 assert len(products) == 1
-                return snapshot(None)
+                return snapshot(
+                    None,
+                    version="basket-v2",
+                    quantity=products[0].quantity,
+                )
 
         class Authority:
             loaded = True
@@ -1006,21 +1043,33 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
             confirmations=Confirmations(),
             preparation_authority=Authority(),
             preparation_attempt_source=lambda: "prep-" + "a" * 32,
+            discovery_client=discovery_client,
         )
         empty = await facade.async_dispatch(
             owner="admin-owner",
             operation="live/basket",
             request={"generation": 1},
         )
-        assert empty == {
-            "revision": 0,
-            "storeHandle": "",
-            "storeLabel": "",
-            "itemCount": 0,
-            "currency": "",
-            "providerTotal": None,
-            "lines": [],
-        }
+        assert empty == {"status": "unknown"}
+        adopted_absence = await facade.async_dispatch(
+            owner="admin-owner",
+            operation="live/basket_adopt",
+            request={
+                "generation": 1,
+                "storeHandle": "store-first",
+                "addressHandle": "address-first",
+                "products": [
+                    {
+                        "productHandle": "product-first",
+                        "quantity": 1,
+                        "options": [],
+                    }
+                ],
+            },
+        )
+        assert adopted_absence["status"] == "absent_verified"
+        assert discovery_client.calls == 1
+        assert create_calls == 0
         first = await facade.async_dispatch(
             owner="admin-owner",
             operation="live/basket_set",
@@ -1043,12 +1092,14 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
                 "storeHandle": "store-fresh",
                 "addressHandle": "address-fresh",
                 "products": [
-                    {"productHandle": "product-fresh", "quantity": 1, "options": []}
+                    {"productHandle": "product-fresh", "quantity": 2, "options": []}
                 ],
             },
         )
         assert first["providerTotal"] == 500
+        assert first["status"] == "adopted"
         assert second["providerTotal"] is None
+        assert second["status"] == "adopted"
         assert second["revision"] == 2
         assert second["storeHandle"] == "store-fresh"
         assert second["lines"][0]["productHandle"] == "product-fresh"
@@ -1073,7 +1124,7 @@ def test_basket_replace_accepts_fresh_handles_for_same_private_store_and_address
                     "products": [
                         {
                             "productHandle": "product-fresh",
-                            "quantity": 1,
+                            "quantity": 3,
                             "options": [],
                         }
                     ],

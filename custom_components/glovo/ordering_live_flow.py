@@ -103,6 +103,60 @@ class OrderingLiveFlow:
         except Exception:
             return False
 
+    def _options_snapshot(self) -> dict[str, object] | None:
+        """Copy the exact live option state around one awaited facade call."""
+        try:
+            options = self._options()
+            if not isinstance(options, Mapping):
+                return None
+            return dict(options)
+        except Exception:
+            return None
+
+    def _post_await_dispatch_is_current(
+        self,
+        *,
+        generation: int,
+        invalidated_generation: int | None,
+        options: Mapping[str, object],
+    ) -> bool:
+        """Reject a result if its runtime, generation, or option lease changed."""
+        try:
+            current_options = self._options_snapshot()
+            if (
+                not self._loaded
+                or not self._active
+                or not self._preparation_gate()
+                or self._invalidated_generation != invalidated_generation
+                or (
+                    self._invalidated_generation is not None
+                    and generation < self._invalidated_generation
+                )
+                or current_options is None
+                or current_options != dict(options)
+            ):
+                return False
+            if self._manager is not None and (
+                self._manager.generation != generation
+                or self._manager.enabled is not True
+            ):
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _invalidate_facade_ephemeral_authority(self) -> None:
+        """Best-effort fail-closed invalidation after a stale awaited result."""
+        invalidate = getattr(self._facade, "invalidate_all", None)
+        if not callable(invalidate):
+            return
+        try:
+            invalidate()
+        except Exception:
+            # Facade invalidation clears basket/quote authority before its handle
+            # clients. Never let a secondary cleanup error publish the stale result.
+            pass
+
     async def async_initialize(self) -> None:
         async with self._lock:
             if self._loaded:
@@ -194,6 +248,10 @@ class OrderingLiveFlow:
                 raise LiveFlowUnavailable("live ordering is unavailable")
             if self._invalidated_generation is not None and generation < self._invalidated_generation:
                 raise LiveFlowUnavailable("live ordering is unavailable")
+            entry_options = self._options_snapshot()
+            entry_invalidated_generation = self._invalidated_generation
+            if entry_options is None:
+                raise LiveFlowUnavailable("live ordering is unavailable")
             if operation == "live/execute_checkout":
                 if not self._checkout_gate():
                     raise LiveFlowUnavailable("live checkout is unavailable")
@@ -240,6 +298,13 @@ class OrderingLiveFlow:
             except PublicContractError:
                 raise LiveFlowUnavailable("live ordering is unavailable") from None
             if not isinstance(result, dict):
+                raise LiveFlowUnavailable("live ordering is unavailable")
+            if not self._post_await_dispatch_is_current(
+                generation=generation,
+                invalidated_generation=entry_invalidated_generation,
+                options=entry_options,
+            ):
+                self._invalidate_facade_ephemeral_authority()
                 raise LiveFlowUnavailable("live ordering is unavailable")
             return result
 

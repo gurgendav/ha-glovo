@@ -1051,6 +1051,9 @@ def test_malformed_mutation_response_is_ambiguous_and_reconciliation_is_explicit
     result = run(client.async_reconcile_ambiguous(info.value, expected))
     assert result.snapshot is not None and result.proven is True
     assert [call[0] for call in fixture.calls] == ["POST", "GET"]
+    assert fixture.calls[1][1] == (
+        "/v1/authenticated/customers/42/baskets/stores/71"
+    )
 
 
 def test_reconciliation_mismatch_or_get_failure_stays_ambiguous_and_never_mutates(
@@ -1075,6 +1078,9 @@ def test_reconciliation_mismatch_or_get_failure_stays_ambiguous_and_never_mutate
         with pytest.raises(remote.RemoteBasketAmbiguous):
             run(client.async_reconcile_ambiguous(ambiguity, expected))
         assert [item[0] for item in fixture.calls] == ["GET"]
+        assert fixture.calls[0][1] == (
+            "/v1/authenticated/customers/42/baskets/stores/71"
+        )
 
 
 def test_quote_request_is_exact_private_and_uses_canonical_basket_address_payment(

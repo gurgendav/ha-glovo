@@ -40,8 +40,8 @@ _GET_PATHS: Final = (
     re.compile(r"^/v3/stores/[1-9]\d{0,9}/addresses/[1-9]\d{0,9}/node/store_menu$"),
     re.compile(r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets$"),
     re.compile(
-        r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/"
-        r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        r"^/v1/authenticated/customers/[1-9]\d{0,9}/baskets/stores/"
+        r"[1-9]\d{0,9}$"
     ),
 )
 _MAX_QUERY_ITEMS: Final = 12

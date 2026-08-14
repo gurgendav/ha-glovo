@@ -1673,7 +1673,7 @@ class RemoteBasketClient:
             raise BasketContractError
         path = (
             f"/v1/authenticated/customers/{expected.intent.customer_id}/baskets/"
-            f"{expected.basket_id}"
+            f"stores/{expected.intent.store_id}"
         )
         try:
             payload = await self._session.async_get("basket", path)

@@ -85,6 +85,12 @@ _OPERATION_FIELDS: dict[str, dict[Any, Any]] = {
     },
     "live/payment_methods": {vol.Required("generation"): _strict_positive_int},
     "live/basket": {vol.Required("generation"): _strict_positive_int},
+    "live/basket_adopt": {
+        vol.Required("generation"): _strict_positive_int,
+        vol.Required("addressHandle"): str,
+        vol.Required("storeHandle"): str,
+        vol.Required("products"): vol.All(list, vol.Length(min=1, max=50)),
+    },
     "live/basket_set": {
         vol.Required("generation"): _strict_positive_int,
         vol.Required("expectedRevision"): _strict_nonnegative_int,

@@ -42,6 +42,11 @@ from .ordering_packages import (
     store_digest,
 )
 from .ordering_remote_basket import BasketIntent, RemoteBasketClient, RemoteBasketSnapshot
+from .ordering_remote_basket_discovery import (
+    RemoteBasketDiscoveryClient,
+    RemoteBasketDiscoveryResult,
+    RemoteBasketDiscoveryStatus,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _DETERMINISTIC_REJECTION_STATUSES: Final = frozenset(
@@ -74,7 +79,7 @@ def _basket_sync_stage(name: str):
 
 PUBLIC_OPERATIONS: Final = (
     "state", "live/addresses", "live/stores", "live/store_menu", "live/payment_methods",
-    "live/basket", "live/basket_set", "live/basket_clear", "live/basket_reconcile",
+    "live/basket", "live/basket_adopt", "live/basket_set", "live/basket_clear", "live/basket_reconcile",
     "live/create_quote", "live/prepare_confirmation", "live/execute_checkout", "live/checkout_status",
     "library/list", "library/package_save", "library/package_delete",
     "library/package_prepare",
@@ -88,6 +93,9 @@ OPERATION_REQUEST_FIELDS: Final = {
     "live/store_menu": frozenset({"generation", "storeHandle", "addressHandle"}),
     "live/payment_methods": frozenset({"generation"}),
     "live/basket": frozenset({"generation"}),
+    "live/basket_adopt": frozenset(
+        {"generation", "addressHandle", "storeHandle", "products"}
+    ),
     "live/basket_set": frozenset({"generation", "expectedRevision", "storeHandle", "addressHandle", "products"}),
     "live/basket_clear": frozenset({"generation", "expectedRevision"}),
     "live/basket_reconcile": frozenset({"generation"}),
@@ -250,6 +258,7 @@ class LiveOrderingFacade:
         preparation_attempt_source: Any | None = None,
         package_library: PackageLibrary | None = None,
         basket_authority_clock: Callable[[], float] = time.monotonic,
+        discovery_client: RemoteBasketDiscoveryClient | None = None,
     ) -> None:
         self._account = account
         self._catalog = catalog
@@ -266,6 +275,7 @@ class LiveOrderingFacade:
         )
         self._package_library = package_library
         self._basket_authority_clock = basket_authority_clock
+        self._discovery_client = discovery_client
         self._basket_authority = _BasketAuthority(_BasketAuthorityMode.UNKNOWN)
         self._quote: dict[str, _QuoteState] = {}
 
@@ -525,6 +535,7 @@ class LiveOrderingFacade:
     def _basket_public(state: _BasketState) -> dict[str, Any]:
         provider_total = state.snapshot.basket_price.minor
         return {
+            "status": "adopted",
             "revision": state.revision,
             "storeHandle": state.store_handle,
             "storeLabel": state.store_label,
@@ -913,6 +924,155 @@ class LiveOrderingFacade:
                     self._set_basket_unknown()
                     raise PublicContractError
                 return self._basket_public(state)
+            if operation == "live/basket_adopt":
+                # Adoption is the only operation that can turn fresh/reloaded
+                # UNKNOWN state into provider-backed authority. Invalidate first,
+                # before any fallible local/provider read, so stale or malformed
+                # input can never preserve an older quote or basket proof.
+                self.invalidate_basket_mutation_authority()
+                discovery = self._discovery_client
+                if discovery is None:
+                    raise PublicContractError
+                store_handle = _handle(request["storeHandle"])
+                address_handle = _handle(request["addressHandle"])
+                delivery_address = self._account.resolve_address(
+                    address_handle, owner_key=owner, generation=generation
+                )
+                address_fingerprint = delivery_address.canonical_fingerprint
+                delivery_location = DeliveryLocation(
+                    delivery_address.country_code,
+                    delivery_address.city_code,
+                    delivery_address.latitude,
+                    delivery_address.longitude,
+                )
+                store = self._selections.resolve_store(
+                    store_handle,
+                    owner=owner,
+                    generation=generation,
+                    address_handle=address_handle,
+                )
+                choices = parse_selected_products(request["products"])
+                captured = self._selections.capture_selection(
+                    owner=owner,
+                    generation=generation,
+                    store_handle=store_handle,
+                    selections=choices,
+                )
+                product_handles = [item.product_handle for item in choices]
+                lines = self._selections.safe_lines(captured, product_handles)
+                customer: CustomerIdentity = await self._account.async_customer()
+                intent = self._selections.compile_intent(
+                    owner=owner,
+                    generation=generation,
+                    customer_id=customer.customer_id,
+                    store_handle=store_handle,
+                    selections=choices,
+                )
+                currency = self._selections.product_currency(
+                    choices[0].product_handle,
+                    owner=owner,
+                    generation=generation,
+                    store_handle=store_handle,
+                )
+                await self._async_require_store_open(store, delivery_address)
+                try:
+                    # One discovery call owns its bounded summary/full GET sequence.
+                    # There is no retry, polling, fallback, or mutation here.
+                    discovered = await discovery.async_discover(intent)
+                    if not isinstance(discovered, RemoteBasketDiscoveryResult):
+                        raise PublicContractError
+
+                    # The provider read may outlive local handle leases. Re-resolve
+                    # every caller capability and recompile the exact intent before
+                    # installing its result; stale in-flight results remain UNKNOWN.
+                    current_address = self._account.resolve_address(
+                        address_handle, owner_key=owner, generation=generation
+                    )
+                    current_location = DeliveryLocation(
+                        current_address.country_code,
+                        current_address.city_code,
+                        current_address.latitude,
+                        current_address.longitude,
+                    )
+                    current_store = self._selections.resolve_store(
+                        store_handle,
+                        owner=owner,
+                        generation=generation,
+                        address_handle=address_handle,
+                    )
+                    current_captured = self._selections.capture_selection(
+                        owner=owner,
+                        generation=generation,
+                        store_handle=store_handle,
+                        selections=choices,
+                    )
+                    current_intent = self._selections.compile_intent(
+                        owner=owner,
+                        generation=generation,
+                        customer_id=customer.customer_id,
+                        store_handle=store_handle,
+                        selections=choices,
+                    )
+                    if (
+                        current_address.canonical_fingerprint != address_fingerprint
+                        or current_location != delivery_location
+                        or store_digest(current_store) != store_digest(store)
+                        or current_intent != intent
+                    ):
+                        raise PublicContractError
+                    current_lines = self._selections.safe_lines(
+                        current_captured, product_handles
+                    )
+
+                    if (
+                        discovered.status
+                        is RemoteBasketDiscoveryStatus.ABSENT_VERIFIED
+                    ):
+                        self._record_basket_absent_verified(
+                            generation=generation,
+                            customer=customer,
+                            intent=intent,
+                            store_handle=store_handle,
+                            address_handle=address_handle,
+                            products=request["products"],
+                        )
+                        result = self._empty_basket_public()
+                        result["status"] = "absent_verified"
+                        return result
+                    if discovered.status is RemoteBasketDiscoveryStatus.ADOPTED:
+                        snapshot = discovered.snapshot
+                        if not isinstance(snapshot, RemoteBasketSnapshot):
+                            raise PublicContractError
+                        state = _BasketState(
+                            generation=generation,
+                            revision=1,
+                            store_handle=store_handle,
+                            address_handle=address_handle,
+                            currency=currency,
+                            store_label=current_store.name,
+                            lines=tuple(current_lines),
+                            snapshot=snapshot,
+                            store=current_store,
+                            address_fingerprint=address_fingerprint,
+                            delivery_location=delivery_location,
+                        )
+                        self._adopt_basket_snapshot(
+                            generation=generation,
+                            customer=customer,
+                            intent=intent,
+                            state=state,
+                            products=request["products"],
+                        )
+                        return self._basket_public(state)
+                    if discovered.status is RemoteBasketDiscoveryStatus.CONFLICT:
+                        self._record_basket_conflict(
+                            generation=generation, customer=customer
+                        )
+                        return {"status": "conflict"}
+                    raise PublicContractError
+                except BaseException:
+                    self._set_basket_unknown()
+                    raise
             if operation == "live/basket_set":
                 with _basket_sync_stage("request"):
                     expected = _revision(request["expectedRevision"])

@@ -233,7 +233,7 @@ def test_private_dtos_revalidate_direct_fabrication_and_duplicate_identity(live:
         remote.BasketIntent(1, 2, 3, 4, "DELIVERY", (product, product))
 
     api = live["ordering_live_api"]
-    assert tuple(api.PUBLIC_OPERATIONS) == ("state", "live/addresses", "live/stores", "live/store_menu", "live/payment_methods", "live/basket", "live/basket_set", "live/basket_clear", "live/basket_reconcile", "live/create_quote", "live/prepare_confirmation", "live/execute_checkout", "live/checkout_status", "library/list", "library/package_save", "library/package_delete", "library/package_prepare")
+    assert tuple(api.PUBLIC_OPERATIONS) == ("state", "live/addresses", "live/stores", "live/store_menu", "live/payment_methods", "live/basket", "live/basket_adopt", "live/basket_set", "live/basket_clear", "live/basket_reconcile", "live/create_quote", "live/prepare_confirmation", "live/execute_checkout", "live/checkout_status", "library/list", "library/package_save", "library/package_delete", "library/package_prepare")
     assert api.validate_public_request("live/execute_checkout", {"generation": 1, "challenge": "local", "acknowledged": True})[2] == 1
     for request in ({"generation": 0}, {"generation": True}, {"generation": 1, "challenge": "x", "acknowledged": 1}, {"generation": 1, "challenge": "x", "acknowledged": True, "total": 1}):
         with pytest.raises(api.PublicContractError):

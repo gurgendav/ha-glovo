@@ -170,7 +170,7 @@ def test_public_operation_names_match_frozen_facade_contract(
     source = (ROOT / "custom_components" / "glovo" / "ordering_live_api.py").read_text(encoding="utf-8")
     frozen = {
         "state", "live/addresses", "live/stores", "live/store_menu", "live/payment_methods",
-        "live/basket", "live/basket_set", "live/basket_clear", "live/basket_reconcile",
+        "live/basket", "live/basket_adopt", "live/basket_set", "live/basket_clear", "live/basket_reconcile",
         "live/create_quote", "live/prepare_confirmation", "live/execute_checkout", "live/checkout_status",
         "library/list", "library/package_save", "library/package_delete",
         "library/package_prepare",

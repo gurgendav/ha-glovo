@@ -25,6 +25,7 @@ PUBLIC_OPERATION_COMMANDS: dict[str, str] = {
     "live/store_menu": "glovo/ordering/live/store_menu",
     "live/payment_methods": "glovo/ordering/live/payment_methods",
     "live/basket": "glovo/ordering/live/basket",
+    "live/basket_adopt": "glovo/ordering/live/basket_adopt",
     "live/basket_set": "glovo/ordering/live/basket_set",
     "live/basket_clear": "glovo/ordering/live/basket_clear",
     "live/basket_reconcile": "glovo/ordering/live/basket_reconcile",

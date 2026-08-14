@@ -41,6 +41,7 @@ from .ordering_packages import (
     PackageLibraryError,
 )
 from .ordering_remote_basket import RemoteBasketClient
+from .ordering_remote_basket_discovery import RemoteBasketDiscoveryClient
 from .ordering_state import (
     DurableOrderingState,
     HomeAssistantOrderingStateStorage,
@@ -184,6 +185,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlovoConfigEntry) -> boo
             confirmations=confirmations,
             preparation_authority=preparation_authority,
             package_library=package_library,
+            discovery_client=RemoteBasketDiscoveryClient(api_session),
         )
         facade_ref["facade"] = facade
 

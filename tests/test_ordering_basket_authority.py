@@ -21,6 +21,7 @@ MODULES = (
     "ordering_contracts",
     "api_session",
     "ordering_remote_basket",
+    "ordering_remote_basket_discovery",
     "ordering_live_quote",
     "ordering_account",
     "ordering_live_catalog",
@@ -78,6 +79,7 @@ class Harness:
         self.modules = modules
         self.api = modules["ordering_live_api"]
         self.remote = modules["ordering_remote_basket"]
+        self.discovery_module = modules["ordering_remote_basket_discovery"]
         self.contracts = modules["ordering_contracts"]
         self.clock = Clock()
         self.customer = self.contracts.CustomerIdentity(42)
@@ -93,6 +95,12 @@ class Harness:
         self.next_create: BaseException | None = None
         self.next_replace: BaseException | None = None
         self.next_delete: BaseException | None = None
+        self.discovery_calls: list[Any] = []
+        self.discovery_entered: asyncio.Event | None = None
+        self.discovery_release: asyncio.Event | None = None
+        self.next_discovery: Any = self.discovery_module.RemoteBasketDiscoveryResult(
+            self.discovery_module.RemoteBasketDiscoveryStatus.ABSENT_VERIFIED
+        )
         harness = self
 
         class Account:
@@ -192,6 +200,18 @@ class Harness:
             async def async_record_outcome(self, **_kwargs: Any) -> None:
                 return None
 
+        class Discovery:
+            async def async_discover(self, intent: Any) -> Any:
+                harness.discovery_calls.append(intent)
+                if harness.discovery_entered is not None:
+                    harness.discovery_entered.set()
+                if harness.discovery_release is not None:
+                    await harness.discovery_release.wait()
+                result = harness.next_discovery
+                if isinstance(result, BaseException):
+                    raise result
+                return result
+
         class Confirmations:
             def invalidate(self, _owner: str) -> None:
                 return None
@@ -209,6 +229,7 @@ class Harness:
             preparation_authority=PreparationAuthority(),
             preparation_attempt_source=lambda: "prep-" + "a" * 32,
             basket_authority_clock=self.clock,
+            discovery_client=Discovery(),
         )
 
     def intent(self, quantity: int = 2) -> Any:
@@ -234,6 +255,14 @@ class Harness:
         return {
             "generation": 7,
             "expectedRevision": revision,
+            "storeHandle": f"store-{owner}",
+            "addressHandle": f"address-{owner}",
+            "products": self.products(owner, quantity),
+        }
+
+    def adopt_request(self, owner: str, quantity: int = 2) -> dict[str, Any]:
+        return {
+            "generation": 7,
             "storeHandle": f"store-{owner}",
             "addressHandle": f"address-{owner}",
             "products": self.products(owner, quantity),
@@ -320,6 +349,138 @@ def test_fresh_facade_is_unknown_and_all_spend_prerequisites_fail_closed(
             harness.facade.async_consume_final_quote(
                 owner="admin-a", generation=7, challenge="challenge"
             )
+        assert (harness.create_calls, harness.replace_calls, harness.delete_calls) == (
+            0,
+            0,
+            0,
+        )
+
+    run(scenario())
+
+
+def test_public_adoption_installs_each_closed_outcome_and_never_mutates(
+    harness: Harness,
+) -> None:
+    async def scenario() -> None:
+        absent = await harness.facade.async_dispatch(
+            owner="admin-a",
+            operation="live/basket_adopt",
+            request=harness.adopt_request("admin-a"),
+        )
+        assert absent["status"] == "absent_verified"
+        assert len(harness.discovery_calls) == 1
+        assert (harness.create_calls, harness.replace_calls, harness.delete_calls) == (
+            0,
+            0,
+            0,
+        )
+
+        harness.next_discovery = harness.discovery_module.RemoteBasketDiscoveryResult(
+            harness.discovery_module.RemoteBasketDiscoveryStatus.ADOPTED,
+            harness.snapshot(),
+        )
+        adopted = await harness.facade.async_dispatch(
+            owner="admin-b",
+            operation="live/basket_adopt",
+            request=harness.adopt_request("admin-b"),
+        )
+        assert adopted["status"] == "adopted"
+        assert adopted["revision"] == 1
+        assert adopted["storeHandle"] == "store-admin-b"
+        assert adopted["lines"][0]["productHandle"] == "product-admin-b"
+
+        harness.next_discovery = harness.discovery_module.RemoteBasketDiscoveryResult(
+            harness.discovery_module.RemoteBasketDiscoveryStatus.CONFLICT
+        )
+        conflict = await harness.facade.async_dispatch(
+            owner="admin-a",
+            operation="live/basket_adopt",
+            request=harness.adopt_request("admin-a"),
+        )
+        assert conflict == {"status": "conflict"}
+        assert len(harness.discovery_calls) == 3
+        assert (harness.create_calls, harness.replace_calls, harness.delete_calls) == (
+            0,
+            0,
+            0,
+        )
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("private transport detail"), asyncio.CancelledError()],
+)
+def test_public_adoption_error_or_cancellation_leaves_unknown_without_mutation(
+    harness: Harness, failure: BaseException
+) -> None:
+    async def scenario() -> None:
+        harness.adopt()
+        harness.next_discovery = failure
+        expected = (
+            asyncio.CancelledError
+            if isinstance(failure, asyncio.CancelledError)
+            else harness.api.PublicContractError
+        )
+        with pytest.raises(expected):
+            await harness.facade.async_dispatch(
+                owner="admin-a",
+                operation="live/basket_adopt",
+                request=harness.adopt_request("admin-a"),
+            )
+        assert (
+            harness.facade._basket_authority.mode
+            is harness.api._BasketAuthorityMode.UNKNOWN
+        )
+        assert len(harness.discovery_calls) == 1
+        assert (harness.create_calls, harness.replace_calls, harness.delete_calls) == (
+            0,
+            0,
+            0,
+        )
+
+    run(scenario())
+
+
+def test_live_flow_rejects_adoption_if_options_change_while_discovery_is_blocked(
+    modules: dict[str, ModuleType], harness: Harness
+) -> None:
+    async def scenario() -> None:
+        prep = modules["ordering_prep_authority"]
+        authority = prep.PreparationMutationAuthority(
+            prep.MemoryPreparationStorage(), clock=harness.clock
+        )
+        options: dict[str, object] = {
+            "allow_ordering": True,
+            "ordering_acknowledged": True,
+            "scan_interval": 15,
+        }
+        flow = modules["ordering_live_flow"].OrderingLiveFlow(
+            facade=harness.facade,
+            preparation_authority=authority,
+            live_options=lambda: options,
+        )
+        await flow.async_initialize()
+        harness.discovery_entered = asyncio.Event()
+        harness.discovery_release = asyncio.Event()
+
+        adoption = asyncio.create_task(
+            flow.async_live_dispatch(
+                "admin-a", "live/basket_adopt", harness.adopt_request("admin-a")
+            )
+        )
+        await harness.discovery_entered.wait()
+        options["scan_interval"] = 30
+        harness.discovery_release.set()
+
+        with pytest.raises(modules["ordering_live_flow"].LiveFlowUnavailable):
+            await adoption
+        assert (
+            harness.facade._basket_authority.mode
+            is harness.api._BasketAuthorityMode.UNKNOWN
+        )
+        assert len(harness.discovery_calls) == 1
         assert (harness.create_calls, harness.replace_calls, harness.delete_calls) == (
             0,
             0,

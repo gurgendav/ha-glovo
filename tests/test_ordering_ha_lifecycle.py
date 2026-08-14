@@ -295,6 +295,7 @@ def ha_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         "ordering_account",
         "ordering_live_catalog",
         "ordering_remote_basket",
+        "ordering_remote_basket_discovery",
         "ordering_live_quote",
         "ordering_live_checkout",
         "ordering_live_selection",
@@ -698,6 +699,55 @@ def test_entry_lifecycle_live_gate_panel_and_retained_websocket_shell(
     non_admin = runtime.Connection(admin=False)
     run(state_shell(hass, non_admin, {"id": 2, "type": "glovo/ordering/state"}))
     assert non_admin.errors[0][1] == "admin_required"
+
+    adopt_shell = _command_map(runtime)["glovo/ordering/live/basket_adopt"]
+    denied_adopt = runtime.Connection(admin=False)
+    run(
+        adopt_shell(
+            hass,
+            denied_adopt,
+            {
+                "id": 20,
+                "type": "glovo/ordering/live/basket_adopt",
+                "generation": generation,
+                "addressHandle": "address-local",
+                "storeHandle": "store-local",
+                "products": [
+                    {"productHandle": "product-local", "quantity": 1, "options": []}
+                ],
+            },
+        )
+    )
+    assert denied_adopt.errors[0][1] == "admin_required"
+    for invalid_payload in (
+        {
+            "generation": generation,
+            "addressKey": "address-local",
+            "storeHandle": "store-local",
+            "products": [],
+        },
+        {
+            "generation": generation,
+            "addressHandle": "address-local",
+            "storeHandle": "store-local",
+            "products": [],
+            "providerId": "provider-private-value",
+        },
+    ):
+        rejected = runtime.Connection(admin=True)
+        run(
+            adopt_shell(
+                hass,
+                rejected,
+                {
+                    "id": 21,
+                    "type": "glovo/ordering/live/basket_adopt",
+                    **invalid_payload,
+                },
+            )
+        )
+        assert rejected.errors == [(21, "invalid_format", "Invalid message format")]
+        assert "provider-private-value" not in repr(rejected.errors)
 
     # Options mutate before the update listener/reload: the retained active handler
     # reads entry.options live and rejects immediately.
@@ -1612,9 +1662,11 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
             store_payload(),
             store_payload(),
             store_payload(),
+            store_payload(),
         ],
         "/v4/stores/71/addresses/81/content/main": [menu_payload()],
-        "/v3/me": [{"id": 42}],
+        "/v3/me": [{"id": 42}, {"id": 42}],
+        "/v1/authenticated/customers/42/baskets": [[]],
         "/v4/payment_methods": [payment_payload(), payment_payload()],
     }
     mutation_responses = [basket_payload(), quote_response()]
@@ -1695,6 +1747,34 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         },
     ).results[0][1]
     product = menu["products"][0]
+    assert _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/basket",
+        {"type": "glovo/ordering/live/basket", "generation": generation},
+    ).results[0][1] == {"status": "unknown"}
+    selection = [
+        {
+            "productHandle": product["productHandle"],
+            "quantity": 2,
+            "options": [],
+        }
+    ]
+    adoption_response = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/basket_adopt",
+        {
+            "type": "glovo/ordering/live/basket_adopt",
+            "generation": generation,
+            "storeHandle": stores[0]["storeHandle"],
+            "addressHandle": addresses[0]["key"],
+            "products": selection,
+        },
+    )
+    assert adoption_response.errors == [], ledger
+    assert adoption_response.results[0][1]["status"] == "absent_verified"
+    assert not [item for item in ledger if item[0] != "GET"]
     basket_response = _call_ws(
         ha_runtime,
         hass,
@@ -1747,6 +1827,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
     ).results[0][1]
     assert "glovo/ordering/live/execute_checkout" not in _command_map(ha_runtime)
     assert basket["revision"] == 1
+    assert basket["status"] == "adopted"
     assert quote["purchaseTotalCents"] == 560000
     assert basket_after_quote == basket
     assert prepared["challenge"]
@@ -1754,6 +1835,9 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         ("GET", "/customer_profile/api/v1/address_book/me/addresses"),
         ("GET", "/v3/stores/fixture-kitchen"),
         ("GET", "/v4/stores/71/addresses/81/content/main"),
+        ("GET", "/v3/me"),
+        ("GET", "/v3/stores/fixture-kitchen"),
+        ("GET", "/v1/authenticated/customers/42/baskets"),
         ("GET", "/v3/me"),
         ("GET", "/v3/stores/fixture-kitchen"),
         ("POST", "/v1/authenticated/customers/42/baskets"),
@@ -1771,8 +1855,8 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         "latitude": "40.177",
         "longitude": "44.513",
     }
-    assert location_contexts == [expected_location] * 8
-    assert ledger[5][2] == {} and ledger[9][2] == {}
+    assert location_contexts == [expected_location] * 9
+    assert ledger[8][2] == {} and ledger[12][2] == {}
     runtime = entry.runtime_data
     assert runtime.ordering_runtime.live_checkout_available is False
 
