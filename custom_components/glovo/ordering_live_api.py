@@ -48,6 +48,7 @@ from .ordering_packages import (
 from .ordering_remote_basket import BasketIntent, RemoteBasketClient, RemoteBasketSnapshot
 from .ordering_remote_basket_discovery import (
     RemoteBasketDiscoveryClient,
+    RemoteBasketDiscoveryError,
     RemoteBasketDiscoveryResult,
     RemoteBasketDiscoveryStatus,
 )
@@ -1646,6 +1647,14 @@ class LiveOrderingFacade:
             raise
         except PreparationMutationRejected:
             raise
+        except RemoteBasketDiscoveryError as err:
+            _LOGGER.warning(
+                "Glovo basket discovery rejected stage=%s reason=%s shape=%s",
+                err.stage,
+                err.reason,
+                err.shape if err.shape is not None else "none",
+            )
+            raise PublicContractError from None
         except ApiSessionError:
             # This exception contains only allowlisted category/family/status fields.
             # Preserve it so the HA boundary can log an operationally useful,

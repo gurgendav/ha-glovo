@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Final
 
-from .api_session import DeliveryLocation
+from .api_session import ApiSessionError, DeliveryLocation
 from .ordering_remote_basket import (
     BasketContractError,
     BasketIntent,
@@ -32,6 +33,10 @@ from .ordering_remote_basket import (
 MAX_BASKET_SUMMARIES: Final = 20
 _MAX_COLLECTION_BYTES: Final = 128_000
 _CUSTOMER_PATH_RE: Final = re.compile(r"^[1-9]\d{0,9}$")
+_SAFE_KEY_RE: Final = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+_MAX_SHAPE_DEPTH: Final = 5
+_MAX_SHAPE_KEYS: Final = 48
+_MAX_SHAPE_ITEMS: Final = 3
 _SUMMARY_REQUIRED: Final = frozenset(
     {
         "basketId",
@@ -61,16 +66,94 @@ class RemoteBasketDiscoveryStatus(str, Enum):
     CONFLICT = "CONFLICT"
 
 
+def _safe_shape(value: object, *, depth: int = 0) -> object:
+    """Return a bounded value-free JSON shape for private live diagnostics."""
+    if depth >= _MAX_SHAPE_DEPTH:
+        return "depth_limit"
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "count": min(len(value), MAX_BASKET_SUMMARIES + 1),
+            "items": [
+                _safe_shape(item, depth=depth + 1)
+                for item in value[:_MAX_SHAPE_ITEMS]
+            ],
+        }
+    if isinstance(value, dict):
+        entries: dict[str, object] = {}
+        for key in sorted(value, key=lambda item: str(item))[:_MAX_SHAPE_KEYS]:
+            safe_key = (
+                key
+                if isinstance(key, str) and _SAFE_KEY_RE.fullmatch(key)
+                else "redacted_key"
+            )
+            if safe_key in entries:
+                safe_key = "redacted_key_duplicate"
+            entries[safe_key] = _safe_shape(value[key], depth=depth + 1)
+        return {
+            "type": "object",
+            "count": min(len(value), _MAX_SHAPE_KEYS + 1),
+            "fields": entries,
+        }
+    return "other"
+
+
+def _safe_shape_json(value: object) -> str:
+    return json.dumps(
+        _safe_shape(value),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 class RemoteBasketDiscoveryError(RuntimeError):
     """Redaction-safe provider read or cross-response contract failure."""
 
-    def __init__(self, category: str = "contract") -> None:
+    def __init__(
+        self,
+        *,
+        stage: str = "input",
+        reason: str = "schema",
+        shape: str | None = None,
+    ) -> None:
+        self.stage = stage if stage in {
+            "input",
+            "collection_get",
+            "collection_parse",
+            "selected_summary",
+            "full_get",
+            "full_empty",
+            "full_parse",
+        } else "input"
+        self.reason = reason if reason in {
+            "schema",
+            "mismatch",
+            "unsupported",
+            "inconsistent",
+            "transport",
+        } else "schema"
         self.category = (
-            category
-            if category in {"contract", "inconsistent", "transport"}
+            "inconsistent"
+            if self.reason == "inconsistent"
+            else "transport"
+            if self.reason == "transport"
             else "contract"
         )
-        super().__init__(f"remote basket discovery failed ({self.category})")
+        self.shape = shape if isinstance(shape, str) and len(shape) <= 8_192 else None
+        super().__init__(
+            f"remote basket discovery failed ({self.stage}/{self.reason})"
+        )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -172,7 +255,11 @@ class RemoteBasketDiscoveryClient:
         self._session = session
 
     async def _async_get(
-        self, path: str, delivery_location: DeliveryLocation
+        self,
+        path: str,
+        delivery_location: DeliveryLocation,
+        *,
+        stage: str,
     ) -> Any:
         try:
             return await self._session.async_get(
@@ -180,8 +267,12 @@ class RemoteBasketDiscoveryClient:
             )
         except asyncio.CancelledError:
             raise
+        except ApiSessionError:
+            raise
         except Exception:
-            raise RemoteBasketDiscoveryError("transport") from None
+            raise RemoteBasketDiscoveryError(
+                stage=stage, reason="transport"
+            ) from None
 
     async def async_discover(
         self, intent: BasketIntent, delivery_location: DeliveryLocation
@@ -192,13 +283,19 @@ class RemoteBasketDiscoveryClient:
             or _CUSTOMER_PATH_RE.fullmatch(intent.customer_id) is None
             or not isinstance(delivery_location, DeliveryLocation)
         ):
-            raise RemoteBasketDiscoveryError
+            raise RemoteBasketDiscoveryError()
         root = f"/v1/authenticated/customers/{intent.customer_id}/baskets"
-        collection_payload = await self._async_get(root, delivery_location)
+        collection_payload = await self._async_get(
+            root, delivery_location, stage="collection_get"
+        )
         try:
             summaries = _parse_collection(collection_payload)
-        except BasketContractError:
-            raise RemoteBasketDiscoveryError from None
+        except BasketContractError as err:
+            raise RemoteBasketDiscoveryError(
+                stage="collection_parse",
+                reason=err.category,
+                shape=_safe_shape_json(collection_payload),
+            ) from None
 
         selected = tuple(
             summary for summary in summaries if summary.store_id == intent.store_id
@@ -212,14 +309,20 @@ class RemoteBasketDiscoveryClient:
         summary = next(iter(selected))
         try:
             _validate_selected_summary(summary, intent)
-        except BasketContractError:
-            raise RemoteBasketDiscoveryError from None
+        except BasketContractError as err:
+            raise RemoteBasketDiscoveryError(
+                stage="selected_summary", reason=err.category
+            ) from None
 
         full_payload = await self._async_get(
-            f"{root}/stores/{intent.store_id}", delivery_location
+            f"{root}/stores/{intent.store_id}",
+            delivery_location,
+            stage="full_get",
         )
         if full_payload is None:
-            raise RemoteBasketDiscoveryError("inconsistent")
+            raise RemoteBasketDiscoveryError(
+                stage="full_empty", reason="inconsistent"
+            )
         try:
             snapshot = parse_remote_basket_identity(
                 full_payload,
@@ -227,8 +330,12 @@ class RemoteBasketDiscoveryClient:
                 expected_basket_id=summary.basket_id,
                 expected_basket_version=summary.basket_version,
             )
-        except BasketContractError:
-            raise RemoteBasketDiscoveryError from None
+        except BasketContractError as err:
+            raise RemoteBasketDiscoveryError(
+                stage="full_parse",
+                reason=err.category,
+                shape=_safe_shape_json(full_payload),
+            ) from None
         if not remote_basket_matches_intent(snapshot, intent):
             return RemoteBasketDiscoveryResult(RemoteBasketDiscoveryStatus.CONFLICT)
         return RemoteBasketDiscoveryResult(

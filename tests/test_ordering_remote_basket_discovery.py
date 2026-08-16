@@ -291,7 +291,11 @@ def test_malformed_collection_is_redacted_contract_error(
         run(discover(client, intent, live))
 
     assert raised.value.category == "contract"
+    assert raised.value.stage == "collection_parse"
+    assert raised.value.reason == "schema"
+    assert raised.value.shape is not None
     assert "basket-private" not in str(raised.value)
+    assert "basket-private" not in raised.value.shape
     assert_calls(live, fixture, full=False)
 
 
@@ -335,6 +339,10 @@ def test_malformed_full_basket_is_redacted_contract_error(
         run(discover(client, intent, live))
 
     assert raised.value.category == "contract"
+    assert raised.value.stage == "full_parse"
+    assert raised.value.reason in {"schema", "unsupported", "mismatch"}
+    assert raised.value.shape is not None
+    assert "basket-private" not in raised.value.shape
     assert_calls(live, fixture, full=True)
 
 
@@ -348,6 +356,9 @@ def test_matching_summary_then_empty_full_is_inconsistency_not_absence(
         run(discover(client, intent, live))
 
     assert raised.value.category == "inconsistent"
+    assert raised.value.stage == "full_empty"
+    assert raised.value.reason == "inconsistent"
+    assert raised.value.shape is None
     assert_calls(live, fixture, full=True)
 
 
@@ -388,6 +399,14 @@ def test_every_summary_intent_and_full_summary_identity_mismatch_fails_closed(
         run(discover(client, intent, live))
 
     assert raised.value.category == "contract"
+    assert raised.value.stage == (
+        "selected_summary" if target == "summary" else "full_parse"
+    )
+    assert raised.value.reason == (
+        "unsupported"
+        if target == "full" and field == "handlingStrategy"
+        else "mismatch"
+    )
     assert_calls(live, fixture, full=expects_full)
 
 
@@ -401,6 +420,8 @@ def test_missing_or_malformed_location_fails_before_discovery_transport(
         with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
             run(client.async_discover(intent, malformed))
         assert raised.value.category == "contract"
+        assert raised.value.stage == "input"
+        assert raised.value.reason == "schema"
     assert fixture.calls == []
     assert fixture.responses == [[]]
 
@@ -453,6 +474,65 @@ def test_transport_error_at_each_read_is_redacted_and_never_retried(
         run(discover(client, intent, live))
 
     assert raised.value.category == "transport"
+    assert raised.value.stage == (
+        "collection_get" if stage == "collection" else "full_get"
+    )
+    assert raised.value.reason == "transport"
+    assert raised.value.shape is None
     assert "private" not in str(raised.value).lower()
     assert len(fixture.calls) == (1 if stage == "collection" else 2)
     assert fixture.responses == []
+
+
+@pytest.mark.parametrize("stage", ["collection", "full"])
+def test_api_session_error_survives_each_read_without_retry(
+    live: dict[str, ModuleType], stage: str
+) -> None:
+    api = live["api_session"]
+    error = api.ApiSessionError(
+        category="http", endpoint_family="basket", status=503
+    )
+    responses: tuple[Any, ...] = (
+        (error,) if stage == "collection" else ([summary()], error)
+    )
+    client, intent, fixture = client_and_intent(live, *responses)
+
+    with pytest.raises(api.ApiSessionError) as raised:
+        run(discover(client, intent, live))
+
+    assert raised.value is error
+    assert raised.value.category == "http"
+    assert raised.value.endpoint_family == "basket"
+    assert raised.value.status == 503
+    assert len(fixture.calls) == (1 if stage == "collection" else 2)
+    assert fixture.responses == []
+
+
+def test_structural_diagnostic_is_bounded_and_contains_no_values(
+    live: dict[str, ModuleType],
+) -> None:
+    discovery = live["ordering_remote_basket_discovery"]
+    payload = {
+        "safeKey": [
+            {
+                "nested": "PRIVATE-VALUE-ONE",
+                "PRIVATE-DYNAMIC-KEY": "PRIVATE-VALUE-TWO",
+            }
+        ],
+        "PRIVATE-DYNAMIC-ROOT": "PRIVATE-VALUE-THREE",
+    }
+
+    shape = discovery._safe_shape_json(payload)
+
+    assert len(shape) <= 8_192
+    assert "safeKey" in shape
+    assert "nested" in shape
+    assert "redacted_key" in shape
+    for private in (
+        "PRIVATE-VALUE-ONE",
+        "PRIVATE-VALUE-TWO",
+        "PRIVATE-VALUE-THREE",
+        "PRIVATE-DYNAMIC-KEY",
+        "PRIVATE-DYNAMIC-ROOT",
+    ):
+        assert private not in shape
