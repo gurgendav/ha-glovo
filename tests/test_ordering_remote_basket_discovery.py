@@ -349,6 +349,30 @@ def test_current_live_full_basket_extensions_remain_strict(
         assert_calls(live, fixture, full=True)
 
 
+def test_full_basket_failure_path_is_closed_and_value_free(
+    live: dict[str, ModuleType],
+) -> None:
+    full = current_full_basket_payload()
+    full["products"][0]["quantity"]["items"] = True
+    client, intent, fixture = client_and_intent(live, [summary()], full)
+    discovery = live["ordering_remote_basket_discovery"]
+
+    with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
+        run(discover(client, intent, live))
+
+    assert raised.value.stage == "full_parse"
+    assert raised.value.reason == "schema"
+    assert raised.value.path == "products.quantity.items"
+    assert "basket-private" not in str(raised.value)
+    assert_calls(live, fixture, full=True)
+
+    sanitized = discovery.RemoteBasketDiscoveryError(
+        stage="full_parse", reason="schema", path="PRIVATE/VALUE"
+    )
+    assert sanitized.path == "unknown"
+    assert "PRIVATE" not in str(sanitized)
+
+
 def test_current_live_summary_extensions_remain_strict_and_bounded(
     live: dict[str, ModuleType],
 ) -> None:

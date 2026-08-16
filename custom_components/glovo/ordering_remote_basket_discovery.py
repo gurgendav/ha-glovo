@@ -32,6 +32,7 @@ from .ordering_remote_basket import (
 MAX_BASKET_SUMMARIES: Final = 20
 _MAX_COLLECTION_BYTES: Final = 128_000
 _CUSTOMER_PATH_RE: Final = re.compile(r"^[1-9]\d{0,9}$")
+_DIAGNOSTIC_PATH_RE: Final = re.compile(r"^[a-z][a-zA-Z0-9_.]{0,79}$")
 _ETA_RANGE_REQUIRED: Final = frozenset({"lowerBound", "upperBound"})
 _STORE_AVAILABILITY_REQUIRED: Final = frozenset(
     {"nextOpeningTime", "nextSchedulingTime", "storeStatus"}
@@ -75,6 +76,7 @@ class RemoteBasketDiscoveryError(RuntimeError):
         *,
         stage: str = "input",
         reason: str = "schema",
+        path: str = "unknown",
     ) -> None:
         self.stage = stage if stage in {
             "input",
@@ -99,8 +101,13 @@ class RemoteBasketDiscoveryError(RuntimeError):
             if self.reason == "transport"
             else "contract"
         )
+        self.path = (
+            path
+            if isinstance(path, str) and _DIAGNOSTIC_PATH_RE.fullmatch(path)
+            else "unknown"
+        )
         super().__init__(
-            f"remote basket discovery failed ({self.stage}/{self.reason})"
+            f"remote basket discovery failed ({self.stage}/{self.reason}/{self.path})"
         )
 
 
@@ -267,6 +274,7 @@ class RemoteBasketDiscoveryClient:
             raise RemoteBasketDiscoveryError(
                 stage="collection_parse",
                 reason=err.category,
+                path=err.path,
             ) from None
 
         selected = tuple(
@@ -306,6 +314,7 @@ class RemoteBasketDiscoveryClient:
             raise RemoteBasketDiscoveryError(
                 stage="full_parse",
                 reason=err.category,
+                path=err.path,
             ) from None
         if not remote_basket_matches_intent(snapshot, intent):
             return RemoteBasketDiscoveryResult(RemoteBasketDiscoveryStatus.CONFLICT)

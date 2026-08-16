@@ -26,6 +26,7 @@ MAX_DEPTH: Final = 12
 _ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _CITY_RE: Final = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,19}$")
 _INTEGER_STRING_RE: Final = re.compile(r"^-?\d+$")
+_DIAGNOSTIC_PATH_RE: Final = re.compile(r"^[a-z][a-zA-Z0-9_.]{0,79}$")
 _LIMIT_TYPES: Final = frozenset(
     {"STOCK_AMOUNT", "CART_BE_LIMIT", "MAX_SALES_QUANTITY"}
 )
@@ -84,11 +85,16 @@ _RESPONSE_PRODUCT_ALLOWED: Final = _RESPONSE_PRODUCT_REQUIRED | frozenset(
 class BasketContractError(ValueError):
     """Sanitized request/response contract failure."""
 
-    def __init__(self, category: str = "schema") -> None:
+    def __init__(self, category: str = "schema", *, path: str = "unknown") -> None:
         self.category = (
             category
             if category in {"schema", "mismatch", "unsupported"}
             else "schema"
+        )
+        self.path = (
+            path
+            if isinstance(path, str) and _DIAGNOSTIC_PATH_RE.fullmatch(path)
+            else "unknown"
         )
         super().__init__("remote basket did not satisfy the approved contract")
 
@@ -557,8 +563,16 @@ class ReconciliationResult:
     evidence: str = field(default="single_fresh_get", repr=False)
 
 
-def _fail(category: str = "schema") -> None:
-    raise BasketContractError(category)
+def _fail(category: str = "schema", *, path: str = "unknown") -> None:
+    raise BasketContractError(category, path=path)
+
+
+def _at(path: str, callback: Callable[[], Any]) -> Any:
+    try:
+        return callback()
+    except BasketContractError as err:
+        diagnostic_path = err.path if err.path != "unknown" else path
+        raise BasketContractError(err.category, path=diagnostic_path) from None
 
 
 def _object(
@@ -714,22 +728,38 @@ def _decode_projection(value: bytes) -> dict[str, Any]:
 
 
 def _parse_quantity(value: object) -> tuple[StructuredQuantity, dict[str, Any]]:
-    item = _object(value, required={"increments"}, allowed=_QUANTITY_KEYS)
+    item = _at(
+        "products.quantity.keys",
+        lambda: _object(value, required={"increments"}, allowed=_QUANTITY_KEYS),
+    )
     limit = item.get("incrementsLimit")
     if limit is not None:
-        limit = _int(limit, minimum=1, maximum=MAX_PRODUCT_QUANTITY)
+        limit = _at(
+            "products.quantity.incrementsLimit",
+            lambda: _int(limit, minimum=1, maximum=MAX_PRODUCT_QUANTITY),
+        )
     limit_type = item.get("limitType")
     if limit_type is not None:
-        limit_type = _text(limit_type, maximum=40)
+        limit_type = _at(
+            "products.quantity.limitType",
+            lambda: _text(limit_type, maximum=40),
+        )
         if limit_type not in _LIMIT_TYPES:
-            _fail()
+            _fail(path="products.quantity.limitType")
     for key in ("items", "itemsLimit"):
         if key in item:
-            _int(item[key], maximum=1_000_000)
-    quantity = StructuredQuantity(
-        increments=_int(
+            _at(
+                f"products.quantity.{key}",
+                lambda key=key: _int(item[key], maximum=1_000_000),
+            )
+    increments = _at(
+        "products.quantity.increments",
+        lambda: _int(
             item["increments"], minimum=1, maximum=MAX_PRODUCT_QUANTITY
         ),
+    )
+    quantity = StructuredQuantity(
+        increments=increments,
         increments_limit=limit,
         limit_type=limit_type,
         include_increments_limit="incrementsLimit" in item,
@@ -1088,23 +1118,30 @@ def _parse_response_product(
     if sponsored_required:
         required.add("sponsored")
         allowed.add("sponsored")
-    item = _object(value, required=required, allowed=allowed)
-    ids, ids_projection = _parse_product_ids(
-        item["ids"], basket_product_required=True
+    item = _at(
+        "products.keys",
+        lambda: _object(value, required=required, allowed=allowed),
+    )
+    ids, ids_projection = _at(
+        "products.ids",
+        lambda: _parse_product_ids(item["ids"], basket_product_required=True),
     )
     quantity, quantity_projection = _parse_quantity(item["quantity"])
     customizations: tuple[RemoteCustomization, ...] = ()
     customizations_projection: list[dict[str, Any]] = []
     if "customizations" in item:
-        customizations, customizations_projection = _parse_customizations(
-            item["customizations"]
+        customizations, customizations_projection = _at(
+            "products.customizations",
+            lambda: _parse_customizations(item["customizations"]),
         )
     projection: dict[str, Any] = {
         "ids": ids_projection,
         "quantity": quantity_projection,
     }
     if "price" in item:
-        projection["price"] = _parse_product_price(item["price"])
+        projection["price"] = _at(
+            "products.price", lambda: _parse_product_price(item["price"])
+        )
     if "name" in item:
         projection["name"] = _text(item["name"], maximum=160)
     if "productName" in item:
@@ -1350,12 +1387,17 @@ def _parse_remote_basket(
         "storeInfo",
         "updatedAt",
     }
-    root = _object(payload, required=required, allowed=allowed)
+    root = _at(
+        "root.keys", lambda: _object(payload, required=required, allowed=allowed)
+    )
     for key in ("baseOrderUrn", "basketCreationWidgetId"):
         if key in root and root[key] is not None:
-            _fail()
+            _fail(path=f"root.{key}")
     if "basketPriceBeforeLastRequest" in root:
-        _parse_basket_price(root["basketPriceBeforeLastRequest"])
+        _at(
+            "root.basketPriceBeforeLastRequest",
+            lambda: _parse_basket_price(root["basketPriceBeforeLastRequest"]),
+        )
     for key in (
         "catalogLanguageCode",
         "countryCode",
@@ -1366,17 +1408,26 @@ def _parse_remote_basket(
         "updatedAt",
     ):
         if key in root:
-            _text(root[key], maximum=100)
+            _at(f"root.{key}", lambda key=key: _text(root[key], maximum=100))
     if "storeInfo" in root:
-        store_info = _object(
-            root["storeInfo"],
-            required={"logo", "name", "vertical"},
-            allowed={"logo", "name", "vertical"},
+        store_info = _at(
+            "root.storeInfo.keys",
+            lambda: _object(
+                root["storeInfo"],
+                required={"logo", "name", "vertical"},
+                allowed={"logo", "name", "vertical"},
+            ),
         )
-        _text(store_info["logo"], maximum=1_000, allow_empty=True)
-        _text(store_info["name"], maximum=160)
+        _at(
+            "root.storeInfo.logo",
+            lambda: _text(store_info["logo"], maximum=1_000, allow_empty=True),
+        )
+        _at(
+            "root.storeInfo.name",
+            lambda: _text(store_info["name"], maximum=160),
+        )
         if store_info["vertical"] is not None:
-            _fail()
+            _fail(path="root.storeInfo.vertical")
     basket_id = _opaque_id(root["basketId"])
     basket_version = _opaque_id(root["basketVersion"])
     customer_id = _customer_id(root["customerId"])
@@ -1385,7 +1436,9 @@ def _parse_remote_basket(
     store_category_id = _int(root["storeCategoryId"], minimum=1)
     if root["handlingStrategy"] != "DELIVERY":
         _fail("unsupported")
-    products, products_projection = _parse_response_products(root["products"])
+    products, products_projection = _at(
+        "products", lambda: _parse_response_products(root["products"])
+    )
     expected = intent.products if expected_products is None else expected_products
     if not _valid_product_tuple(expected):
         _fail()
@@ -1405,10 +1458,10 @@ def _parse_remote_basket(
         )
     ):
         _fail("mismatch")
-    basket_price, basket_price_projection = _parse_basket_price(
-        root["basketPrice"]
+    basket_price, basket_price_projection = _at(
+        "basketPrice", lambda: _parse_basket_price(root["basketPrice"])
     )
-    mbs = _parse_mbs(root["mbs"])
+    mbs = _at("mbs", lambda: _parse_mbs(root["mbs"]))
     prime = _bool_or_none(root["isPrimeSubscriptionSimulated"])
     using_dh_basket = _bool(root["usingDhBasket"])
     city_code = root.get("cityCode")

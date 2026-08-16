@@ -98,7 +98,7 @@ structure showed one current summary variant where `eta` is an exact object cont
 integer `lowerBound` and `upperBound`, and optional `storeAvailability` is an exact object
 containing nullable `nextOpeningTime`, nullable `nextSchedulingTime`, and string
 `storeStatus`. No response values, identifiers, names, prices, coordinates, credentials,
-or raw body were retained. Home.13 accepts and discards only those observed display-only
+or raw body were retained. Home.14 accepts and discards only those observed display-only
 extensions, keeps the legacy nullable ETA forms, bounds ETA integers, requires lower not to
 exceed upper, and continues to reject unknown fields and malformed types.
 
@@ -106,7 +106,7 @@ The same GET-only exercise then reached the rich basket route. Value-free struct
 additional root lifecycle metadata (`baseOrderUrn`, `basketCreationWidgetId`,
 `basketPriceBeforeLastRequest`, catalog/country/currency codes, timestamps, `status`, and
 `storeInfo`), optional price `total`, MBS display state (`muxApplied`, `surcharge`, and
-`tiers`), quantity display counts, and product display metadata. Home.13 validates each
+`tiers`), quantity display counts, and product display metadata. Home.14 validates each
 observed object against an exact key set and bounded primitive types, discards those fields
 from the private authority projection, and keeps IDs, structured increments, customization
 identity, basket version, store identity, and customer identity as the only adoption proof.
