@@ -1649,10 +1649,9 @@ class LiveOrderingFacade:
             raise
         except RemoteBasketDiscoveryError as err:
             _LOGGER.warning(
-                "Glovo basket discovery rejected stage=%s reason=%s shape=%s",
+                "Glovo basket discovery rejected stage=%s reason=%s",
                 err.stage,
                 err.reason,
-                err.shape if err.shape is not None else "none",
             )
             raise PublicContractError from None
         except ApiSessionError:

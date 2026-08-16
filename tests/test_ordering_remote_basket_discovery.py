@@ -121,6 +121,65 @@ def summary(
     }
 
 
+def current_full_basket_payload() -> dict[str, Any]:
+    payload = basket_payload()
+    money = {"minor": 550000, "major": 5500.0, "formatted": "5,500 AMD"}
+    payload.update(
+        {
+            "baseOrderUrn": None,
+            "basketCreationWidgetId": None,
+            "basketPriceBeforeLastRequest": copy.deepcopy(payload["basketPrice"]),
+            "catalogLanguageCode": "hy",
+            "countryCode": "AM",
+            "createdAt": "2026-08-16T12:00:00Z",
+            "currencyCode": "AMD",
+            "expiresAt": "2026-08-16T13:00:00Z",
+            "status": "ACTIVE",
+            "storeInfo": {
+                "logo": "https://example.invalid/logo.png",
+                "name": "Fixture Kitchen",
+                "vertical": None,
+            },
+            "updatedAt": "2026-08-16T12:01:00Z",
+        }
+    )
+    payload["basketPrice"]["total"] = copy.deepcopy(money)
+    payload["basketPriceBeforeLastRequest"]["total"] = copy.deepcopy(money)
+    payload["mbs"].update(
+        {
+            "muxApplied": False,
+            "surcharge": {
+                "totalFormatted": "0 AMD",
+                "final": {"minor": 0, "major": 0.0, "formatted": "0 AMD"},
+            },
+            "tiers": [{"feeMinor": 0, "thresholdMinor": 500000}],
+        }
+    )
+    for item in payload["products"]:
+        item.update(
+            {
+                "availability": "AVAILABLE",
+                "eans": [],
+                "imageServiceId": "fixture-image",
+                "isEnergyDrink": False,
+                "nmrAdId": None,
+                "restrictions": [],
+                "tags": [],
+                "teasingDiscounts": [],
+                "weight": None,
+            }
+        )
+        item["quantity"].update({"items": 2, "itemsLimit": 10})
+        item["price"].update(
+            {
+                "originalUnitaryBasePrice": None,
+                "originalUnitaryTotalPrice": None,
+                "productTotalTeasingDiscount": None,
+            }
+        )
+    return payload
+
+
 def client_and_intent(
     live: dict[str, ModuleType], *responses: Any
 ) -> tuple[Any, Any, FixtureReadSession]:
@@ -217,6 +276,77 @@ def test_current_live_eta_and_store_availability_summary_shape_is_accepted(
     assert result.status is discovery.RemoteBasketDiscoveryStatus.ADOPTED
     assert result.snapshot is not None
     assert_calls(live, fixture, full=True)
+
+
+def test_current_live_full_basket_metadata_is_validated_then_discarded(
+    live: dict[str, ModuleType],
+) -> None:
+    current_summary = summary()
+    current_summary["eta"] = {"lowerBound": 20, "upperBound": 35}
+    current_summary["storeAvailability"] = {
+        "nextOpeningTime": None,
+        "nextSchedulingTime": "2026-08-16T12:00:00Z",
+        "storeStatus": "OPEN",
+    }
+    client, intent, fixture = client_and_intent(
+        live, [current_summary], current_full_basket_payload()
+    )
+
+    result = run(discover(client, intent, live))
+
+    discovery = live["ordering_remote_basket_discovery"]
+    assert result.status is discovery.RemoteBasketDiscoveryStatus.ADOPTED
+    assert result.snapshot is not None
+    projection = result.snapshot.provider_projection_bytes
+    for discarded in (
+        b"catalogLanguageCode",
+        b"storeInfo",
+        b"availability",
+        b"imageServiceId",
+        b"tiers",
+        b"itemsLimit",
+    ):
+        assert discarded not in projection
+    assert_calls(live, fixture, full=True)
+
+
+def test_current_live_full_basket_extensions_remain_strict(
+    live: dict[str, ModuleType],
+) -> None:
+    malformed: list[dict[str, Any]] = []
+
+    root_value = current_full_basket_payload()
+    root_value["baseOrderUrn"] = "unexpected"
+    malformed.append(root_value)
+
+    price_shape = current_full_basket_payload()
+    price_shape["basketPrice"]["total"]["private"] = "x"
+    malformed.append(price_shape)
+
+    mbs_tier = current_full_basket_payload()
+    mbs_tier["mbs"]["tiers"][0]["private"] = "x"
+    malformed.append(mbs_tier)
+
+    product_scalar = current_full_basket_payload()
+    product_scalar["products"][0]["nmrAdId"] = "unexpected"
+    malformed.append(product_scalar)
+
+    product_array = current_full_basket_payload()
+    product_array["products"][0]["tags"] = ["unexpected"]
+    malformed.append(product_array)
+
+    quantity_type = current_full_basket_payload()
+    quantity_type["products"][0]["quantity"]["items"] = True
+    malformed.append(quantity_type)
+
+    discovery = live["ordering_remote_basket_discovery"]
+    for full in malformed:
+        client, intent, fixture = client_and_intent(live, [summary()], full)
+        with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
+            run(discover(client, intent, live))
+        assert raised.value.stage == "full_parse"
+        assert raised.value.reason == "schema"
+        assert_calls(live, fixture, full=True)
 
 
 def test_current_live_summary_extensions_remain_strict_and_bounded(
@@ -362,9 +492,7 @@ def test_malformed_collection_is_redacted_contract_error(
     assert raised.value.category == "contract"
     assert raised.value.stage == "collection_parse"
     assert raised.value.reason == "schema"
-    assert raised.value.shape is not None
     assert "basket-private" not in str(raised.value)
-    assert "basket-private" not in raised.value.shape
     assert_calls(live, fixture, full=False)
 
 
@@ -410,8 +538,6 @@ def test_malformed_full_basket_is_redacted_contract_error(
     assert raised.value.category == "contract"
     assert raised.value.stage == "full_parse"
     assert raised.value.reason in {"schema", "unsupported", "mismatch"}
-    assert raised.value.shape is not None
-    assert "basket-private" not in raised.value.shape
     assert_calls(live, fixture, full=True)
 
 
@@ -427,7 +553,6 @@ def test_matching_summary_then_empty_full_is_inconsistency_not_absence(
     assert raised.value.category == "inconsistent"
     assert raised.value.stage == "full_empty"
     assert raised.value.reason == "inconsistent"
-    assert raised.value.shape is None
     assert_calls(live, fixture, full=True)
 
 
@@ -547,7 +672,6 @@ def test_transport_error_at_each_read_is_redacted_and_never_retried(
         "collection_get" if stage == "collection" else "full_get"
     )
     assert raised.value.reason == "transport"
-    assert raised.value.shape is None
     assert "private" not in str(raised.value).lower()
     assert len(fixture.calls) == (1 if stage == "collection" else 2)
     assert fixture.responses == []
@@ -575,33 +699,3 @@ def test_api_session_error_survives_each_read_without_retry(
     assert raised.value.status == 503
     assert len(fixture.calls) == (1 if stage == "collection" else 2)
     assert fixture.responses == []
-
-
-def test_structural_diagnostic_is_bounded_and_contains_no_values(
-    live: dict[str, ModuleType],
-) -> None:
-    discovery = live["ordering_remote_basket_discovery"]
-    payload = {
-        "safeKey": [
-            {
-                "nested": "PRIVATE-VALUE-ONE",
-                "PRIVATE-DYNAMIC-KEY": "PRIVATE-VALUE-TWO",
-            }
-        ],
-        "PRIVATE-DYNAMIC-ROOT": "PRIVATE-VALUE-THREE",
-    }
-
-    shape = discovery._safe_shape_json(payload)
-
-    assert len(shape) <= 8_192
-    assert "safeKey" in shape
-    assert "nested" in shape
-    assert "redacted_key" in shape
-    for private in (
-        "PRIVATE-VALUE-ONE",
-        "PRIVATE-VALUE-TWO",
-        "PRIVATE-VALUE-THREE",
-        "PRIVATE-DYNAMIC-KEY",
-        "PRIVATE-DYNAMIC-ROOT",
-    ):
-        assert private not in shape

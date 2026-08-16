@@ -32,7 +32,9 @@ _LIMIT_TYPES: Final = frozenset(
 _PRODUCT_ID_KEYS: Final = frozenset(
     {"legacyId", "id", "externalId", "storeProductId", "basketProductId"}
 )
-_QUANTITY_KEYS: Final = frozenset({"increments", "incrementsLimit", "limitType"})
+_QUANTITY_KEYS: Final = frozenset(
+    {"increments", "incrementsLimit", "items", "itemsLimit", "limitType"}
+)
 _CUSTOMIZATION_ID_KEYS: Final = frozenset(
     {
         "groupLegacyId",
@@ -62,7 +64,20 @@ _RESPONSE_PRODUCT_REQUIRED: Final = frozenset(
     }
 )
 _RESPONSE_PRODUCT_ALLOWED: Final = _RESPONSE_PRODUCT_REQUIRED | frozenset(
-    {"customizations", "imageUrl", "discounts"}
+    {
+        "availability",
+        "customizations",
+        "discounts",
+        "eans",
+        "imageServiceId",
+        "imageUrl",
+        "isEnergyDrink",
+        "nmrAdId",
+        "restrictions",
+        "tags",
+        "teasingDiscounts",
+        "weight",
+    }
 )
 
 
@@ -708,6 +723,9 @@ def _parse_quantity(value: object) -> tuple[StructuredQuantity, dict[str, Any]]:
         limit_type = _text(limit_type, maximum=40)
         if limit_type not in _LIMIT_TYPES:
             _fail()
+    for key in ("items", "itemsLimit"):
+        if key in item:
+            _int(item[key], maximum=1_000_000)
     quantity = StructuredQuantity(
         increments=_int(
             item["increments"], minimum=1, maximum=MAX_PRODUCT_QUANTITY
@@ -892,9 +910,11 @@ def _parse_basket_price(value: object) -> tuple[BasketPrice, dict[str, Any]]:
     root = _object(
         value,
         required={"totalFormatted", "final"},
-        allowed={"totalFormatted", "final"},
+        allowed={"totalFormatted", "final", "total"},
     )
     final = _parse_money_amount(root["final"])
+    if "total" in root:
+        _parse_money_amount(root["total"])
     total = _text(root["totalFormatted"], maximum=100, allow_empty=True)
     return (
         BasketPrice(
@@ -923,8 +943,18 @@ def _parse_product_price(value: object) -> dict[str, Any]:
             "unitaryBasePrice",
             "unitaryTotalPrice",
             "productTotalDiscount",
+            "originalUnitaryBasePrice",
+            "originalUnitaryTotalPrice",
+            "productTotalTeasingDiscount",
         },
     )
+    for key in (
+        "originalUnitaryBasePrice",
+        "originalUnitaryTotalPrice",
+        "productTotalTeasingDiscount",
+    ):
+        if key in item and item[key] is not None:
+            _fail()
     discount = item["productTotalDiscount"]
     if discount is not None:
         discount = _number(discount, minimum=0, maximum=1_000_000_000)
@@ -1102,6 +1132,21 @@ def _parse_response_product(
         projection["imageUrl"] = image_url
     if "discounts" in item:
         projection["discounts"] = _parse_discounts(item["discounts"])
+    if "availability" in item:
+        _text(item["availability"], maximum=80)
+    if "eans" in item:
+        for ean in _array(item["eans"], maximum=32):
+            _text(ean, maximum=128)
+    if "imageServiceId" in item:
+        _text(item["imageServiceId"], maximum=256, allow_empty=True)
+    if "isEnergyDrink" in item:
+        _bool(item["isEnergyDrink"])
+    for key in ("nmrAdId", "weight"):
+        if key in item and item[key] is not None:
+            _fail()
+    for key in ("restrictions", "tags", "teasingDiscounts"):
+        if key in item:
+            _array(item[key], maximum=0)
     if sponsored_required:
         projection["sponsored"] = _bool(item["sponsored"])
     product = RemoteBasketResponseProduct(
@@ -1171,10 +1216,26 @@ def _parse_mbs(value: object) -> dict[str, Any] | None:
             "barThreshold",
             "currentPrice",
             "currentThreshold",
+            "muxApplied",
+            "surcharge",
+            "tiers",
         },
     )
     _, bar = _parse_basket_price(item["barThreshold"])
     _, current = _parse_basket_price(item["currentPrice"])
+    if "muxApplied" in item:
+        _bool(item["muxApplied"])
+    if "surcharge" in item:
+        _parse_basket_price(item["surcharge"])
+    if "tiers" in item:
+        for raw_tier in _array(item["tiers"], maximum=32):
+            tier = _object(
+                raw_tier,
+                required={"feeMinor", "thresholdMinor"},
+                allowed={"feeMinor", "thresholdMinor"},
+            )
+            _int(tier["feeMinor"], maximum=100_000_000_000)
+            _int(tier["thresholdMinor"], maximum=100_000_000_000)
     return {
         "surchargePrice": _text(
             item["surchargePrice"], maximum=100, allow_empty=True
@@ -1274,8 +1335,48 @@ def _parse_remote_basket(
         "isPrimeSubscriptionSimulated",
         "usingDhBasket",
     }
-    allowed = required | {"productSuggestions", "cityCode"}
+    allowed = required | {
+        "baseOrderUrn",
+        "basketCreationWidgetId",
+        "basketPriceBeforeLastRequest",
+        "catalogLanguageCode",
+        "cityCode",
+        "countryCode",
+        "createdAt",
+        "currencyCode",
+        "expiresAt",
+        "productSuggestions",
+        "status",
+        "storeInfo",
+        "updatedAt",
+    }
     root = _object(payload, required=required, allowed=allowed)
+    for key in ("baseOrderUrn", "basketCreationWidgetId"):
+        if key in root and root[key] is not None:
+            _fail()
+    if "basketPriceBeforeLastRequest" in root:
+        _parse_basket_price(root["basketPriceBeforeLastRequest"])
+    for key in (
+        "catalogLanguageCode",
+        "countryCode",
+        "createdAt",
+        "currencyCode",
+        "expiresAt",
+        "status",
+        "updatedAt",
+    ):
+        if key in root:
+            _text(root[key], maximum=100)
+    if "storeInfo" in root:
+        store_info = _object(
+            root["storeInfo"],
+            required={"logo", "name", "vertical"},
+            allowed={"logo", "name", "vertical"},
+        )
+        _text(store_info["logo"], maximum=1_000, allow_empty=True)
+        _text(store_info["name"], maximum=160)
+        if store_info["vertical"] is not None:
+            _fail()
     basket_id = _opaque_id(root["basketId"])
     basket_version = _opaque_id(root["basketVersion"])
     customer_id = _customer_id(root["customerId"])

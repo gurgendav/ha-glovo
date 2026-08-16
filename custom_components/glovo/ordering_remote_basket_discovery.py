@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -33,10 +32,6 @@ from .ordering_remote_basket import (
 MAX_BASKET_SUMMARIES: Final = 20
 _MAX_COLLECTION_BYTES: Final = 128_000
 _CUSTOMER_PATH_RE: Final = re.compile(r"^[1-9]\d{0,9}$")
-_SAFE_KEY_RE: Final = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
-_MAX_SHAPE_DEPTH: Final = 5
-_MAX_SHAPE_KEYS: Final = 48
-_MAX_SHAPE_ITEMS: Final = 3
 _ETA_RANGE_REQUIRED: Final = frozenset({"lowerBound", "upperBound"})
 _STORE_AVAILABILITY_REQUIRED: Final = frozenset(
     {"nextOpeningTime", "nextSchedulingTime", "storeStatus"}
@@ -72,57 +67,6 @@ class RemoteBasketDiscoveryStatus(str, Enum):
     CONFLICT = "CONFLICT"
 
 
-def _safe_shape(value: object, *, depth: int = 0) -> object:
-    """Return a bounded value-free JSON shape for private live diagnostics."""
-    if depth >= _MAX_SHAPE_DEPTH:
-        return "depth_limit"
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "bool"
-    if isinstance(value, int):
-        return "int"
-    if isinstance(value, float):
-        return "float"
-    if isinstance(value, str):
-        return "str"
-    if isinstance(value, list):
-        return {
-            "type": "list",
-            "count": min(len(value), MAX_BASKET_SUMMARIES + 1),
-            "items": [
-                _safe_shape(item, depth=depth + 1)
-                for item in value[:_MAX_SHAPE_ITEMS]
-            ],
-        }
-    if isinstance(value, dict):
-        entries: dict[str, object] = {}
-        for key in sorted(value, key=lambda item: str(item))[:_MAX_SHAPE_KEYS]:
-            safe_key = (
-                key
-                if isinstance(key, str) and _SAFE_KEY_RE.fullmatch(key)
-                else "redacted_key"
-            )
-            if safe_key in entries:
-                safe_key = "redacted_key_duplicate"
-            entries[safe_key] = _safe_shape(value[key], depth=depth + 1)
-        return {
-            "type": "object",
-            "count": min(len(value), _MAX_SHAPE_KEYS + 1),
-            "fields": entries,
-        }
-    return "other"
-
-
-def _safe_shape_json(value: object) -> str:
-    return json.dumps(
-        _safe_shape(value),
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
 class RemoteBasketDiscoveryError(RuntimeError):
     """Redaction-safe provider read or cross-response contract failure."""
 
@@ -131,7 +75,6 @@ class RemoteBasketDiscoveryError(RuntimeError):
         *,
         stage: str = "input",
         reason: str = "schema",
-        shape: str | None = None,
     ) -> None:
         self.stage = stage if stage in {
             "input",
@@ -156,7 +99,6 @@ class RemoteBasketDiscoveryError(RuntimeError):
             if self.reason == "transport"
             else "contract"
         )
-        self.shape = shape if isinstance(shape, str) and len(shape) <= 8_192 else None
         super().__init__(
             f"remote basket discovery failed ({self.stage}/{self.reason})"
         )
@@ -325,7 +267,6 @@ class RemoteBasketDiscoveryClient:
             raise RemoteBasketDiscoveryError(
                 stage="collection_parse",
                 reason=err.category,
-                shape=_safe_shape_json(collection_payload),
             ) from None
 
         selected = tuple(
@@ -365,7 +306,6 @@ class RemoteBasketDiscoveryClient:
             raise RemoteBasketDiscoveryError(
                 stage="full_parse",
                 reason=err.category,
-                shape=_safe_shape_json(full_payload),
             ) from None
         if not remote_basket_matches_intent(snapshot, intent):
             return RemoteBasketDiscoveryResult(RemoteBasketDiscoveryStatus.CONFLICT)
