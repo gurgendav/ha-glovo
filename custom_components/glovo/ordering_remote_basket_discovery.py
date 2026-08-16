@@ -37,6 +37,10 @@ _SAFE_KEY_RE: Final = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _MAX_SHAPE_DEPTH: Final = 5
 _MAX_SHAPE_KEYS: Final = 48
 _MAX_SHAPE_ITEMS: Final = 3
+_ETA_RANGE_REQUIRED: Final = frozenset({"lowerBound", "upperBound"})
+_STORE_AVAILABILITY_REQUIRED: Final = frozenset(
+    {"nextOpeningTime", "nextSchedulingTime", "storeStatus"}
+)
 _SUMMARY_REQUIRED: Final = frozenset(
     {
         "basketId",
@@ -55,7 +59,9 @@ _SUMMARY_REQUIRED: Final = frozenset(
         "updatedAt",
     }
 )
-_SUMMARY_ALLOWED: Final = _SUMMARY_REQUIRED | frozenset({"distance", "storeImage"})
+_SUMMARY_ALLOWED: Final = _SUMMARY_REQUIRED | frozenset(
+    {"distance", "storeAvailability", "storeImage"}
+)
 
 
 class RemoteBasketDiscoveryStatus(str, Enum):
@@ -187,6 +193,17 @@ def _parse_nullable_eta(value: object) -> None:
     if isinstance(value, str):
         _text(value, maximum=100)
         return
+    if isinstance(value, dict):
+        item = _object(
+            value,
+            required=_ETA_RANGE_REQUIRED,
+            allowed=_ETA_RANGE_REQUIRED,
+        )
+        lower = _int(item["lowerBound"], maximum=86_400)
+        upper = _int(item["upperBound"], maximum=86_400)
+        if lower > upper:
+            raise BasketContractError("mismatch")
+        return
     _int(value, maximum=86_400)
 
 
@@ -196,6 +213,18 @@ def _parse_delivery_fee_info(value: object) -> None:
     if not isinstance(value, dict):
         raise BasketContractError
     _bounded_payload(value, maximum=32_000)
+
+
+def _parse_store_availability(value: object) -> None:
+    item = _object(
+        value,
+        required=_STORE_AVAILABILITY_REQUIRED,
+        allowed=_STORE_AVAILABILITY_REQUIRED,
+    )
+    for key in ("nextOpeningTime", "nextSchedulingTime"):
+        if item[key] is not None:
+            _text(item[key], maximum=100)
+    _text(item["storeStatus"], maximum=40)
 
 
 def _parse_summary(value: object) -> _BasketSummary:
@@ -216,6 +245,8 @@ def _parse_summary(value: object) -> _BasketSummary:
     store_address_id = _int(item["storeAddressId"], minimum=1)
     store_category_id = _int(item["storeCategoryId"], minimum=1)
     store_id = _int(item["storeId"], minimum=1)
+    if "storeAvailability" in item:
+        _parse_store_availability(item["storeAvailability"])
     if "storeImage" in item and item["storeImage"] is not None:
         _text(item["storeImage"], maximum=1_000, allow_empty=True)
     _text(item["storeName"], maximum=160)

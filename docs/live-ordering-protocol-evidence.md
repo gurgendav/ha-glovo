@@ -90,6 +90,18 @@ multiple matching summaries or a structurally valid different basket yields `CON
 Malformed, oversized, inconsistent, mismatched, or failed reads remain blocked and never
 select a create path.
 
+### Privacy-safe live collection evidence (2026-08-16)
+
+One separately authorized GET-only adoption exercise reached the authenticated collection
+route with no basket mutation, quote, checkout, or payment request. Bounded value-free
+structure showed one current summary variant where `eta` is an exact object containing
+integer `lowerBound` and `upperBound`, and optional `storeAvailability` is an exact object
+containing nullable `nextOpeningTime`, nullable `nextSchedulingTime`, and string
+`storeStatus`. No response values, identifiers, names, prices, coordinates, credentials,
+or raw body were retained. Home.12 accepts and discards only those observed display-only
+extensions, keeps the legacy nullable ETA forms, bounds ETA integers, requires lower not to
+exceed upper, and continues to reject unknown fields and malformed types.
+
 Authority is account-scoped and cross-administrator serialized. The runtime closed states
 are `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, and `CONFLICT`; `UNKNOWN` is never false
 empty. A separate private Home Assistant Store retains hash-only account/store/intent/

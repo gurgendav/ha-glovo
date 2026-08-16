@@ -197,6 +197,75 @@ def test_exact_basket_is_adopted_after_ordered_collection_and_store_gets(
     assert_calls(live, fixture, full=True)
 
 
+def test_current_live_eta_and_store_availability_summary_shape_is_accepted(
+    live: dict[str, ModuleType],
+) -> None:
+    current = summary()
+    current["eta"] = {"lowerBound": 20, "upperBound": 35}
+    current["storeAvailability"] = {
+        "nextOpeningTime": None,
+        "nextSchedulingTime": "2026-08-16T12:00:00Z",
+        "storeStatus": "OPEN",
+    }
+    client, intent, fixture = client_and_intent(
+        live, [current], basket_payload()
+    )
+
+    result = run(discover(client, intent, live))
+
+    discovery = live["ordering_remote_basket_discovery"]
+    assert result.status is discovery.RemoteBasketDiscoveryStatus.ADOPTED
+    assert result.snapshot is not None
+    assert_calls(live, fixture, full=True)
+
+
+def test_current_live_summary_extensions_remain_strict_and_bounded(
+    live: dict[str, ModuleType],
+) -> None:
+    malformed: list[dict[str, Any]] = []
+
+    reversed_eta = summary()
+    reversed_eta["eta"] = {"lowerBound": 40, "upperBound": 20}
+    malformed.append(reversed_eta)
+
+    eta_extra = summary()
+    eta_extra["eta"] = {"lowerBound": 20, "upperBound": 40, "private": "x"}
+    malformed.append(eta_extra)
+
+    availability_missing = summary()
+    availability_missing["storeAvailability"] = {
+        "nextOpeningTime": None,
+        "storeStatus": "OPEN",
+    }
+    malformed.append(availability_missing)
+
+    availability_extra = summary()
+    availability_extra["storeAvailability"] = {
+        "nextOpeningTime": None,
+        "nextSchedulingTime": None,
+        "storeStatus": "OPEN",
+        "private": "x",
+    }
+    malformed.append(availability_extra)
+
+    availability_wrong_type = summary()
+    availability_wrong_type["storeAvailability"] = {
+        "nextOpeningTime": 1,
+        "nextSchedulingTime": None,
+        "storeStatus": "OPEN",
+    }
+    malformed.append(availability_wrong_type)
+
+    discovery = live["ordering_remote_basket_discovery"]
+    for collection_item in malformed:
+        client, intent, fixture = client_and_intent(live, [collection_item])
+        with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
+            run(discover(client, intent, live))
+        assert raised.value.stage == "collection_parse"
+        assert raised.value.reason in {"schema", "mismatch"}
+        assert_calls(live, fixture, full=False)
+
+
 @pytest.mark.parametrize("difference", ["product", "quantity", "customization"])
 def test_structurally_valid_different_intent_is_closed_conflict(
     live: dict[str, ModuleType], difference: str
