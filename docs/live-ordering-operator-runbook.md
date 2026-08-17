@@ -4,7 +4,7 @@
 
 ## Non-negotiable operating model
 
-1. **Fresh default-off consent after migration.** Config-entry migration v14 closes preparation consent/acknowledgement and paid-checkout consent/acknowledgement, even if all four were true in published Home.20. Preserve unrelated options, then require fresh re-opt-in. Reauthentication also closes all four gates.
+1. **Fresh default-off consent after migration.** Config-entry migration v15 closes preparation consent/acknowledgement and paid-checkout consent/acknowledgement, even if all four were true in published Home.21. Preserve unrelated options, then require fresh re-opt-in. Reauthentication also closes all four gates.
 2. **One account authority.** Basket authority is account-scoped and cross-administrator serialized. A second administrator shares the same `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, or `CONFLICT` state and cannot create a parallel writable basket.
 3. **Read before any write.** After setup or reload, runtime state is `UNKNOWN`. Reacquire fresh account/address/store/menu/product context and perform explicit read-only adoption before any basket mutation.
 4. **Bounded discovery.** Adoption issues one collection GET plus at most one conditional full per-store GET. It does not poll, retry, fall back, request a quote, or mutate provider state.
