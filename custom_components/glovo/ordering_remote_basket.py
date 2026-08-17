@@ -1357,6 +1357,22 @@ def _parse_remote_basket(
     """Parse one rich response with identity and optional intent matching."""
     if not isinstance(intent, BasketIntent):
         _fail()
+    # Preserve the field-specific diagnostic before the whole-response cap. This
+    # is constant-bounded: `_text` rejects a string over 1,000 characters before
+    # scanning its contents, and no other payload field is traversed here.
+    if isinstance(payload, dict):
+        raw_store_info = payload.get("storeInfo")
+        if isinstance(raw_store_info, dict) and "logo" in raw_store_info:
+            _at(
+                "root.storeInfo.logo",
+                lambda: (
+                    None
+                    if raw_store_info["logo"] is None
+                    else _text(
+                        raw_store_info["logo"], maximum=1_000, allow_empty=True
+                    )
+                ),
+            )
     _bounded_payload(payload)
     required = {
         "basketId",
@@ -1420,7 +1436,11 @@ def _parse_remote_basket(
         )
         _at(
             "root.storeInfo.logo",
-            lambda: _text(store_info["logo"], maximum=1_000, allow_empty=True),
+            lambda: (
+                None
+                if store_info["logo"] is None
+                else _text(store_info["logo"], maximum=1_000, allow_empty=True)
+            ),
         )
         _at(
             "root.storeInfo.name",

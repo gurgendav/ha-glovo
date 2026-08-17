@@ -310,6 +310,51 @@ def test_current_live_full_basket_metadata_is_validated_then_discarded(
     assert_calls(live, fixture, full=True)
 
 
+def test_nullable_store_logo_is_accepted_and_discarded(
+    live: dict[str, ModuleType],
+) -> None:
+    full = current_full_basket_payload()
+    full["storeInfo"]["logo"] = None
+    client, intent, fixture = client_and_intent(live, [summary()], full)
+
+    result = run(discover(client, intent, live))
+
+    discovery = live["ordering_remote_basket_discovery"]
+    assert result.status is discovery.RemoteBasketDiscoveryStatus.ADOPTED
+    assert result.snapshot is not None
+    assert b"storeInfo" not in result.snapshot.provider_projection_bytes
+    assert_calls(live, fixture, full=True)
+
+
+@pytest.mark.parametrize(
+    "logo",
+    [
+        {},
+        [],
+        True,
+        1,
+        1.5,
+        "x" * 1_001,
+    ],
+    ids=["object", "array", "boolean", "integer", "number", "oversized-string"],
+)
+def test_malformed_store_logo_is_rejected_at_exact_path(
+    live: dict[str, ModuleType], logo: Any
+) -> None:
+    full = current_full_basket_payload()
+    full["storeInfo"]["logo"] = logo
+    client, intent, fixture = client_and_intent(live, [summary()], full)
+    discovery = live["ordering_remote_basket_discovery"]
+
+    with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
+        run(discover(client, intent, live))
+
+    assert raised.value.stage == "full_parse"
+    assert raised.value.reason == "schema"
+    assert raised.value.path == "root.storeInfo.logo"
+    assert_calls(live, fixture, full=True)
+
+
 def test_current_live_full_basket_extensions_remain_strict(
     live: dict[str, ModuleType],
 ) -> None:

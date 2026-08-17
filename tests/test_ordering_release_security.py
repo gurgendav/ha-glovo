@@ -79,6 +79,14 @@ def test_basket_authority_scanner_enforces_private_store_routes_wiring_and_proje
     module.scan_basket_authority_contracts(raw_findings, sources=raw_tampered)
     assert "serialized hash-only basket Store image" in "\n".join(raw_findings)
 
+    logo_tampered = dict(sources)
+    logo_tampered[module.BASKET_PARSER_SOURCE] = logo_tampered[
+        module.BASKET_PARSER_SOURCE
+    ].replace('if store_info["logo"] is None', 'if False', 1)
+    logo_findings: list[str] = []
+    module.scan_basket_authority_contracts(logo_findings, sources=logo_tampered)
+    assert "nullable bounded basket logo contract" in "\n".join(logo_findings)
+
     tampered = dict(sources)
     tampered[module.BASKET_STORE_SOURCE] = tampered[module.BASKET_STORE_SOURCE].replace(
         '"snapshot_digest",', '"basket_id",', 1
@@ -136,12 +144,12 @@ def test_release_evidence_composes_guarded_final_seam_without_idempotency_claim(
         assert required in evidence
 
 
-def test_home15_release_identity_basket_evidence_and_no_action_claims_are_frozen() -> None:
+def test_home16_release_identity_basket_evidence_and_no_action_claims_are_frozen() -> None:
     descriptor = (
         "ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|"
-        "version=1.1.0+home.15|profile=coordinator-source-provenance-v1"
+        "version=1.1.0+home.16|profile=coordinator-source-provenance-v1"
     )
-    expected = "c04399bdfe5eeb5ef42709709b20f065e4624d1986ca1aa1ab02ca8d507e9e60"
+    expected = "9fd214ec12d458b3dbb67574b3d09d61225114eaced8f6772cbbc3601bb3a990"
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
     const = (COMPONENT / "const.py").read_text(encoding="utf-8")
     glovo = (COMPONENT / "glovo.py").read_text(encoding="utf-8")
@@ -156,12 +164,12 @@ def test_home15_release_identity_basket_evidence_and_no_action_claims_are_frozen
     )
 
     assert hashlib.sha256(descriptor.encode()).hexdigest() == expected
-    assert manifest["version"] == "1.1.0+home.15"
+    assert manifest["version"] == "1.1.0+home.16"
     assert descriptor in const and expected in const
     assert 'ORDERING_WEB_VERSION = "v1.2569.0"' in glovo
     assert "v1.2570.0" not in documents
     for required in (
-        "Home.15",
+        "Home.16",
         "UNKNOWN",
         "ABSENT_VERIFIED",
         "ADOPTED",
@@ -174,6 +182,10 @@ def test_home15_release_identity_basket_evidence_and_no_action_claims_are_frozen
         "at most one",
         "read-only adoption",
         "fresh re-opt-in",
+        "minor v9",
+        "fully opted-in Home.15",
+        "storeInfo.logo",
+        "root.storeInfo.logo",
         "exact quote",
         "No deployment",
         "no provider idempotency",

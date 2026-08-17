@@ -1,23 +1,23 @@
 # Guarded live paid-checkout release checklist
 
-**No deployment or provider call is performed by this checklist.** Home.15 is an offline release candidate at `1.1.0+home.15`; it does not claim a deployment, live canary, quote, basket adoption, checkout, payment, or provider idempotency.
+**No deployment or provider call is performed by this checklist.** Home.16 is an offline release candidate at `1.1.0+home.16`; it does not claim a deployment, live canary, quote, basket adoption, checkout, payment, or provider idempotency.
 
 ## Repository and release identity
 
 - [ ] Work from a clean tracked candidate and run `python scripts/verify_clean_checkout.py` after commit.
-- [ ] Manifest is exactly `1.1.0+home.15`.
-- [ ] Canonical descriptor is exactly `ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|version=1.1.0+home.15|profile=coordinator-source-provenance-v1`.
-- [ ] Independently hash the descriptor and obtain SHA-256 `c04399bdfe5eeb5ef42709709b20f065e4624d1986ca1aa1ab02ca8d507e9e60`; the runtime trust ID embeds the same version and digest.
+- [ ] Manifest is exactly `1.1.0+home.16`.
+- [ ] Canonical descriptor is exactly `ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|version=1.1.0+home.16|profile=coordinator-source-provenance-v1`.
+- [ ] Independently hash the descriptor and obtain SHA-256 `9fd214ec12d458b3dbb67574b3d09d61225114eaced8f6772cbbc3601bb3a990`; the runtime trust ID embeds the same version and digest.
 - [ ] `ORDERING_WEB_VERSION` remains `v1.2569.0`, the latest reproducibly preserved authenticated first-party evidence. Public landing and marketplace bundles did not expose a newer authenticated basket constant, so no newer version is claimed.
 - [ ] Inspect staged names, stat, and full diff; only intended release, migration, documentation, scanner, and test paths are present.
 - [ ] Run focused migration/foundation/release/privacy tests, full pytest, Ruff, compileall, Node syntax and frontend harness, privacy scanner, clean-checkout verifier, and `git diff --check`.
 
 ## Migration and fresh consent
 
-- [ ] Config-entry minor version is 8 in both integration and config flow.
+- [ ] Config-entry minor version is 9 in both integration and config flow.
 - [ ] Migration from every prior minor—including installed historical Home.8/Home.9 no-go candidates with all four gates true—forces `allow_ordering`, ordering acknowledgement, `allow_live_checkout`, and checkout acknowledgement to literal false while preserving unrelated options.
-- [ ] Every prior entry, including an opted-in published Home.14 minor v7 entry with four valid true booleans, is reset to four literal false gates; missing or malformed gates also fail closed.
-- [ ] Current Home.15 minor v8 entries preserve only dependency-consistent literal booleans; malformed or incomplete gates fail closed.
+- [ ] Every prior entry, including a fully opted-in published Home.15 minor v8 entry with four valid true booleans, is reset to four literal false gates; missing or malformed gates also fail closed.
+- [ ] Current Home.16 minor v9 entries preserve only dependency-consistent literal booleans; malformed or incomplete gates fail closed.
 - [ ] Reauthentication and new setup keep all four gates false.
 - [ ] After migration, require fresh re-opt-in through the options flow. Never infer consent from historical values.
 
@@ -26,6 +26,7 @@
 - [ ] Basket authority is account-scoped, not administrator-scoped, and whole operations are cross-administrator serialized.
 - [ ] The runtime exposes the closed knowledge states `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, and `CONFLICT`; `UNKNOWN` is never projected as an empty writable basket.
 - [ ] Discovery is read-only and bounded: exactly one collection GET and at most one conditional full per-store GET, using only the reviewed routes, with no query, polling, fallback, retry, or mutation.
+- [ ] Rich-basket `storeInfo.logo` accepts only `null` or the existing bounded string, is discarded from authority evidence, and rejects objects, arrays, booleans, numbers, and oversized strings at exact path `root.storeInfo.logo`.
 - [ ] The private Home Assistant Store uses its dedicated v1 key and persists hash-only account/store/intent/snapshot evidence plus generation, state, and observation time. It persists no provider IDs, products, addresses, handles, payloads, credentials, or raw values.
 - [ ] Loaded durable evidence is not write authority. Every setup/reload starts runtime knowledge at `UNKNOWN` and requires fresh provider re-adoption using fresh account, address, store, menu, and product context.
 - [ ] Require an explicit read-only adoption action before any basket mutation. Only fresh `ABSENT_VERIFIED` may permit one explicit create; exact `ADOPTED` may permit continuation; mismatch, multiple, malformed, oversized, inconsistent, failed reads, or `CONFLICT` block.
@@ -49,7 +50,7 @@
 - [ ] Follow the [operator runbook](live-ordering-operator-runbook.md): fresh re-opt-in, read-only adoption before mutation, separate exact quote confirmation, stop criteria, and rollback that preserves uncertainty.
 - [ ] Any changed route, schema, source asset, action, continuation requirement, privacy projection, or persistence image blocks release until reviewed.
 
-## Future controlled validation (not authorized by this Home.15 build task)
+## Future controlled validation (not authorized by this Home.16 build task)
 
 - [ ] Do not deploy, run a live canary, adopt a live basket, mutate a basket, request a quote, submit checkout, or attempt payment as part of this offline release task.
 - [ ] A named operator must separately authorize each future consequential step and one exact displayed purchase.

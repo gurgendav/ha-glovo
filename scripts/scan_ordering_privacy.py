@@ -29,6 +29,7 @@ BASKET_STORE_SOURCE = (
 BASKET_DISCOVERY_SOURCE = (
     "custom_components/glovo/ordering_remote_basket_discovery.py"
 )
+BASKET_PARSER_SOURCE = "custom_components/glovo/ordering_remote_basket.py"
 RUNTIME_SOURCE = "custom_components/glovo/__init__.py"
 PUBLIC_SCHEMA_SOURCES = (
     "custom_components/glovo/ordering_ha.py",
@@ -207,6 +208,7 @@ def load_basket_authority_sources() -> dict[str, str]:
     names = (
         BASKET_STORE_SOURCE,
         BASKET_DISCOVERY_SOURCE,
+        BASKET_PARSER_SOURCE,
         RUNTIME_SOURCE,
         *PUBLIC_SCHEMA_SOURCES,
     )
@@ -318,12 +320,13 @@ def _python_public_provider_keys(source: str) -> set[str]:
 def scan_basket_authority_contracts(
     findings: list[str], *, sources: Mapping[str, str] | None = None
 ) -> None:
-    """Enforce Home.15's private, read-only basket authority release contract."""
+    """Enforce Home.16's private, read-only basket authority release contract."""
 
     loaded = dict(sources) if sources is not None else load_basket_authority_sources()
     required_names = {
         BASKET_STORE_SOURCE,
         BASKET_DISCOVERY_SOURCE,
+        BASKET_PARSER_SOURCE,
         RUNTIME_SOURCE,
         *PUBLIC_SCHEMA_SOURCES,
     }
@@ -335,6 +338,7 @@ def scan_basket_authority_contracts(
 
     store = loaded[BASKET_STORE_SOURCE]
     discovery = loaded[BASKET_DISCOVERY_SOURCE]
+    parser = loaded[BASKET_PARSER_SOURCE]
     runtime = loaded[RUNTIME_SOURCE]
 
     if _assigned_frozenset(store, "_STORAGE_KEYS") != _BASKET_STORE_FIELDS:
@@ -356,8 +360,24 @@ def scan_basket_authority_contracts(
         or 'f"glovo.ordering_basket_authority_v1.{entry_key}"' not in store
     ):
         findings.append(f"{BASKET_STORE_SOURCE}: private basket Store key is absent")
-    if _has_logger_call(store) or _has_logger_call(discovery):
+    if _has_logger_call(store) or _has_logger_call(discovery) or _has_logger_call(parser):
         findings.append("basket authority source logging is forbidden")
+
+    logo_path = '"root.storeInfo.logo"'
+    bounded_payload = "_bounded_payload(payload)"
+    nullable_logo_contract = (
+        'required={"logo", "name", "vertical"}' in parser
+        and 'if store_info["logo"] is None' in parser
+        and 'else _text(store_info["logo"], maximum=1_000, allow_empty=True)' in parser
+        and logo_path in parser
+        and bounded_payload in parser
+        and parser.find(bounded_payload, parser.index(logo_path))
+        > parser.index(logo_path)
+    )
+    if not nullable_logo_contract:
+        findings.append(
+            f"{BASKET_PARSER_SOURCE}: nullable bounded basket logo contract changed"
+        )
 
     wiring = (
         "HomeAssistantBasketAuthorityStorage(hass, entry.entry_id)",
@@ -453,7 +473,7 @@ def scan_capabilities(findings: list[str]) -> None:
             if pattern.search(text):
                 findings.append(f"{path.relative_to(ROOT)}: {name}")
     scan_basket_authority_contracts(findings)
-    # Home.15 must compose the exact reviewed adapter and request factory while
+    # Home.16 must compose the exact reviewed adapter and request factory while
     # retaining the durable final coordinator. Runtime tests prove gate absence.
     runtime_text = {
         path.name: path.read_text(encoding="utf-8")
