@@ -1,23 +1,23 @@
 # Guarded live paid-checkout release checklist
 
-**No deployment or provider call is performed by this checklist.** Home.19 is an offline release candidate at `1.1.0+home.19`; it does not claim a deployment, live canary, quote, basket adoption, checkout, payment, or provider idempotency.
+**No deployment or provider call is performed by this checklist.** Home.20 is an offline release candidate at `1.1.0+home.20`; it does not claim a deployment, live canary, quote, basket adoption, checkout, payment, or provider idempotency.
 
 ## Repository and release identity
 
 - [ ] Work from a clean tracked candidate and run `python scripts/verify_clean_checkout.py` after commit.
-- [ ] Manifest is exactly `1.1.0+home.19`.
-- [ ] Canonical descriptor is exactly `ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|version=1.1.0+home.19|profile=coordinator-source-provenance-v1`.
-- [ ] Independently hash the descriptor and obtain SHA-256 `6eb93d7468909b5fd0d4c13f2decc588cc57ad6aedfcb114ba395d8a8cc6ecde`; the runtime trust ID embeds the same version and digest.
+- [ ] Manifest is exactly `1.1.0+home.20`.
+- [ ] Canonical descriptor is exactly `ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|version=1.1.0+home.20|profile=coordinator-source-provenance-v1`.
+- [ ] Independently hash the descriptor and obtain SHA-256 `4ac96cdf32647e80586cb2f48bb4a024be88c8bf34d5138034a49c0cd2afd339`; the runtime trust ID embeds the same version and digest.
 - [ ] `ORDERING_WEB_VERSION` remains `v1.2569.0`, the latest reproducibly preserved authenticated first-party evidence. Public landing and marketplace bundles did not expose a newer authenticated basket constant, so no newer version is claimed.
 - [ ] Inspect staged names, stat, and full diff; only intended release, migration, documentation, scanner, and test paths are present.
 - [ ] Run focused migration/foundation/release/privacy tests, full pytest, Ruff, compileall, Node syntax and frontend harness, privacy scanner, clean-checkout verifier, and `git diff --check`.
 
 ## Migration and fresh consent
 
-- [ ] Config-entry minor version is 12 in both integration and config flow.
+- [ ] Config-entry minor version is 13 in both integration and config flow.
 - [ ] Migration from every prior minor—including installed historical Home.8/Home.9 no-go candidates with all four gates true—forces `allow_ordering`, ordering acknowledgement, `allow_live_checkout`, and checkout acknowledgement to literal false while preserving unrelated options.
-- [ ] Every prior entry, including a fully opted-in published Home.18 minor v11 entry with four valid true booleans, is reset to four literal false gates; missing or malformed gates also fail closed.
-- [ ] Current Home.19 minor v12 entries preserve only dependency-consistent literal booleans; malformed or incomplete gates fail closed.
+- [ ] Every prior entry, including a fully opted-in published Home.19 minor v12 entry with four valid true booleans, is reset to four literal false gates; missing or malformed gates also fail closed.
+- [ ] Current Home.20 minor v13 entries preserve only dependency-consistent literal booleans; malformed or incomplete gates fail closed.
 - [ ] Reauthentication and new setup keep all four gates false.
 - [ ] After migration, require fresh re-opt-in through the options flow. Never infer consent from historical values.
 
@@ -50,7 +50,7 @@
 - [ ] Follow the [operator runbook](live-ordering-operator-runbook.md): fresh re-opt-in, read-only adoption before mutation, separate exact quote confirmation, stop criteria, and rollback that preserves uncertainty.
 - [ ] Any changed route, schema, source asset, action, continuation requirement, privacy projection, or persistence image blocks release until reviewed.
 
-## Future controlled validation (not authorized by this Home.19 build task)
+## Future controlled validation (not authorized by this Home.20 build task)
 
 - [ ] Do not deploy, run a live canary, adopt a live basket, mutate a basket, request a quote, submit checkout, or attempt payment as part of this offline release task.
 - [ ] A named operator must separately authorize each future consequential step and one exact displayed purchase.

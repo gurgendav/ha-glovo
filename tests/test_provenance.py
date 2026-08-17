@@ -19,21 +19,21 @@ import pytest
 ROOT = Path(__file__).parents[1]
 
 
-def test_home19_trust_descriptor_is_exact_and_independently_hashed() -> None:
+def test_home20_trust_descriptor_is_exact_and_independently_hashed() -> None:
     descriptor = (
         "ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|"
-        "version=1.1.0+home.19|profile=coordinator-source-provenance-v1"
+        "version=1.1.0+home.20|profile=coordinator-source-provenance-v1"
     )
     expected_digest = (
-        "6eb93d7468909b5fd0d4c13f2decc588cc57ad6aedfcb114ba395d8a8cc6ecde"
+        "4ac96cdf32647e80586cb2f48bb4a024be88c8bf34d5138034a49c0cd2afd339"
     )
     source = (ROOT / "custom_components/glovo/const.py").read_text(encoding="utf-8")
     assert hashlib.sha256(descriptor.encode("utf-8")).hexdigest() == expected_digest
     assert descriptor in source
     literal_parts = re.findall(
-        r'"(ha-glovo:1\.1\.0\+home\.19:sha256:|[0-9a-f]{64})"', source
+        r'"(ha-glovo:1\.1\.0\+home\.20:sha256:|[0-9a-f]{64})"', source
     )
-    assert "".join(literal_parts) == f"ha-glovo:1.1.0+home.19:sha256:{expected_digest}"
+    assert "".join(literal_parts) == f"ha-glovo:1.1.0+home.20:sha256:{expected_digest}"
 
 
 class _ConfigEntry:

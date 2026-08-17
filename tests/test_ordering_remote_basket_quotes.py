@@ -709,11 +709,122 @@ def test_strict_basket_response_exact_match_types_privacy_and_price_contract(
     mismatched_products = basket_payload(quantity=3)
     mutations.append(mismatched_products)
     unknown = basket_payload()
-    unknown["checkoutId"] = "private"
+    unknown["products"][0]["ids"]["checkoutId"] = "private"
     mutations.append(unknown)
     for payload in mutations:
         with pytest.raises(remote.BasketContractError):
             remote.parse_remote_basket(payload, intent)
+
+
+def _discount() -> dict[str, Any]:
+    return {
+        "promotionId": "promotion-1",
+        "type": "PERCENTAGE",
+        "name": "Fixture discount",
+        "isPrimeDiscount": False,
+        "label": "Discount",
+        "origin": "PROMOTION",
+        "quantity": 1,
+        "finalPriceMajorWhenInDiscountResponse": 2500.0,
+        "percentage": 10.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "null_fields",
+    [
+        ("name",),
+        ("finalPriceMajorWhenInDiscountResponse",),
+        ("percentage",),
+        ("name", "finalPriceMajorWhenInDiscountResponse", "percentage"),
+    ],
+)
+def test_current_schema_nullable_discount_fields_are_preserved(
+    live: dict[str, ModuleType], null_fields: tuple[str, ...]
+) -> None:
+    remote = live["ordering_remote_basket"]
+    intent = remote.parse_basket_intent(intent_payload())
+    payload = basket_payload()
+    discount = _discount()
+    for field in null_fields:
+        discount[field] = None
+    payload["products"][0]["discounts"] = [discount]
+
+    parsed = remote.parse_remote_basket(payload, intent)
+
+    projected = parsed.products[0].canonical_dict()["discounts"][0]
+    for field in null_fields:
+        assert projected[field] is None
+
+
+def test_nullable_discounts_apply_to_sponsored_suggestions(
+    live: dict[str, ModuleType],
+) -> None:
+    remote = live["ordering_remote_basket"]
+    intent = remote.parse_basket_intent(intent_payload())
+    payload = basket_payload()
+    suggestion = rich_product(sponsored=True)
+    suggestion["ids"]["id"] = "suggestion-product-1"
+    suggestion["ids"]["basketProductId"] = "suggestion-basket-product-1"
+    suggestion["discounts"] = [
+        _discount()
+        | {
+            "name": None,
+            "finalPriceMajorWhenInDiscountResponse": None,
+            "percentage": None,
+        }
+    ]
+    payload["productSuggestions"] = [suggestion]
+
+    parsed = remote.parse_remote_basket(payload, intent)
+
+    projected = parsed.product_suggestions[0].canonical_dict()["discounts"][0]
+    assert projected["name"] is None
+    assert projected["finalPriceMajorWhenInDiscountResponse"] is None
+    assert projected["percentage"] is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", 1),
+        ("finalPriceMajorWhenInDiscountResponse", "2500"),
+        ("percentage", True),
+    ],
+)
+def test_nullable_discount_fields_still_reject_wrong_non_null_types(
+    live: dict[str, ModuleType], field: str, value: object
+) -> None:
+    remote = live["ordering_remote_basket"]
+    intent = remote.parse_basket_intent(intent_payload())
+    payload = basket_payload()
+    discount = _discount()
+    discount[field] = value
+    payload["products"][0]["discounts"] = [discount]
+
+    with pytest.raises(remote.BasketContractError):
+        remote.parse_remote_basket(payload, intent)
+
+
+def test_optional_product_and_replacement_legacy_ids_accept_null_as_absent(
+    live: dict[str, ModuleType],
+) -> None:
+    remote = live["ordering_remote_basket"]
+    wanted = intent_payload()
+    wanted["products"][0]["ids"]["legacyId"] = None
+    intent = remote.parse_basket_intent(wanted)
+    payload = basket_payload()
+    payload["products"][0]["ids"]["legacyId"] = None
+    payload["products"][0]["productReplacement"] = {
+        "customerChosenRefund": False,
+        "ids": {"id": "replacement-1", "legacyId": None},
+    }
+
+    parsed = remote.parse_remote_basket(payload, intent)
+
+    projection = parsed.products[0].canonical_dict()
+    assert projection["ids"]["legacyId"] is None
+    assert projection["productReplacement"]["ids"]["legacyId"] is None
 
 
 def test_response_accepts_first_party_partial_products_but_keeps_safety_fields_required(
@@ -819,7 +930,7 @@ def test_create_serialization_exact_current_shapes_and_optional_provider_ids(
     }
 
 
-def test_response_rejects_obsolete_flat_products_and_stale_root_fields(
+def test_response_rejects_obsolete_flat_products_and_missing_authority_fields(
     live: dict[str, ModuleType],
 ) -> None:
     remote = live["ordering_remote_basket"]
@@ -834,13 +945,16 @@ def test_response_rejects_obsolete_flat_products_and_stale_root_fields(
             "customizations": [],
         }
     ]
-    stale_suggestions = basket_payload()
-    stale_suggestions["suggestions"] = stale_suggestions.pop("productSuggestions")
     missing_dh = basket_payload()
     missing_dh.pop("usingDhBasket")
-    for payload in (stale_flat, stale_suggestions, missing_dh):
+    for payload in (stale_flat, missing_dh):
         with pytest.raises(remote.BasketContractError):
             remote.parse_remote_basket(payload, intent)
+
+    stale_suggestions = basket_payload()
+    stale_suggestions["suggestions"] = stale_suggestions.pop("productSuggestions")
+    parsed = remote.parse_remote_basket(stale_suggestions, intent)
+    assert parsed.product_suggestions == ()
 
 
 def test_response_current_nullable_fields_and_customer_union_are_typed(

@@ -177,7 +177,10 @@ def _parse_store_availability(value: object) -> None:
 
 
 def _parse_summary(value: object) -> _BasketSummary:
-    item = _object(value, required=_SUMMARY_REQUIRED, allowed=_SUMMARY_ALLOWED)
+    allowed = set(_SUMMARY_ALLOWED)
+    if isinstance(value, dict):
+        allowed.update(value)
+    item = _object(value, required=_SUMMARY_REQUIRED, allowed=allowed)
     basket_id = _opaque_id(item["basketId"])
     basket_version = _opaque_id(item["basketVersion"])
     _int(item["basketItems"], maximum=100)
@@ -185,7 +188,12 @@ def _parse_summary(value: object) -> _BasketSummary:
     customer_id = _customer_id(item["customerId"])
     _parse_delivery_fee_info(item["deliveryFeeInfo"])
     if "distance" in item and item["distance"] is not None:
-        _number(item["distance"], minimum=0, maximum=1_000_000)
+        distance = item["distance"]
+        if isinstance(distance, str):
+            _text(distance, maximum=100, allow_empty=True)
+        else:
+            # Retain the already observed legacy numeric form.
+            _number(distance, minimum=0, maximum=1_000_000)
     _parse_nullable_eta(item["eta"])
     handling_strategy = _text(item["handlingStrategy"], maximum=40)
     if handling_strategy != item["handlingStrategy"]:
@@ -194,8 +202,8 @@ def _parse_summary(value: object) -> _BasketSummary:
     store_address_id = _int(item["storeAddressId"], minimum=1)
     store_category_id = _int(item["storeCategoryId"], minimum=1)
     store_id = _int(item["storeId"], minimum=1)
-    if "storeAvailability" in item:
-        _parse_store_availability(item["storeAvailability"])
+    # Public Zod strips storeAvailability and unknown summary display extras.
+    # They are bounded by the collection preflight and discarded.
     if "storeImage" in item and item["storeImage"] is not None:
         _text(item["storeImage"], maximum=1_000, allow_empty=True)
     _text(item["storeName"], maximum=160)

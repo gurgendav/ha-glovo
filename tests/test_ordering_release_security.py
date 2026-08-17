@@ -144,12 +144,12 @@ def test_release_evidence_composes_guarded_final_seam_without_idempotency_claim(
         assert required in evidence
 
 
-def test_home19_release_identity_basket_evidence_and_no_action_claims_are_frozen() -> None:
+def test_home20_release_identity_basket_evidence_and_no_action_claims_are_frozen() -> None:
     descriptor = (
         "ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|"
-        "version=1.1.0+home.19|profile=coordinator-source-provenance-v1"
+        "version=1.1.0+home.20|profile=coordinator-source-provenance-v1"
     )
-    expected = "6eb93d7468909b5fd0d4c13f2decc588cc57ad6aedfcb114ba395d8a8cc6ecde"
+    expected = "4ac96cdf32647e80586cb2f48bb4a024be88c8bf34d5138034a49c0cd2afd339"
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
     const = (COMPONENT / "const.py").read_text(encoding="utf-8")
     glovo = (COMPONENT / "glovo.py").read_text(encoding="utf-8")
@@ -164,12 +164,12 @@ def test_home19_release_identity_basket_evidence_and_no_action_claims_are_frozen
     )
 
     assert hashlib.sha256(descriptor.encode()).hexdigest() == expected
-    assert manifest["version"] == "1.1.0+home.19"
+    assert manifest["version"] == "1.1.0+home.20"
     assert descriptor in const and expected in const
     assert 'ORDERING_WEB_VERSION = "v1.2569.0"' in glovo
     assert "v1.2570.0" not in documents
     for required in (
-        "Home.19",
+        "Home.20",
         "UNKNOWN",
         "ABSENT_VERIFIED",
         "ADOPTED",
@@ -182,8 +182,8 @@ def test_home19_release_identity_basket_evidence_and_no_action_claims_are_frozen
         "at most one",
         "read-only adoption",
         "fresh re-opt-in",
-        "minor v12",
-        "fully opted-in Home.18",
+        "minor v13",
+        "fully opted-in Home.19",
         "storeInfo.logo",
         "incrementsLimit",
         "root.storeInfo.logo",

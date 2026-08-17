@@ -310,6 +310,54 @@ def test_current_live_full_basket_metadata_is_validated_then_discarded(
     assert_calls(live, fixture, full=True)
 
 
+def test_public_unknown_and_display_extensions_are_bounded_and_discarded_together(
+    live: dict[str, ModuleType],
+) -> None:
+    current_summary = summary()
+    current_summary["distance"] = "1.2 km"
+    current_summary["storeAvailability"] = ["changed-provider-shape"]
+    current_summary["futureSummaryDisplay"] = {"nested": [1, True, None]}
+    full = current_full_basket_payload()
+    full["baseOrderUrn"] = {"changed": True}
+    full["basketCreationWidgetId"] = ["changed"]
+    full["basketPriceBeforeLastRequest"] = "changed-display-shape"
+    full["catalogLanguageCode"] = {"changed": True}
+    full["futureRootDisplay"] = {"nested": [1, True, None]}
+    full["storeInfo"]["vertical"] = {"changed": True}
+    product = full["products"][0]
+    product["availability"] = {"changed": True}
+    product["eans"] = {"changed": True}
+    product["imageServiceId"] = ["changed"]
+    product["isEnergyDrink"] = "changed"
+    product["nmrAdId"] = {"changed": True}
+    product["weight"] = ["changed"]
+    product["restrictions"] = {"changed": True}
+    product["tags"] = ["nonempty"]
+    product["teasingDiscounts"] = {"changed": True}
+    product["futureProductDisplay"] = {"nested": [1, True, None]}
+    product["quantity"]["items"] = ["changed"]
+    product["quantity"]["itemsLimit"] = {"changed": True}
+    client, intent, fixture = client_and_intent(live, [current_summary], full)
+
+    result = run(discover(client, intent, live))
+
+    discovery = live["ordering_remote_basket_discovery"]
+    assert result.status is discovery.RemoteBasketDiscoveryStatus.ADOPTED
+    assert result.snapshot is not None
+    projection = result.snapshot.provider_projection_bytes
+    for discarded in (
+        b"futureRootDisplay",
+        b"futureProductDisplay",
+        b"availability",
+        b"nmrAdId",
+        b"tags",
+        b"itemsLimit",
+        b"storeInfo",
+    ):
+        assert discarded not in projection
+    assert_calls(live, fixture, full=True)
+
+
 def test_nullable_store_logo_is_accepted_and_discarded(
     live: dict[str, ModuleType],
 ) -> None:
@@ -488,14 +536,11 @@ def test_malformed_store_logo_is_rejected_at_exact_path(
     assert_calls(live, fixture, full=True)
 
 
-def test_current_live_full_basket_extensions_remain_strict(
+def test_nested_price_and_mbs_extensions_remain_strict(
     live: dict[str, ModuleType],
 ) -> None:
     malformed: list[dict[str, Any]] = []
 
-    root_value = current_full_basket_payload()
-    root_value["baseOrderUrn"] = "unexpected"
-    malformed.append(root_value)
 
     price_shape = current_full_basket_payload()
     price_shape["basketPrice"]["total"]["private"] = "x"
@@ -505,17 +550,6 @@ def test_current_live_full_basket_extensions_remain_strict(
     mbs_tier["mbs"]["tiers"][0]["private"] = "x"
     malformed.append(mbs_tier)
 
-    product_scalar = current_full_basket_payload()
-    product_scalar["products"][0]["nmrAdId"] = "unexpected"
-    malformed.append(product_scalar)
-
-    product_array = current_full_basket_payload()
-    product_array["products"][0]["tags"] = ["unexpected"]
-    malformed.append(product_array)
-
-    quantity_type = current_full_basket_payload()
-    quantity_type["products"][0]["quantity"]["items"] = True
-    malformed.append(quantity_type)
 
     discovery = live["ordering_remote_basket_discovery"]
     for full in malformed:
@@ -531,7 +565,7 @@ def test_full_basket_failure_path_is_closed_and_value_free(
     live: dict[str, ModuleType],
 ) -> None:
     full = current_full_basket_payload()
-    full["products"][0]["quantity"]["items"] = True
+    full["storeInfo"]["logo"] = True
     client, intent, fixture = client_and_intent(live, [summary()], full)
     discovery = live["ordering_remote_basket_discovery"]
 
@@ -540,7 +574,7 @@ def test_full_basket_failure_path_is_closed_and_value_free(
 
     assert raised.value.stage == "full_parse"
     assert raised.value.reason == "schema"
-    assert raised.value.path == "products.quantity.items"
+    assert raised.value.path == "root.storeInfo.logo"
     assert "basket-private" not in str(raised.value)
     assert_calls(live, fixture, full=True)
 
@@ -551,7 +585,7 @@ def test_full_basket_failure_path_is_closed_and_value_free(
     assert "PRIVATE" not in str(sanitized)
 
 
-def test_current_live_summary_extensions_remain_strict_and_bounded(
+def test_authoritative_eta_shape_remains_strict_and_bounded(
     live: dict[str, ModuleType],
 ) -> None:
     malformed: list[dict[str, Any]] = []
@@ -564,29 +598,6 @@ def test_current_live_summary_extensions_remain_strict_and_bounded(
     eta_extra["eta"] = {"lowerBound": 20, "upperBound": 40, "private": "x"}
     malformed.append(eta_extra)
 
-    availability_missing = summary()
-    availability_missing["storeAvailability"] = {
-        "nextOpeningTime": None,
-        "storeStatus": "OPEN",
-    }
-    malformed.append(availability_missing)
-
-    availability_extra = summary()
-    availability_extra["storeAvailability"] = {
-        "nextOpeningTime": None,
-        "nextSchedulingTime": None,
-        "storeStatus": "OPEN",
-        "private": "x",
-    }
-    malformed.append(availability_extra)
-
-    availability_wrong_type = summary()
-    availability_wrong_type["storeAvailability"] = {
-        "nextOpeningTime": 1,
-        "nextSchedulingTime": None,
-        "storeStatus": "OPEN",
-    }
-    malformed.append(availability_wrong_type)
 
     discovery = live["ordering_remote_basket_discovery"]
     for collection_item in malformed:
@@ -678,9 +689,8 @@ def test_collection_local_hard_cap_accepts_20_and_rejects_21(
         [dict(summary(), storeId=True)],
         [dict(summary(), customerId=None)],
         [dict(summary(), storeId="71")],
-        [dict(summary(), unexpected=True)],
     ],
-    ids=["envelope", "null-member", "bool-int", "null", "coercion", "unknown"],
+    ids=["envelope", "null-member", "bool-int", "null", "coercion"],
 )
 def test_malformed_collection_is_redacted_contract_error(
     live: dict[str, ModuleType], collection: Any
@@ -724,9 +734,8 @@ def test_collection_rejects_oversized_string_and_full_rejects_oversized_items(
         [],
         dict(basket_payload(), usingDhBasket=0),
         dict(basket_payload(), basketVersion=None),
-        dict(basket_payload(), unknownProviderField=True),
     ],
-    ids=["envelope", "array", "bool", "null", "unknown"],
+    ids=["envelope", "array", "bool", "null"],
 )
 def test_malformed_full_basket_is_redacted_contract_error(
     live: dict[str, ModuleType], full: Any

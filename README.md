@@ -60,18 +60,18 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
-### Guarded live paid checkout in Home.19
+### Guarded live paid checkout in Home.20
 
-Release `1.1.0+home.19` production-composes the reviewed strict final request factory
+Release `1.1.0+home.20` production-composes the reviewed strict final request factory
 and one-attempt adapter only when fresh preparation and paid-checkout switch/
 acknowledgement pairs are all literally true and durable authority is healthy. Config
-entry migration v12 closes all four gates—even for an opted-in Home.18 entry with all four
+entry migration v13 closes all four gates—even for an opted-in Home.19 entry with all four
 true—while preserving unrelated options. New setup and reauthentication
 also close them. The administrator must complete a fresh re-opt-in after migration.
 Preparation consent alone constructs no final adapter, publishes final checkout
 unavailable, and registers no final-submit command.
 
-Home.19 retains Home.14's privacy-safe basket failure classification and Home.15's durable
+Home.20 retains Home.14's privacy-safe basket failure classification and Home.15's durable
 account-scoped basket authority. The closed runtime states are
 `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, and `CONFLICT`; missing runtime memory is never
 projected as an empty writable basket. All administrators share one authority and whole
@@ -80,7 +80,7 @@ plus at most one conditional full per-store GET, with no query, polling, fallbac
 retry, or mutation. It strictly rejects multiple, malformed, oversized, inconsistent,
 or mismatched provider state.
 
-Home.19 narrows two display-only compatibility rules after a complete public-schema audit:
+Home.20 narrows two display-only compatibility rules after a complete public-schema audit:
 rich-basket `storeInfo.logo` may be `null` or the existing bounded string. The value is
 validated and discarded. Product `quantity.incrementsLimit` accepts a nonnegative signed
 32-bit provider ceiling independently of the local hard quantity cap; zero and ceilings
@@ -91,11 +91,18 @@ keys, and all identity, product, store, address, price, and basket-version misma
 fail-closed.
 
 The public basket schema permits repeated optional product enrichment identifiers.
-Home.19 therefore requires uniqueness only for the authoritative catalog `product_id` used
+Home.20 therefore requires uniqueness only for the authoritative catalog `product_id` used
 for exact intent mapping and the provider `basketProductId` used for basket-line identity.
 Repeated `externalId`, `legacyId`, or `storeProductId` values are accepted but remain
 strictly matched whenever the prepared intent supplied one. Product count and total
 quantity caps are unchanged and now report exact privacy-safe diagnostic paths.
+
+Home.20 completes the current public-schema compatibility batch. The three discount
+fields declared nullable by Glovo are accepted and preserved independently; malformed
+non-null values remain rejected. Optional product and replacement `legacyId: null` is
+treated as absent. Root, product, quantity-display, and summary display extensions are
+globally bounded and discarded like the first-party Zod parser, while nested identity
+objects and every consequential authority field remain exact.
 
 A dedicated private Home Assistant Store retains only hash-only account, store, intent,
 and provider-snapshot evidence with its generation/state/time metadata. It retains no
@@ -113,7 +120,7 @@ basket mutation: Home.8 stopped on the documented provider rejection, while Home
 not yet provide this durable reload/re-adoption boundary. Neither identity should be
 used to infer writable basket absence or consent.
 
-Home.19 keeps `ORDERING_WEB_VERSION` at `v1.2569.0`, the latest reproducibly preserved
+Home.20 keeps `ORDERING_WEB_VERSION` at `v1.2569.0`, the latest reproducibly preserved
 authenticated first-party evidence. Later public landing and marketplace bundles did not
 expose a newer authenticated basket constant, so this release does not claim one.
 
@@ -153,7 +160,7 @@ an exact basket, amount, and currency match; all other ambiguity remains manual.
 
 The [reviewed static protocol evidence](docs/live-ordering-protocol-evidence.md) makes no
 provider idempotency claim and does **not** establish lookup by `checkoutSessionId`.
-Home.19 is offline release readiness only: it does not claim deployment, a live canary,
+Home.20 is offline release readiness only: it does not claim deployment, a live canary,
 quote, basket adoption, checkout, payment, or provider call. Follow the
 [operator runbook](docs/live-ordering-operator-runbook.md) and
 [release checklist](docs/live-ordering-release-checklist.md); disabling or rolling back

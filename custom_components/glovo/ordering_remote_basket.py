@@ -755,11 +755,9 @@ def _parse_quantity(value: object) -> tuple[StructuredQuantity, dict[str, Any]]:
         if limit_type not in _LIMIT_TYPES:
             _fail(path="products.quantity.limitType")
     for key in ("items", "itemsLimit"):
-        if key in item:
-            _at(
-                f"products.quantity.{key}",
-                lambda key=key: _int(item[key], maximum=1_000_000),
-            )
+        # First-party Zod strips these observed display extensions. The whole
+        # response is already size/depth bounded; never treat them as authority.
+        item.pop(key, None)
     increments = _at(
         "products.quantity.increments",
         lambda: _int(
@@ -790,7 +788,9 @@ def _parse_product_ids(
     }
     projection: dict[str, Any] = {"id": result["id"]}
     if "legacyId" in item:
-        result["legacyId"] = _legacy_id(item["legacyId"])
+        result["legacyId"] = (
+            None if item["legacyId"] is None else _legacy_id(item["legacyId"])
+        )
         projection["legacyId"] = result["legacyId"]
     for key in ("externalId", "storeProductId", "basketProductId"):
         if key in item:
@@ -1025,24 +1025,29 @@ def _parse_discounts(value: object) -> list[dict[str, Any]]:
     allowed = required | {"isFake"}
     for raw in _array(value, maximum=32):
         item = _object(raw, required=required, allowed=allowed)
+        name = item["name"]
+        if name is not None:
+            name = _text(name, maximum=160, allow_empty=True)
+        final_price = item["finalPriceMajorWhenInDiscountResponse"]
+        if final_price is not None:
+            final_price = _number(
+                final_price, minimum=0, maximum=1_000_000_000
+            )
+        percentage = item["percentage"]
+        if percentage is not None:
+            percentage = _number(percentage, minimum=0, maximum=100_000)
         parsed: dict[str, Any] = {
             "promotionId": _opaque_id(item["promotionId"]),
             "type": _text(item["type"], maximum=80),
-            "name": _text(item["name"], maximum=160, allow_empty=True),
+            "name": name,
             "isPrimeDiscount": _bool(item["isPrimeDiscount"]),
             "label": _text(item["label"], maximum=160, allow_empty=True),
             "origin": _text(item["origin"], maximum=80, allow_empty=True),
             "quantity": _number(
                 item["quantity"], minimum=0, maximum=1_000_000_000
             ),
-            "finalPriceMajorWhenInDiscountResponse": _number(
-                item["finalPriceMajorWhenInDiscountResponse"],
-                minimum=0,
-                maximum=1_000_000_000,
-            ),
-            "percentage": _number(
-                item["percentage"], minimum=0, maximum=100_000
-            ),
+            "finalPriceMajorWhenInDiscountResponse": final_price,
+            "percentage": percentage,
         }
         if "isFake" in item:
             parsed["isFake"] = _bool(item["isFake"])
@@ -1123,6 +1128,10 @@ def _parse_response_product(
         else {"ids", "quantity"}
     )
     allowed = set(_RESPONSE_PRODUCT_ALLOWED)
+    if isinstance(value, dict):
+        # Public Zod strips unknown display keys. Identity remains strict
+        # inside `ids`; unknown product-level keys are bounded and discarded.
+        allowed.update(value)
     if sponsored_required:
         required.add("sponsored")
         allowed.add("sponsored")
@@ -1177,21 +1186,8 @@ def _parse_response_product(
         projection["imageUrl"] = image_url
     if "discounts" in item:
         projection["discounts"] = _parse_discounts(item["discounts"])
-    if "availability" in item:
-        _text(item["availability"], maximum=80)
-    if "eans" in item:
-        for ean in _array(item["eans"], maximum=32):
-            _text(ean, maximum=128)
-    if "imageServiceId" in item:
-        _text(item["imageServiceId"], maximum=256, allow_empty=True)
-    if "isEnergyDrink" in item:
-        _bool(item["isEnergyDrink"])
-    for key in ("nmrAdId", "weight"):
-        if key in item and item[key] is not None:
-            _fail()
-    for key in ("restrictions", "tags", "teasingDiscounts"):
-        if key in item:
-            _array(item[key], maximum=0)
+    # Known and future product-level display extensions are intentionally not
+    # projected. The global payload cap is the resource boundary.
     if sponsored_required:
         projection["sponsored"] = _bool(item["sponsored"])
     product = RemoteBasketResponseProduct(
@@ -1414,28 +1410,15 @@ def _parse_remote_basket(
         "storeInfo",
         "updatedAt",
     }
+    if isinstance(payload, dict):
+        # Public Zod strips unknown root display keys; authority fields below
+        # remain required, typed, and exactly matched.
+        allowed.update(payload)
     root = _at(
         "root.keys", lambda: _object(payload, required=required, allowed=allowed)
     )
-    for key in ("baseOrderUrn", "basketCreationWidgetId"):
-        if key in root and root[key] is not None:
-            _fail(path=f"root.{key}")
-    if "basketPriceBeforeLastRequest" in root:
-        _at(
-            "root.basketPriceBeforeLastRequest",
-            lambda: _parse_basket_price(root["basketPriceBeforeLastRequest"]),
-        )
-    for key in (
-        "catalogLanguageCode",
-        "countryCode",
-        "createdAt",
-        "currencyCode",
-        "expiresAt",
-        "status",
-        "updatedAt",
-    ):
-        if key in root:
-            _at(f"root.{key}", lambda key=key: _text(root[key], maximum=100))
+    # Provider-owned lifecycle/display extensions are bounded by the whole
+    # payload preflight and discarded rather than treated as basket authority.
     if "storeInfo" in root:
         store_info = _at(
             "root.storeInfo.keys",
@@ -1457,8 +1440,7 @@ def _parse_remote_basket(
             "root.storeInfo.name",
             lambda: _text(store_info["name"], maximum=160),
         )
-        if store_info["vertical"] is not None:
-            _fail(path="root.storeInfo.vertical")
+        # `vertical` is a discarded provider display extension.
     basket_id = _opaque_id(root["basketId"])
     basket_version = _opaque_id(root["basketVersion"])
     customer_id = _customer_id(root["customerId"])
