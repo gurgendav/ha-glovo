@@ -1218,12 +1218,15 @@ def _parse_response_products(
     ]
     products = [item for item, _ in parsed]
     if sum(item.quantity.increments for item in products) > MAX_TOTAL_QUANTITY:
-        _fail()
-    for index in range(5):
+        _fail(path="products.totalQuantity")
+    for index, path in (
+        (0, "products.ids.id"),
+        (4, "products.ids.basketProductId"),
+    ):
         identities = [item.identity[index] for item in products]
         present = [item for item in identities if item is not None]
         if len(set(present)) != len(present):
-            _fail()
+            _fail(path=path)
     ordered = sorted(
         parsed, key=lambda pair: (pair[0].product_id, pair[0].basket_product_id)
     )

@@ -320,7 +320,7 @@ def _python_public_provider_keys(source: str) -> set[str]:
 def scan_basket_authority_contracts(
     findings: list[str], *, sources: Mapping[str, str] | None = None
 ) -> None:
-    """Enforce Home.18's private, read-only basket authority release contract."""
+    """Enforce Home.19's private, read-only basket authority release contract."""
 
     loaded = dict(sources) if sources is not None else load_basket_authority_sources()
     required_names = {
@@ -473,7 +473,7 @@ def scan_capabilities(findings: list[str]) -> None:
             if pattern.search(text):
                 findings.append(f"{path.relative_to(ROOT)}: {name}")
     scan_basket_authority_contracts(findings)
-    # Home.18 must compose the exact reviewed adapter and request factory while
+    # Home.19 must compose the exact reviewed adapter and request factory while
     # retaining the durable final coordinator. Runtime tests prove gate absence.
     runtime_text = {
         path.name: path.read_text(encoding="utf-8")

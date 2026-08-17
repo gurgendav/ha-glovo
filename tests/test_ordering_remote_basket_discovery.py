@@ -375,6 +375,90 @@ def test_malformed_increments_limit_is_rejected_at_exact_path(
     assert_calls(live, fixture, full=True)
 
 
+def _second_response_product(full: dict[str, Any]) -> dict[str, Any]:
+    second = copy.deepcopy(full["products"][0])
+    second["ids"]["id"] = "product-2"
+    second["ids"]["basketProductId"] = "basket-product-2"
+    return second
+
+
+def test_duplicate_optional_product_enrichment_ids_are_accepted(
+    live: dict[str, ModuleType],
+) -> None:
+    full = current_full_basket_payload()
+    second = _second_response_product(full)
+    full["products"].append(second)
+    _, intent, _ = client_and_intent(live, [summary()], full)
+    remote = live["ordering_remote_basket"]
+
+    snapshot = remote.parse_remote_basket_identity(
+        full,
+        intent,
+        expected_basket_id=full["basketId"],
+        expected_basket_version=full["basketVersion"],
+    )
+
+    assert len(snapshot.products) == 2
+    assert snapshot.products[0].external_id == snapshot.products[1].external_id
+    assert snapshot.products[0].legacy_id == snapshot.products[1].legacy_id
+    assert snapshot.products[0].store_product_id == snapshot.products[1].store_product_id
+
+
+@pytest.mark.parametrize(
+    ("duplicate_key", "expected_path"),
+    [
+        ("id", "products.ids.id"),
+        ("basketProductId", "products.ids.basketProductId"),
+    ],
+)
+def test_duplicate_authoritative_product_ids_remain_rejected_at_exact_path(
+    live: dict[str, ModuleType], duplicate_key: str, expected_path: str
+) -> None:
+    full = current_full_basket_payload()
+    second = _second_response_product(full)
+    second["ids"][duplicate_key] = full["products"][0]["ids"][duplicate_key]
+    full["products"].append(second)
+    _, intent, _ = client_and_intent(live, [summary()], full)
+    remote = live["ordering_remote_basket"]
+
+    with pytest.raises(remote.BasketContractError) as raised:
+        remote.parse_remote_basket_identity(
+            full,
+            intent,
+            expected_basket_id=full["basketId"],
+            expected_basket_version=full["basketVersion"],
+        )
+
+    assert raised.value.path == expected_path
+
+
+def test_total_product_quantity_cap_has_exact_path(
+    live: dict[str, ModuleType],
+) -> None:
+    full = current_full_basket_payload()
+    products = []
+    for index in range(3):
+        item = copy.deepcopy(full["products"][0])
+        item["ids"]["id"] = f"product-{index}"
+        item["ids"]["basketProductId"] = f"basket-product-{index}"
+        item["quantity"]["increments"] = 40
+        item["quantity"]["incrementsLimit"] = 50
+        products.append(item)
+    full["products"] = products
+    _, intent, _ = client_and_intent(live, [summary()], full)
+    remote = live["ordering_remote_basket"]
+
+    with pytest.raises(remote.BasketContractError) as raised:
+        remote.parse_remote_basket_identity(
+            full,
+            intent,
+            expected_basket_id=full["basketId"],
+            expected_basket_version=full["basketVersion"],
+        )
+
+    assert raised.value.path == "products.totalQuantity"
+
+
 @pytest.mark.parametrize(
     "logo",
     [

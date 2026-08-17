@@ -13,8 +13,8 @@ def test_live_spending_gate_is_a_new_migration_and_reauth_reset_contract() -> No
     flow = (ROOT / "custom_components" / "glovo" / "config_flow.py").read_text()
     assert 'CONF_ALLOW_LIVE_CHECKOUT = "allow_live_checkout"' in constants
     assert 'CONF_LIVE_CHECKOUT_ACKNOWLEDGED = "live_checkout_acknowledged"' in constants
-    assert "CONFIG_ENTRY_MINOR_VERSION = 11" in integration
-    assert "MINOR_VERSION = 11" in flow
+    assert "CONFIG_ENTRY_MINOR_VERSION = 12" in integration
+    assert "MINOR_VERSION = 12" in flow
     assert "allow_live_checkout = False" in integration
     assert "live_checkout_acknowledged = False" in integration
     assert "CONF_ALLOW_LIVE_CHECKOUT: False" in flow
