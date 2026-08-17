@@ -60,18 +60,19 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
-### Guarded live paid checkout in Home.10
+### Guarded live paid checkout in Home.15
 
-Release `1.1.0+home.10` production-composes the reviewed strict final request factory
+Release `1.1.0+home.15` production-composes the reviewed strict final request factory
 and one-attempt adapter only when fresh preparation and paid-checkout switch/
 acknowledgement pairs are all literally true and durable authority is healthy. Config
-entry migration v6 closes all four gates—even for installed Home.8/Home.9 entries that
-had all four true—while preserving unrelated options. New setup and reauthentication
+entry migration v8 closes all four gates—even for an opted-in Home.14 entry with all four
+true—while preserving unrelated options. New setup and reauthentication
 also close them. The administrator must complete a fresh re-opt-in after migration.
 Preparation consent alone constructs no final adapter, publishes final checkout
 unavailable, and registers no final-submit command.
 
-Home.10 adds durable account-scoped basket authority. The closed runtime states are
+Home.15 retains Home.14's privacy-safe basket failure classification and durable
+account-scoped basket authority. The closed runtime states are
 `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, and `CONFLICT`; missing runtime memory is never
 projected as an empty writable basket. All administrators share one authority and whole
 operations are cross-administrator serialized. Discovery performs one collection GET
@@ -95,7 +96,7 @@ basket mutation: Home.8 stopped on the documented provider rejection, while Home
 not yet provide this durable reload/re-adoption boundary. Neither identity should be
 used to infer writable basket absence or consent.
 
-Home.10 keeps `ORDERING_WEB_VERSION` at `v1.2569.0`, the latest reproducibly preserved
+Home.15 keeps `ORDERING_WEB_VERSION` at `v1.2569.0`, the latest reproducibly preserved
 authenticated first-party evidence. Later public landing and marketplace bundles did not
 expose a newer authenticated basket constant, so this release does not claim one.
 
@@ -135,7 +136,7 @@ an exact basket, amount, and currency match; all other ambiguity remains manual.
 
 The [reviewed static protocol evidence](docs/live-ordering-protocol-evidence.md) makes no
 provider idempotency claim and does **not** establish lookup by `checkoutSessionId`.
-Home.10 is offline release readiness only: it does not claim deployment, a live canary,
+Home.15 is offline release readiness only: it does not claim deployment, a live canary,
 quote, basket adoption, checkout, payment, or provider call. Follow the
 [operator runbook](docs/live-ordering-operator-runbook.md) and
 [release checklist](docs/live-ordering-release-checklist.md); disabling or rolling back

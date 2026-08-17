@@ -1962,7 +1962,7 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         assert entry.options["ordering_acknowledged"] is False
         assert entry.options["allow_live_checkout"] is False
         assert entry.options["live_checkout_acknowledged"] is False
-        assert entry.minor_version == 6
+        assert entry.minor_version == 8
         if "scan_interval" in options:
             assert entry.options["scan_interval"] == 37
             assert entry.options["unrelated_home_option"] == "preserved"
@@ -1977,6 +1977,42 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
 
 
 @pytest.mark.parametrize(
+    "gates",
+    [
+        (True, True, True, True),
+        (False, True, True, True),
+        (True, False, True, True),
+        (True, True, False, True),
+    ],
+)
+@pytest.mark.parametrize("minor_version", (6, 7))
+def test_prior_v6_and_published_home14_v7_force_fresh_home15_opt_in(
+    ha_runtime: SimpleNamespace,
+    gates: tuple[bool, bool, bool, bool],
+    minor_version: int,
+) -> None:
+    keys = (
+        "allow_ordering",
+        "ordering_acknowledged",
+        "allow_live_checkout",
+        "live_checkout_acknowledged",
+    )
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {"scan_interval": 23, "unrelated_home_option": "preserved"}
+        | dict(zip(keys, gates, strict=True))
+    )
+    entry.minor_version = minor_version
+
+    assert run(ha_runtime.integration.async_migrate_entry(hass, entry)) is True
+
+    assert tuple(entry.options[key] for key in keys) == (False, False, False, False)
+    assert entry.options["scan_interval"] == 23
+    assert entry.options["unrelated_home_option"] == "preserved"
+    assert entry.minor_version == 8
+
+
+@pytest.mark.parametrize(
     ("gates", "expected"),
     [
         ((True, True, True, True), (True, True, True, True)),
@@ -1985,7 +2021,7 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         ((True, True, False, True), (True, True, False, False)),
     ],
 )
-def test_current_v6_migration_preserves_only_normalized_boolean_gate_state(
+def test_current_v8_migration_preserves_only_dependency_consistent_booleans(
     ha_runtime: SimpleNamespace,
     gates: tuple[bool, bool, bool, bool],
     expected: tuple[bool, bool, bool, bool],
@@ -2001,14 +2037,14 @@ def test_current_v6_migration_preserves_only_normalized_boolean_gate_state(
         {"scan_interval": 23, "unrelated_home_option": "preserved"}
         | dict(zip(keys, gates, strict=True))
     )
-    entry.minor_version = 6
+    entry.minor_version = 8
 
     assert run(ha_runtime.integration.async_migrate_entry(hass, entry)) is True
 
     assert tuple(entry.options[key] for key in keys) == expected
     assert entry.options["scan_interval"] == 23
     assert entry.options["unrelated_home_option"] == "preserved"
-    assert entry.minor_version == 6
+    assert entry.minor_version == 8
 
 
 def test_reauth_refresh_resets_both_ordering_options_false(

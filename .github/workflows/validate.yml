@@ -46,8 +46,12 @@ jobs:
         run: |
           python scripts/scan_ordering_privacy.py
           python scripts/scan_ordering_privacy.py --capabilities-only
-      - name: Phase mutation allowlist parity
-        run: python -m pytest -q tests/test_ordering_live_checkout.py -k allowlists
+      - name: Mutation and transport allowlist security tests
+        run: >-
+          python -m pytest -q
+          tests/test_ordering_live_get_clients.py::test_session_transport_is_get_allowlisted_bounded_and_single_attempt
+          tests/test_ordering_remote_basket_quotes.py::test_session_write_routes_are_purpose_typed_allowlisted_and_single_attempt
+          tests/test_ordering_release_security.py
       - name: Full tests from clean tracked archive
         run: python scripts/verify_clean_checkout.py
       - name: Reject whitespace errors
