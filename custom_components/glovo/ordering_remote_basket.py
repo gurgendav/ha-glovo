@@ -176,25 +176,32 @@ class RemoteCustomization:
     attribute_name: str = field(repr=False)
     quantity: StructuredQuantity = field(repr=False)
     customization_id: str | None = field(default=None, repr=False)
+    group_legacy_id: str | None = field(default=None, repr=False)
+    name: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        for name in (
+        for field_name in (
             "group_id",
             "group_external_id",
             "attribute_id",
             "attribute_external_id",
         ):
-            object.__setattr__(self, name, _opaque_id(getattr(self, name)))
+            object.__setattr__(self, field_name, _opaque_id(getattr(self, field_name)))
         object.__setattr__(
             self,
             "group_position",
             _int(self.group_position, maximum=MAX_CUSTOMIZATIONS),
         )
-        object.__setattr__(
-            self, "group_name", _text(self.group_name, maximum=100)
+        group_legacy_id = (
+            self.group_id if self.group_legacy_id is None else self.group_legacy_id
         )
+        object.__setattr__(self, "group_legacy_id", _legacy_id(group_legacy_id))
+        object.__setattr__(self, "group_name", _display_text(self.group_name))
+        object.__setattr__(self, "attribute_name", _display_text(self.attribute_name))
         object.__setattr__(
-            self, "attribute_name", _text(self.attribute_name, maximum=100)
+            self,
+            "name",
+            _display_text(self.group_name if self.name is None else self.name),
         )
         if not isinstance(self.quantity, StructuredQuantity):
             _fail()
@@ -205,7 +212,7 @@ class RemoteCustomization:
 
     def canonical_dict(self) -> dict[str, Any]:
         ids: dict[str, Any] = {
-            "groupLegacyId": self.group_id,
+            "groupLegacyId": self.group_legacy_id,
             "groupId": self.group_id,
             "groupExternalId": self.group_external_id,
             "groupPosition": self.group_position,
@@ -216,7 +223,7 @@ class RemoteCustomization:
             ids["id"] = self.customization_id
         return {
             "ids": ids,
-            "name": self.group_name,
+            "name": self.name,
             "quantity": self.quantity.canonical_dict(),
             "customizationName": self.attribute_name,
             "groupName": self.group_name,
@@ -352,11 +359,9 @@ class RemoteBasketResponseProduct:
         ):
             _fail()
         if self.name is not None:
-            object.__setattr__(self, "name", _text(self.name, maximum=160))
+            object.__setattr__(self, "name", _display_text(self.name))
         if self.product_name is not None:
-            object.__setattr__(
-                self, "product_name", _text(self.product_name, maximum=160)
-            )
+            object.__setattr__(self, "product_name", _display_text(self.product_name))
         _decode_projection(self.provider_projection_bytes)
 
     @property
@@ -424,14 +429,14 @@ class BasketIntent:
 class BasketPrice:
     total_formatted: str = field(repr=False)
     minor: int | None = field(repr=False)
-    major: float = field(repr=False)
+    major: int | float = field(repr=False)
     formatted: str = field(repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "total_formatted",
-            _text(self.total_formatted, maximum=100, allow_empty=True),
+            _display_text(self.total_formatted),
         )
         if self.minor is not None:
             object.__setattr__(
@@ -442,12 +447,12 @@ class BasketPrice:
         object.__setattr__(
             self,
             "major",
-            _number(self.major, minimum=0, maximum=1_000_000_000),
+            _finite_number(self.major),
         )
         object.__setattr__(
             self,
             "formatted",
-            _text(self.formatted, maximum=100, allow_empty=True),
+            _display_text(self.formatted),
         )
 
 
@@ -481,12 +486,12 @@ class RemoteBasketSnapshot:
             _fail("unsupported")
         if (
             not isinstance(self.products, tuple)
-            or not self.products
             or not all(
                 isinstance(item, RemoteBasketResponseProduct)
                 for item in self.products
             )
-            or not _valid_product_tuple(self.intent_products)
+            or (self.products and not _valid_product_tuple(self.intent_products))
+            or (not self.products and self.intent_products != ())
         ):
             _fail()
         if not isinstance(self.basket_price, BasketPrice):
@@ -496,10 +501,8 @@ class RemoteBasketSnapshot:
             for item in self.product_suggestions
         ):
             _fail()
-        if self.city_code is not None and _CITY_RE.fullmatch(
-            _text(self.city_code, maximum=20)
-        ) is None:
-            _fail()
+        if self.city_code is not None:
+            object.__setattr__(self, "city_code", _display_text(self.city_code))
         if (
             self.is_prime_subscription_simulated is not None
             and not isinstance(self.is_prime_subscription_simulated, bool)
@@ -593,6 +596,14 @@ def _object(
     return value
 
 
+def _public_object(
+    value: object, *, required: set[str] | frozenset[str]
+) -> dict[str, Any]:
+    """Apply ordinary Zod-object semantics: require public keys, strip extras."""
+    allowed = set(value) if isinstance(value, dict) else set(required)
+    return _object(value, required=required, allowed=allowed)
+
+
 def _array(
     value: object, *, minimum: int = 0, maximum: int
 ) -> list[Any]:
@@ -622,6 +633,15 @@ def _number(value: object, *, minimum: float, maximum: float) -> float:
     return result
 
 
+def _finite_number(value: object) -> int | float:
+    """Validate a public display number without changing its JSON value."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _fail()
+    if isinstance(value, float) and not math.isfinite(value):
+        _fail()
+    return cast(int | float, value)
+
+
 def _text(
     value: object, *, maximum: int = MAX_STRING, allow_empty: bool = False
 ) -> str:
@@ -633,6 +653,13 @@ def _text(
     if not allow_empty and not normalized:
         _fail()
     return normalized
+
+
+def _display_text(value: object, *, maximum: int = 1_000) -> str:
+    """Preserve bounded public display text byte-for-byte."""
+    if not isinstance(value, str) or len(value) > maximum:
+        _fail()
+    return cast(str, value)
 
 
 def _opaque_id(value: object) -> str:
@@ -656,7 +683,7 @@ def _customer_id(value: object) -> str:
 def _legacy_id(value: object) -> str:
     """Normalize the validator's private legacy-ID primitive union to text."""
     if isinstance(value, bool):
-        return str(value).lower()
+        _fail()
     if isinstance(value, int):
         return str(value)
     return _opaque_id(value)
@@ -808,11 +835,7 @@ def _parse_customizations(
     identities: set[tuple[str, str]] = set()
     positions: dict[str, int] = {}
     for raw in raw_items:
-        item = _object(
-            raw,
-            required=_CUSTOMIZATION_KEYS,
-            allowed=_CUSTOMIZATION_KEYS,
-        )
+        item = _public_object(raw, required=_CUSTOMIZATION_KEYS)
         ids = _object(
             item["ids"],
             required=_CUSTOMIZATION_ID_KEYS - {"id"},
@@ -820,8 +843,6 @@ def _parse_customizations(
         )
         group_legacy_id = _legacy_id(ids["groupLegacyId"])
         group_id = _opaque_id(ids["groupId"])
-        if group_legacy_id != group_id:
-            _fail("mismatch")
         attribute_id = _legacy_id(ids["legacyId"])
         identity = (group_id, attribute_id)
         position = _int(ids["groupPosition"], maximum=MAX_CUSTOMIZATIONS)
@@ -832,9 +853,8 @@ def _parse_customizations(
         identities.add(identity)
         positions[group_id] = position
         quantity, _ = _parse_quantity(item["quantity"])
-        group_name = _text(item["groupName"], maximum=100)
-        if _text(item["name"], maximum=100) != group_name:
-            _fail("mismatch")
+        name = _display_text(item["name"])
+        group_name = _display_text(item["groupName"])
         parsed = RemoteCustomization(
             group_id=group_id,
             group_external_id=_opaque_id(ids["groupExternalId"]),
@@ -842,11 +862,13 @@ def _parse_customizations(
             attribute_id=attribute_id,
             attribute_external_id=_opaque_id(ids["externalId"]),
             group_name=group_name,
-            attribute_name=_text(item["customizationName"], maximum=100),
+            attribute_name=_display_text(item["customizationName"]),
             quantity=quantity,
             customization_id=(
                 _opaque_id(ids["id"]) if "id" in ids else None
             ),
+            group_legacy_id=group_legacy_id,
+            name=name,
         )
         result.append(parsed)
         projection.append(parsed.canonical_dict())
@@ -924,87 +946,63 @@ def parse_basket_intent(payload: object) -> BasketIntent:
     )
 
 
-def _parse_money_amount(value: object) -> dict[str, Any]:
-    item = _object(
-        value,
-        required={"minor", "major", "formatted"},
-        allowed={"minor", "major", "formatted"},
-    )
+def _parse_money_amount(
+    value: object, *, authoritative_minor: bool = False
+) -> dict[str, Any]:
+    item = _public_object(value, required={"minor", "major", "formatted"})
     minor = item["minor"]
     if minor is not None:
-        minor = _int(minor, maximum=100_000_000_000)
+        minor = (
+            _int(minor, maximum=100_000_000_000)
+            if authoritative_minor
+            else _finite_number(minor)
+        )
     return {
         "minor": minor,
-        "major": _number(
-            item["major"], minimum=0, maximum=1_000_000_000
-        ),
-        "formatted": _text(
-            item["formatted"], maximum=100, allow_empty=True
-        ),
+        "major": _finite_number(item["major"]),
+        "formatted": _display_text(item["formatted"]),
     }
 
 
-def _parse_basket_price(value: object) -> tuple[BasketPrice, dict[str, Any]]:
-    root = _object(
-        value,
-        required={"totalFormatted", "final"},
-        allowed={"totalFormatted", "final", "total"},
+def _parse_basket_price(
+    value: object, *, authoritative_final_minor: bool = False
+) -> tuple[BasketPrice | None, dict[str, Any]]:
+    root = _public_object(value, required={"totalFormatted", "final"})
+    final = _parse_money_amount(
+        root["final"], authoritative_minor=authoritative_final_minor
     )
-    final = _parse_money_amount(root["final"])
-    if "total" in root:
-        _parse_money_amount(root["total"])
-    total = _text(root["totalFormatted"], maximum=100, allow_empty=True)
+    total = _display_text(root["totalFormatted"])
+    projection = {"totalFormatted": total, "final": final}
+    if not authoritative_final_minor:
+        return None, projection
     return (
         BasketPrice(
             total_formatted=total,
             minor=cast(int | None, final["minor"]),
-            major=cast(float, final["major"]),
+            major=cast(int | float, final["major"]),
             formatted=cast(str, final["formatted"]),
         ),
-        {"totalFormatted": total, "final": final},
+        projection,
     )
 
 
 def _parse_product_price(value: object) -> dict[str, Any]:
-    item = _object(
-        value,
-        required={
-            "totalFormatted",
-            "final",
-            "unitaryBasePrice",
-            "unitaryTotalPrice",
-            "productTotalDiscount",
-        },
-        allowed={
-            "totalFormatted",
-            "final",
-            "unitaryBasePrice",
-            "unitaryTotalPrice",
-            "productTotalDiscount",
-            "originalUnitaryBasePrice",
-            "originalUnitaryTotalPrice",
-            "productTotalTeasingDiscount",
-        },
-    )
-    for key in (
-        "originalUnitaryBasePrice",
-        "originalUnitaryTotalPrice",
-        "productTotalTeasingDiscount",
-    ):
-        if key in item and item[key] is not None:
-            _fail()
+    required = {
+        "totalFormatted",
+        "final",
+        "unitaryBasePrice",
+        "unitaryTotalPrice",
+        "productTotalDiscount",
+    }
+    item = _public_object(value, required=required)
     discount = item["productTotalDiscount"]
     if discount is not None:
-        discount = _number(discount, minimum=0, maximum=1_000_000_000)
+        discount = _finite_number(discount)
     return {
-        "totalFormatted": _text(
-            item["totalFormatted"], maximum=100, allow_empty=True
-        ),
+        "totalFormatted": _display_text(item["totalFormatted"]),
         "final": _parse_money_amount(item["final"]),
         "unitaryBasePrice": _parse_money_amount(item["unitaryBasePrice"]),
-        "unitaryTotalPrice": _parse_money_amount(
-            item["unitaryTotalPrice"]
-        ),
+        "unitaryTotalPrice": _parse_money_amount(item["unitaryTotalPrice"]),
         "productTotalDiscount": discount,
     }
 
@@ -1022,30 +1020,25 @@ def _parse_discounts(value: object) -> list[dict[str, Any]]:
         "finalPriceMajorWhenInDiscountResponse",
         "percentage",
     }
-    allowed = required | {"isFake"}
     for raw in _array(value, maximum=32):
-        item = _object(raw, required=required, allowed=allowed)
+        item = _public_object(raw, required=required)
         name = item["name"]
         if name is not None:
-            name = _text(name, maximum=160, allow_empty=True)
+            name = _display_text(name)
         final_price = item["finalPriceMajorWhenInDiscountResponse"]
         if final_price is not None:
-            final_price = _number(
-                final_price, minimum=0, maximum=1_000_000_000
-            )
+            final_price = _finite_number(final_price)
         percentage = item["percentage"]
         if percentage is not None:
-            percentage = _number(percentage, minimum=0, maximum=100_000)
+            percentage = _finite_number(percentage)
         parsed: dict[str, Any] = {
             "promotionId": _opaque_id(item["promotionId"]),
-            "type": _text(item["type"], maximum=80),
+            "type": _display_text(item["type"]),
             "name": name,
             "isPrimeDiscount": _bool(item["isPrimeDiscount"]),
-            "label": _text(item["label"], maximum=160, allow_empty=True),
-            "origin": _text(item["origin"], maximum=80, allow_empty=True),
-            "quantity": _number(
-                item["quantity"], minimum=0, maximum=1_000_000_000
-            ),
+            "label": _display_text(item["label"]),
+            "origin": _display_text(item["origin"]),
+            "quantity": _finite_number(item["quantity"]),
             "finalPriceMajorWhenInDiscountResponse": final_price,
             "percentage": percentage,
         }
@@ -1064,11 +1057,7 @@ def _bool(value: object) -> bool:
 def _parse_replacement(value: object) -> dict[str, Any] | None:
     if value is None:
         return None
-    item = _object(
-        value,
-        required={"customerChosenRefund", "ids"},
-        allowed={"customerChosenRefund", "ids"},
-    )
+    item = _public_object(value, required={"customerChosenRefund", "ids"})
     _, ids = _parse_product_ids(item["ids"], basket_product_required=False)
     return {"customerChosenRefund": _bool(item["customerChosenRefund"]), "ids": ids}
 
@@ -1076,41 +1065,32 @@ def _parse_replacement(value: object) -> dict[str, Any] | None:
 def _parse_weighable(value: object) -> dict[str, Any] | None:
     if value is None:
         return None
-    item = _object(
-        value,
-        required={"metric", "incrementByWeight", "incrementByPiece"},
-        allowed={"metric", "incrementByWeight", "incrementByPiece"},
+    item = _public_object(
+        value, required={"metric", "incrementByWeight", "incrementByPiece"}
     )
     return {
-        "metric": _text(item["metric"], maximum=40),
-        "incrementByWeight": _number(
-            item["incrementByWeight"], minimum=0, maximum=1_000_000
-        ),
-        "incrementByPiece": _number(
-            item["incrementByPiece"], minimum=0, maximum=1_000_000
-        ),
+        "metric": _display_text(item["metric"]),
+        "incrementByWeight": _finite_number(item["incrementByWeight"]),
+        "incrementByPiece": _finite_number(item["incrementByPiece"]),
     }
 
 
 def _parse_packaging(value: object) -> dict[str, Any] | None:
     if value is None:
         return None
-    item = _object(
+    item = _public_object(
         value,
         required={"type", "price", "isEco", "isReturnable", "priceFormatted"},
-        allowed={"type", "price", "isEco", "isReturnable", "priceFormatted"},
     )
     packaging_type = item["type"]
     if packaging_type is not None:
-        packaging_type = _text(packaging_type, maximum=80, allow_empty=True)
+        packaging_type = _display_text(packaging_type)
     return {
         "type": packaging_type,
-        "price": _number(item["price"], minimum=0, maximum=1_000_000_000),
+        "price": _finite_number(item["price"]),
         "isEco": _bool_or_none(item["isEco"]),
         "isReturnable": _bool_or_none(item["isReturnable"]),
-        "priceFormatted": _text(
-            item["priceFormatted"], maximum=100, allow_empty=True
-        ),
+        "priceFormatted": _display_text(item["priceFormatted"]),
     }
 
 
@@ -1160,32 +1140,38 @@ def _parse_response_product(
             "products.price", lambda: _parse_product_price(item["price"])
         )
     if "name" in item:
-        projection["name"] = _text(item["name"], maximum=160)
+        projection["name"] = _display_text(item["name"])
     if "productName" in item:
-        projection["productName"] = _text(item["productName"], maximum=160)
+        projection["productName"] = _display_text(item["productName"])
     if "description" in item:
-        projection["description"] = _text(
-            item["description"], maximum=1_000, allow_empty=True
-        )
+        projection["description"] = _display_text(item["description"])
     if "isCustomizable" in item:
         projection["isCustomizable"] = _bool(item["isCustomizable"])
     if "productReplacement" in item:
-        projection["productReplacement"] = _parse_replacement(
-            item["productReplacement"]
+        projection["productReplacement"] = _at(
+            "products.productReplacement",
+            lambda: _parse_replacement(item["productReplacement"]),
         )
     if "weighableInfo" in item:
-        projection["weighableInfo"] = _parse_weighable(item["weighableInfo"])
+        projection["weighableInfo"] = _at(
+            "products.weighableInfo",
+            lambda: _parse_weighable(item["weighableInfo"]),
+        )
     if "packaging" in item:
-        projection["packaging"] = _parse_packaging(item["packaging"])
+        projection["packaging"] = _at(
+            "products.packaging", lambda: _parse_packaging(item["packaging"])
+        )
     if "customizations" in item:
         projection["customizations"] = customizations_projection
     if "imageUrl" in item:
         image_url = item["imageUrl"]
         if image_url is not None:
-            image_url = _text(image_url, maximum=1_000, allow_empty=True)
+            image_url = _display_text(image_url)
         projection["imageUrl"] = image_url
     if "discounts" in item:
-        projection["discounts"] = _parse_discounts(item["discounts"])
+        projection["discounts"] = _at(
+            "products.discounts", lambda: _parse_discounts(item["discounts"])
+        )
     # Known and future product-level display extensions are intentionally not
     # projected. The global payload cap is the resource boundary.
     if sponsored_required:
@@ -1206,11 +1192,13 @@ def _parse_response_product(
 
 
 def _parse_response_products(
-    value: object,
+    value: object, *, allow_empty: bool = False
 ) -> tuple[tuple[RemoteBasketResponseProduct, ...], list[dict[str, Any]]]:
     parsed = [
         _parse_response_product(item)
-        for item in _array(value, minimum=1, maximum=MAX_PRODUCTS)
+        for item in _array(
+            value, minimum=0 if allow_empty else 1, maximum=MAX_PRODUCTS
+        )
     ]
     products = [item for item, _ in parsed]
     if sum(item.quantity.increments for item in products) > MAX_TOTAL_QUANTITY:
@@ -1245,53 +1233,22 @@ def _parse_product_suggestions(
 def _parse_mbs(value: object) -> dict[str, Any] | None:
     if value is None:
         return None
-    item = _object(
-        value,
-        required={
-            "surchargePrice",
-            "savedSurchargePrice",
-            "barThreshold",
-            "currentPrice",
-            "currentThreshold",
-        },
-        allowed={
-            "surchargePrice",
-            "savedSurchargePrice",
-            "barThreshold",
-            "currentPrice",
-            "currentThreshold",
-            "muxApplied",
-            "surcharge",
-            "tiers",
-        },
-    )
+    required = {
+        "surchargePrice",
+        "savedSurchargePrice",
+        "barThreshold",
+        "currentPrice",
+        "currentThreshold",
+    }
+    item = _public_object(value, required=required)
     _, bar = _parse_basket_price(item["barThreshold"])
     _, current = _parse_basket_price(item["currentPrice"])
-    if "muxApplied" in item:
-        _bool(item["muxApplied"])
-    if "surcharge" in item:
-        _parse_basket_price(item["surcharge"])
-    if "tiers" in item:
-        for raw_tier in _array(item["tiers"], maximum=32):
-            tier = _object(
-                raw_tier,
-                required={"feeMinor", "thresholdMinor"},
-                allowed={"feeMinor", "thresholdMinor"},
-            )
-            _int(tier["feeMinor"], maximum=100_000_000_000)
-            _int(tier["thresholdMinor"], maximum=100_000_000_000)
     return {
-        "surchargePrice": _text(
-            item["surchargePrice"], maximum=100, allow_empty=True
-        ),
-        "savedSurchargePrice": _text(
-            item["savedSurchargePrice"], maximum=100, allow_empty=True
-        ),
+        "surchargePrice": _display_text(item["surchargePrice"]),
+        "savedSurchargePrice": _display_text(item["savedSurchargePrice"]),
         "barThreshold": bar,
         "currentPrice": current,
-        "currentThreshold": _text(
-            item["currentThreshold"], maximum=100, allow_empty=True
-        ),
+        "currentThreshold": _display_text(item["currentThreshold"]),
     }
 
 
@@ -1309,12 +1266,15 @@ def _customizations_match(
         if returned is None:
             return False
         if (
-            returned.group_external_id != wanted.group_external_id
+            returned.group_legacy_id != wanted.group_legacy_id
+            or returned.group_external_id != wanted.group_external_id
             or returned.group_position != wanted.group_position
             or returned.attribute_external_id != wanted.attribute_external_id
-            or returned.group_name != wanted.group_name
-            or returned.attribute_name != wanted.attribute_name
             or returned.quantity.increments != wanted.quantity.increments
+            or (
+                wanted.customization_id is not None
+                and returned.customization_id != wanted.customization_id
+            )
         ):
             return False
     return True
@@ -1364,22 +1324,6 @@ def _parse_remote_basket(
     """Parse one rich response with identity and optional intent matching."""
     if not isinstance(intent, BasketIntent):
         _fail()
-    # Preserve the field-specific diagnostic before the whole-response cap. This
-    # is constant-bounded: `_text` rejects a string over 1,000 characters before
-    # scanning its contents, and no other payload field is traversed here.
-    if isinstance(payload, dict):
-        raw_store_info = payload.get("storeInfo")
-        if isinstance(raw_store_info, dict) and "logo" in raw_store_info:
-            _at(
-                "root.storeInfo.logo",
-                lambda: (
-                    None
-                    if raw_store_info["logo"] is None
-                    else _text(
-                        raw_store_info["logo"], maximum=1_000, allow_empty=True
-                    )
-                ),
-            )
     _bounded_payload(payload)
     required = {
         "basketId",
@@ -1417,30 +1361,8 @@ def _parse_remote_basket(
     root = _at(
         "root.keys", lambda: _object(payload, required=required, allowed=allowed)
     )
-    # Provider-owned lifecycle/display extensions are bounded by the whole
-    # payload preflight and discarded rather than treated as basket authority.
-    if "storeInfo" in root:
-        store_info = _at(
-            "root.storeInfo.keys",
-            lambda: _object(
-                root["storeInfo"],
-                required={"logo", "name", "vertical"},
-                allowed={"logo", "name", "vertical"},
-            ),
-        )
-        _at(
-            "root.storeInfo.logo",
-            lambda: (
-                None
-                if store_info["logo"] is None
-                else _text(store_info["logo"], maximum=1_000, allow_empty=True)
-            ),
-        )
-        _at(
-            "root.storeInfo.name",
-            lambda: _text(store_info["name"], maximum=160),
-        )
-        # `vertical` is a discarded provider display extension.
+    # Provider-owned lifecycle/store display extensions are bounded by the
+    # whole payload preflight and discarded as complete opaque values.
     basket_id = _opaque_id(root["basketId"])
     basket_version = _opaque_id(root["basketVersion"])
     customer_id = _customer_id(root["customerId"])
@@ -1450,7 +1372,10 @@ def _parse_remote_basket(
     if root["handlingStrategy"] != "DELIVERY":
         _fail("unsupported")
     products, products_projection = _at(
-        "products", lambda: _parse_response_products(root["products"])
+        "products",
+        lambda: _parse_response_products(
+            root["products"], allow_empty=not require_product_match
+        ),
     )
     expected = intent.products if expected_products is None else expected_products
     if not _valid_product_tuple(expected):
@@ -1472,22 +1397,20 @@ def _parse_remote_basket(
     ):
         _fail("mismatch")
     basket_price, basket_price_projection = _at(
-        "basketPrice", lambda: _parse_basket_price(root["basketPrice"])
+        "basketPrice",
+        lambda: _parse_basket_price(
+            root["basketPrice"], authoritative_final_minor=True
+        ),
     )
     mbs = _at("mbs", lambda: _parse_mbs(root["mbs"]))
     prime = _bool_or_none(root["isPrimeSubscriptionSimulated"])
     using_dh_basket = _bool(root["usingDhBasket"])
     city_code = root.get("cityCode")
     if city_code is not None:
-        city_code = _text(city_code, maximum=20)
-        if _CITY_RE.fullmatch(city_code) is None:
-            _fail()
+        city_code = _display_text(city_code)
     suggestions: tuple[RemoteBasketResponseProduct, ...] = ()
-    suggestions_projection: list[dict[str, Any]] = []
-    if "productSuggestions" in root:
-        suggestions, suggestions_projection = _parse_product_suggestions(
-            root["productSuggestions"]
-        )
+    # Suggestions are display-only and cannot invalidate an otherwise exact
+    # authoritative basket. The bounded value is discarded wholesale.
     projection: dict[str, Any] = {
         "handlingStrategy": "DELIVERY",
         "products": products_projection,
@@ -1502,8 +1425,7 @@ def _parse_remote_basket(
         "isPrimeSubscriptionSimulated": prime,
         "usingDhBasket": using_dh_basket,
     }
-    if "productSuggestions" in root:
-        projection["productSuggestions"] = suggestions_projection
+
     if "cityCode" in root:
         projection["cityCode"] = city_code
     return RemoteBasketSnapshot(
@@ -1531,7 +1453,7 @@ def _parse_remote_basket(
                 for item in products
             )
         ),
-        basket_price=basket_price,
+        basket_price=cast(BasketPrice, basket_price),
         product_suggestions=suggestions,
         city_code=cast(str | None, city_code),
         is_prime_subscription_simulated=prime,

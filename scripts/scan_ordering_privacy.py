@@ -320,7 +320,7 @@ def _python_public_provider_keys(source: str) -> set[str]:
 def scan_basket_authority_contracts(
     findings: list[str], *, sources: Mapping[str, str] | None = None
 ) -> None:
-    """Enforce Home.20's private, read-only basket authority release contract."""
+    """Enforce Home.21's private, read-only basket authority release contract."""
 
     loaded = dict(sources) if sources is not None else load_basket_authority_sources()
     required_names = {
@@ -363,20 +363,17 @@ def scan_basket_authority_contracts(
     if _has_logger_call(store) or _has_logger_call(discovery) or _has_logger_call(parser):
         findings.append("basket authority source logging is forbidden")
 
-    logo_path = '"root.storeInfo.logo"'
     bounded_payload = "_bounded_payload(payload)"
-    nullable_logo_contract = (
-        'required={"logo", "name", "vertical"}' in parser
-        and 'if store_info["logo"] is None' in parser
-        and 'else _text(store_info["logo"], maximum=1_000, allow_empty=True)' in parser
-        and logo_path in parser
+    opaque_store_display_contract = (
+        '"storeInfo",' in parser
         and bounded_payload in parser
-        and parser.find(bounded_payload, parser.index(logo_path))
-        > parser.index(logo_path)
+        and "Provider-owned lifecycle/store display extensions are bounded" in parser
+        and "whole payload preflight and discarded as complete opaque values" in parser
+        and '"storeInfo":' not in parser
     )
-    if not nullable_logo_contract:
+    if not opaque_store_display_contract:
         findings.append(
-            f"{BASKET_PARSER_SOURCE}: nullable bounded basket logo contract changed"
+            f"{BASKET_PARSER_SOURCE}: bounded opaque store display contract changed"
         )
 
     wiring = (
@@ -473,7 +470,7 @@ def scan_capabilities(findings: list[str]) -> None:
             if pattern.search(text):
                 findings.append(f"{path.relative_to(ROOT)}: {name}")
     scan_basket_authority_contracts(findings)
-    # Home.20 must compose the exact reviewed adapter and request factory while
+    # Home.21 must compose the exact reviewed adapter and request factory while
     # retaining the durable final coordinator. Runtime tests prove gate absence.
     runtime_text = {
         path.name: path.read_text(encoding="utf-8")

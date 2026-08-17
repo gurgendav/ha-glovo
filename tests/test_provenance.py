@@ -22,18 +22,18 @@ ROOT = Path(__file__).parents[1]
 def test_home20_trust_descriptor_is_exact_and_independently_hashed() -> None:
     descriptor = (
         "ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|"
-        "version=1.1.0+home.20|profile=coordinator-source-provenance-v1"
+        "version=1.1.0+home.21|profile=coordinator-source-provenance-v1"
     )
     expected_digest = (
-        "4ac96cdf32647e80586cb2f48bb4a024be88c8bf34d5138034a49c0cd2afd339"
+        "9472befc17e95d4b341e6c244ac230865f5158905f1063029a19bf438f5c29bd"
     )
     source = (ROOT / "custom_components/glovo/const.py").read_text(encoding="utf-8")
     assert hashlib.sha256(descriptor.encode("utf-8")).hexdigest() == expected_digest
     assert descriptor in source
     literal_parts = re.findall(
-        r'"(ha-glovo:1\.1\.0\+home\.20:sha256:|[0-9a-f]{64})"', source
+        r'"(ha-glovo:1\.1\.0\+home\.21:sha256:|[0-9a-f]{64})"', source
     )
-    assert "".join(literal_parts) == f"ha-glovo:1.1.0+home.20:sha256:{expected_digest}"
+    assert "".join(literal_parts) == f"ha-glovo:1.1.0+home.21:sha256:{expected_digest}"
 
 
 class _ConfigEntry:

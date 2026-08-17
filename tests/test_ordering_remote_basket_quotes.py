@@ -757,7 +757,7 @@ def test_current_schema_nullable_discount_fields_are_preserved(
         assert projected[field] is None
 
 
-def test_nullable_discounts_apply_to_sponsored_suggestions(
+def test_sponsored_suggestions_are_bounded_display_only_and_discarded(
     live: dict[str, ModuleType],
 ) -> None:
     remote = live["ordering_remote_basket"]
@@ -778,10 +778,12 @@ def test_nullable_discounts_apply_to_sponsored_suggestions(
 
     parsed = remote.parse_remote_basket(payload, intent)
 
-    projected = parsed.product_suggestions[0].canonical_dict()["discounts"][0]
-    assert projected["name"] is None
-    assert projected["finalPriceMajorWhenInDiscountResponse"] is None
-    assert projected["percentage"] is None
+    assert parsed.product_suggestions == ()
+    assert b"productSuggestions" not in parsed.provider_projection_bytes
+
+    payload["productSuggestions"] = {"futureDisplayShape": [True, None]}
+    parsed = remote.parse_remote_basket(payload, intent)
+    assert parsed.product_suggestions == ()
 
 
 @pytest.mark.parametrize(
@@ -1012,6 +1014,7 @@ def test_remote_client_create_replace_quantity_delete_are_one_call_and_version_b
     assert fixture.calls[0][3] == intent.create_body()
     expected_put = basket_payload(version="v1")
     expected_put["customerId"] = "42"
+    expected_put.pop("productSuggestions")
     assert fixture.calls[1][3] == expected_put
     assert fixture.calls[2][3] == {
         "handlingStrategy": "DELIVERY",
@@ -1056,6 +1059,7 @@ def test_replace_put_accepts_changed_request_product_without_fabricating_rich_fi
     expected = basket_payload()
     expected["customerId"] = "42"
     expected["products"] = [proposed[0].canonical_dict()]
+    expected.pop("productSuggestions")
     assert fixture.calls[0][3] == expected
     assert set(fixture.calls[0][3]["products"][0]) == {
         "ids",
@@ -1063,6 +1067,53 @@ def test_replace_put_accepts_changed_request_product_without_fabricating_rich_fi
         "customizations",
     }
     assert "price" not in fixture.calls[0][3]["products"][0]
+
+
+def test_home21_clone_and_quote_preserve_public_fields_and_never_reemit_extensions(
+    live: dict[str, ModuleType],
+) -> None:
+    remote = live["ordering_remote_basket"]
+    payload = basket_payload()
+    product = payload["products"][0]
+    product["name"] = "  500  Cal\nMeal  "
+    product["productName"] = ""
+    product["description"] = "Ω\n  preserved  "
+    product["futureProductDisplay"] = {"discarded": True}
+    product["price"]["futurePriceDisplay"] = True
+    product["price"]["final"].update(
+        {"minor": -1.5, "major": -2.25, "formatted": "  raw\nprice  ", "future": True}
+    )
+    product["weighableInfo"] = {
+        "metric": "  kg\n",
+        "incrementByWeight": -0.5,
+        "incrementByPiece": 0.25,
+        "future": True,
+    }
+    product["packaging"] = {
+        "type": None,
+        "price": -3.5,
+        "isEco": None,
+        "isReturnable": None,
+        "priceFormatted": "  raw\npackage  ",
+        "future": True,
+    }
+    intent = remote.parse_basket_intent(intent_payload())
+    basket = remote.parse_remote_basket(payload, intent)
+
+    expected_product = basket.products[0].canonical_dict()
+    clone = basket.replace_body(basket.products)
+    quote = make_request(live)
+    quote_basket = replace(quote.basket, provider_projection_bytes=basket.provider_projection_bytes, products=basket.products)
+    quoted = replace(quote, basket=quote_basket).private_body()["checkout"]["components"]["productList"]
+
+    assert clone["products"] == [expected_product]
+    assert quoted == [expected_product]
+    assert expected_product["name"] == "  500  Cal\nMeal  "
+    assert expected_product["productName"] == ""
+    assert expected_product["price"]["final"]["minor"] == -1.5
+    encoded = json.dumps({"clone": clone, "quoted": quoted}, ensure_ascii=False)
+    for discarded in ("futureProductDisplay", "futurePriceDisplay", '"future"'):
+        assert discarded not in encoded
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422, 429])

@@ -515,49 +515,42 @@ def test_total_product_quantity_cap_has_exact_path(
         True,
         1,
         1.5,
-        "x" * 1_001,
+        "x" * 1_000,
     ],
-    ids=["object", "array", "boolean", "integer", "number", "oversized-string"],
+    ids=["object", "array", "boolean", "integer", "number", "bounded-string"],
 )
-def test_malformed_store_logo_is_rejected_at_exact_path(
+def test_store_info_extension_is_opaque_bounded_and_discarded(
     live: dict[str, ModuleType], logo: Any
 ) -> None:
     full = current_full_basket_payload()
     full["storeInfo"]["logo"] = logo
     client, intent, fixture = client_and_intent(live, [summary()], full)
-    discovery = live["ordering_remote_basket_discovery"]
+    result = run(discover(client, intent, live))
 
-    with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
-        run(discover(client, intent, live))
-
-    assert raised.value.stage == "full_parse"
-    assert raised.value.reason == "schema"
-    assert raised.value.path == "root.storeInfo.logo"
+    assert result.status is live["ordering_remote_basket_discovery"].RemoteBasketDiscoveryStatus.ADOPTED
+    assert result.snapshot is not None
+    assert b"storeInfo" not in result.snapshot.provider_projection_bytes
     assert_calls(live, fixture, full=True)
 
 
-def test_nested_price_and_mbs_extensions_remain_strict(
+def test_nested_price_and_mbs_extensions_are_stripped_wholesale(
     live: dict[str, ModuleType],
 ) -> None:
-    malformed: list[dict[str, Any]] = []
-
-
+    variants: list[dict[str, Any]] = []
     price_shape = current_full_basket_payload()
     price_shape["basketPrice"]["total"]["private"] = "x"
-    malformed.append(price_shape)
+    variants.append(price_shape)
 
     mbs_tier = current_full_basket_payload()
     mbs_tier["mbs"]["tiers"][0]["private"] = "x"
-    malformed.append(mbs_tier)
+    variants.append(mbs_tier)
 
-
-    discovery = live["ordering_remote_basket_discovery"]
-    for full in malformed:
+    for full in variants:
         client, intent, fixture = client_and_intent(live, [summary()], full)
-        with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
-            run(discover(client, intent, live))
-        assert raised.value.stage == "full_parse"
-        assert raised.value.reason == "schema"
+        result = run(discover(client, intent, live))
+        assert result.status is live["ordering_remote_basket_discovery"].RemoteBasketDiscoveryStatus.ADOPTED
+        assert result.snapshot is not None
+        assert b'"private"' not in result.snapshot.provider_projection_bytes
         assert_calls(live, fixture, full=True)
 
 
@@ -565,7 +558,7 @@ def test_full_basket_failure_path_is_closed_and_value_free(
     live: dict[str, ModuleType],
 ) -> None:
     full = current_full_basket_payload()
-    full["storeInfo"]["logo"] = True
+    full["products"][0]["ids"]["privateIdentity"] = "private-value"
     client, intent, fixture = client_and_intent(live, [summary()], full)
     discovery = live["ordering_remote_basket_discovery"]
 
@@ -574,7 +567,7 @@ def test_full_basket_failure_path_is_closed_and_value_free(
 
     assert raised.value.stage == "full_parse"
     assert raised.value.reason == "schema"
-    assert raised.value.path == "root.storeInfo.logo"
+    assert raised.value.path == "products.ids"
     assert "basket-private" not in str(raised.value)
     assert_calls(live, fixture, full=True)
 
@@ -585,28 +578,253 @@ def test_full_basket_failure_path_is_closed_and_value_free(
     assert "PRIVATE" not in str(sanitized)
 
 
-def test_authoritative_eta_shape_remains_strict_and_bounded(
+def test_public_eta_numbers_and_unknown_keys_are_display_only(
     live: dict[str, ModuleType],
 ) -> None:
-    malformed: list[dict[str, Any]] = []
-
     reversed_eta = summary()
     reversed_eta["eta"] = {"lowerBound": 40, "upperBound": 20}
-    malformed.append(reversed_eta)
-
     eta_extra = summary()
     eta_extra["eta"] = {"lowerBound": 20, "upperBound": 40, "private": "x"}
-    malformed.append(eta_extra)
+    for collection_item in (reversed_eta, eta_extra):
+        client, intent, fixture = client_and_intent(
+            live, [collection_item], basket_payload()
+        )
+        result = run(discover(client, intent, live))
+        assert result.status is live["ordering_remote_basket_discovery"].RemoteBasketDiscoveryStatus.ADOPTED
+        assert_calls(live, fixture, full=True)
 
+
+def test_home21_t3_t11_complete_public_display_shape_adopts_exact_intent(
+    live: dict[str, ModuleType],
+) -> None:
+    """One production-shaped tranche closes the audited display-only matrix."""
+    selected = summary()
+    selected.update(
+        {
+            "basketItems": -1.5,
+            "basketPriceFormatted": "  5 500\nAMD  ",
+            "deliveryFeeInfo": {
+                "deliveryFeeFormatted": "  free\nnow  ",
+                "feeType": "Ω",
+                "futureDisplay": {"shape": [1, None]},
+            },
+            "distance": "  1.2\nkm  ",
+            "eta": {
+                "lowerBound": 40.5,
+                "upperBound": -2.25,
+                "futureDisplay": True,
+            },
+            "storeImage": "",
+            "storeName": "  Café\n500 Cal  ",
+            "updatedAt": "not normalized\n",
+            "storeAvailability": ["opaque", {"changed": True}],
+            "futureSummaryDisplay": {"bounded": True},
+        }
+    )
+    full = current_full_basket_payload()
+    wanted = intent_payload()
+    wanted_customization = wanted["products"][0]["customizations"][0]
+    wanted_customization["ids"]["groupLegacyId"] = "legacy-group-1"
+    wanted_customization["name"] = "Prepared label"
+    wanted_customization["groupName"] = "Prepared group label"
+    wanted_customization["customizationName"] = "Prepared option label"
+
+    full_customization = full["products"][0]["customizations"][0]
+    full_customization["ids"]["groupLegacyId"] = "legacy-group-1"
+    full_customization["name"] = "  Returned name\n  "
+    full_customization["groupName"] = "Returned group Ω"
+    full_customization["customizationName"] = ""
+    full_customization["futureDisplay"] = {"ignored": True}
+
+    full.update(
+        {
+            "baseOrderUrn": {"changed": True},
+            "storeInfo": ["entire extension is opaque"],
+            "futureRootDisplay": {"nested": [1, True, None]},
+            # Suggestions are never basket authority and cannot block adoption.
+            "productSuggestions": {"malformedDisplayOnly": object().__class__.__name__},
+        }
+    )
+    full["basketPrice"]["futureDisplay"] = True
+    full["basketPrice"]["final"]["major"] = -1.25
+    full["basketPrice"]["final"]["formatted"] = "  total\nAMD  "
+    full["basketPrice"]["final"]["futureDisplay"] = [1]
+    full["basketPrice"]["total"] = {"arbitrary": "discarded"}
+    full["mbs"]["futureDisplay"] = True
+    full["mbs"]["muxApplied"] = {"changed": True}
+    full["mbs"]["tiers"] = "changed"
+    full["mbs"]["barThreshold"]["final"]["minor"] = -3.5
+    full["mbs"]["barThreshold"]["final"]["major"] = -4.5
+    full["mbs"]["barThreshold"]["final"]["futureDisplay"] = True
+
+    product = full["products"][0]
+    product.update(
+        {
+            "name": "  500  Cal\nMeal  ",
+            "productName": "",
+            "description": "Unicode Ω\nkept exactly",
+            "imageUrl": "  relative image\n  ",
+            "futureProductDisplay": {"nested": True},
+            "availability": {"changed": True},
+            "nmrAdId": ["changed"],
+            "tags": {"changed": True},
+            "weight": ["changed"],
+            "weighableInfo": {
+                "metric": "  kg\n  ",
+                "incrementByWeight": -0.25,
+                "incrementByPiece": 0.125,
+                "futureDisplay": True,
+            },
+            "packaging": {
+                "type": "  box\n  ",
+                "price": -1.5,
+                "isEco": None,
+                "isReturnable": None,
+                "priceFormatted": "  -1.5\nAMD  ",
+                "futureDisplay": True,
+            },
+        }
+    )
+    product["quantity"]["items"] = {"changed": True}
+    product["quantity"]["itemsLimit"] = ["changed"]
+    product["price"]["futureDisplay"] = True
+    product["price"]["final"].update(
+        {"minor": -2.5, "major": -3.75, "formatted": "  x\ny  ", "future": True}
+    )
+    product["price"]["unitaryBasePrice"]["minor"] = 1.25
+    product["price"]["unitaryTotalPrice"]["major"] = -9.5
+    product["price"]["productTotalDiscount"] = -0.5
+    product["price"]["originalUnitaryBasePrice"] = {"changed": True}
+
+    fixture = FixtureReadSession([selected], full)
+    remote = live["ordering_remote_basket"]
+    intent = remote.parse_basket_intent(wanted)
+    client = live["ordering_remote_basket_discovery"].RemoteBasketDiscoveryClient(fixture)
+
+    result = run(discover(client, intent, live))
 
     discovery = live["ordering_remote_basket_discovery"]
-    for collection_item in malformed:
-        client, intent, fixture = client_and_intent(live, [collection_item])
-        with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
-            run(discover(client, intent, live))
-        assert raised.value.stage == "collection_parse"
-        assert raised.value.reason in {"schema", "mismatch"}
-        assert_calls(live, fixture, full=False)
+    assert result.status is discovery.RemoteBasketDiscoveryStatus.ADOPTED
+    assert result.snapshot is not None
+    projection = result.snapshot.products[0].canonical_dict()
+    assert projection["name"] == "  500  Cal\nMeal  "
+    assert projection["productName"] == ""
+    assert projection["description"] == "Unicode Ω\nkept exactly"
+    assert projection["price"]["final"] == {
+        "minor": -2.5,
+        "major": -3.75,
+        "formatted": "  x\ny  ",
+    }
+    assert projection["weighableInfo"]["incrementByWeight"] == -0.25
+    assert projection["packaging"]["price"] == -1.5
+    projected_customization = projection["customizations"][0]
+    assert projected_customization["ids"]["groupLegacyId"] == "legacy-group-1"
+    assert projected_customization["ids"]["groupId"] == "group-1"
+    assert projected_customization["name"] == "  Returned name\n  "
+    assert projected_customization["groupName"] == "Returned group Ω"
+    assert projected_customization["customizationName"] == ""
+    encoded = result.snapshot.provider_projection_bytes
+    for discarded in (
+        b"futureDisplay",
+        b"futureRootDisplay",
+        b"futureProductDisplay",
+        b"baseOrderUrn",
+        b"storeInfo",
+        b"originalUnitaryBasePrice",
+        b"productSuggestions",
+        b"itemsLimit",
+    ):
+        assert discarded not in encoded
+    assert result.snapshot.product_suggestions == ()
+    assert_calls(live, fixture, full=True)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "expected_path"),
+    [
+        (("products", 0, "ids", "futureIdentity"), "x", "products.ids"),
+        (("products", 0, "quantity", "increments"), 1.5, "products.quantity.increments"),
+        (("products", 0, "price", "final", "major"), "1", "products.price"),
+        (("products", 0, "weighableInfo"), {"metric": "kg", "incrementByWeight": "1", "incrementByPiece": 1}, "products.weighableInfo"),
+        (("products", 0, "packaging"), {"type": None, "price": "1", "isEco": None, "isReturnable": None, "priceFormatted": "x"}, "products.packaging"),
+        (("products", 0, "customizations", 0, "ids", "legacyId"), None, "products.customizations"),
+        (("products", 0, "customizations", 0, "ids", "futureIdentity"), "x", "products.customizations"),
+        (("basketPrice", "final", "minor"), -1, "basketPrice"),
+        (("basketPrice", "final", "minor"), 1.5, "basketPrice"),
+    ],
+)
+def test_home21_malformed_neighbors_preserve_authority_boundaries(
+    live: dict[str, ModuleType],
+    path: tuple[Any, ...],
+    value: Any,
+    expected_path: str,
+) -> None:
+    full = current_full_basket_payload()
+    target: Any = full
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    client, intent, fixture = client_and_intent(live, [summary()], full)
+    discovery = live["ordering_remote_basket_discovery"]
+
+    with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
+        run(discover(client, intent, live))
+
+    assert raised.value.stage == "full_parse"
+    assert raised.value.reason == "schema"
+    assert raised.value.path == expected_path
+    assert_calls(live, fixture, full=True)
+
+
+@pytest.mark.parametrize(
+    "difference",
+    [
+        "groupLegacyId",
+        "groupId",
+        "groupExternalId",
+        "groupPosition",
+        "legacyId",
+        "externalId",
+        "quantity",
+    ],
+)
+def test_home21_every_customization_identity_dimension_remains_exact(
+    live: dict[str, ModuleType], difference: str
+) -> None:
+    wanted = intent_payload()
+    wanted["products"][0]["customizations"][0]["ids"]["groupLegacyId"] = "legacy-group-1"
+    full = basket_payload()
+    actual = full["products"][0]["customizations"][0]
+    actual["ids"]["groupLegacyId"] = "legacy-group-1"
+    if difference == "quantity":
+        actual["quantity"]["increments"] = 2
+    elif difference == "groupPosition":
+        actual["ids"][difference] = 1
+    else:
+        actual["ids"][difference] = "different-id"
+    client, intent, fixture = client_and_intent(live, [summary()], full)
+    intent = live["ordering_remote_basket"].parse_basket_intent(wanted)
+    client = live["ordering_remote_basket_discovery"].RemoteBasketDiscoveryClient(fixture)
+
+    result = run(discover(client, intent, live))
+
+    assert result.status is live["ordering_remote_basket_discovery"].RemoteBasketDiscoveryStatus.CONFLICT
+    assert result.snapshot is None
+    assert_calls(live, fixture, full=True)
+
+
+def test_empty_public_basket_is_closed_conflict_not_adoption(
+    live: dict[str, ModuleType],
+) -> None:
+    full = basket_payload()
+    full["products"] = []
+    client, intent, fixture = client_and_intent(live, [summary()], full)
+
+    result = run(discover(client, intent, live))
+
+    assert result.status is live["ordering_remote_basket_discovery"].RemoteBasketDiscoveryStatus.CONFLICT
+    assert result.snapshot is None
+    assert_calls(live, fixture, full=True)
 
 
 @pytest.mark.parametrize("difference", ["product", "quantity", "customization"])
@@ -713,7 +931,7 @@ def test_collection_rejects_oversized_string_and_full_rejects_oversized_items(
 ) -> None:
     discovery = live["ordering_remote_basket_discovery"]
     oversized = summary()
-    oversized["storeName"] = "x" * 161
+    oversized["storeName"] = "x" * 1_001
     client, intent, fixture = client_and_intent(live, [oversized])
     with pytest.raises(discovery.RemoteBasketDiscoveryError):
         run(discover(client, intent, live))

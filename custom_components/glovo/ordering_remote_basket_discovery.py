@@ -17,10 +17,12 @@ from .ordering_remote_basket import (
     _bool,
     _bounded_payload,
     _customer_id,
+    _display_text,
+    _finite_number,
     _int,
-    _number,
     _object,
     _opaque_id,
+    _public_object,
     _text,
     parse_remote_basket_identity,
     remote_basket_matches_intent,
@@ -34,9 +36,7 @@ _MAX_COLLECTION_BYTES: Final = 128_000
 _CUSTOMER_PATH_RE: Final = re.compile(r"^[1-9]\d{0,9}$")
 _DIAGNOSTIC_PATH_RE: Final = re.compile(r"^[a-z][a-zA-Z0-9_.]{0,79}$")
 _ETA_RANGE_REQUIRED: Final = frozenset({"lowerBound", "upperBound"})
-_STORE_AVAILABILITY_REQUIRED: Final = frozenset(
-    {"nextOpeningTime", "nextSchedulingTime", "storeStatus"}
-)
+_DELIVERY_FEE_REQUIRED: Final = frozenset({"deliveryFeeFormatted", "feeType"})
 _SUMMARY_REQUIRED: Final = frozenset(
     {
         "basketId",
@@ -140,40 +140,22 @@ def _parse_nullable_eta(value: object) -> None:
     if value is None:
         return
     if isinstance(value, str):
-        _text(value, maximum=100)
+        _display_text(value)
         return
     if isinstance(value, dict):
-        item = _object(
-            value,
-            required=_ETA_RANGE_REQUIRED,
-            allowed=_ETA_RANGE_REQUIRED,
-        )
-        lower = _int(item["lowerBound"], maximum=86_400)
-        upper = _int(item["upperBound"], maximum=86_400)
-        if lower > upper:
-            raise BasketContractError("mismatch")
+        item = _public_object(value, required=_ETA_RANGE_REQUIRED)
+        _finite_number(item["lowerBound"])
+        _finite_number(item["upperBound"])
         return
-    _int(value, maximum=86_400)
+    _finite_number(value)
 
 
 def _parse_delivery_fee_info(value: object) -> None:
     if value is None:
         return
-    if not isinstance(value, dict):
-        raise BasketContractError
-    _bounded_payload(value, maximum=32_000)
-
-
-def _parse_store_availability(value: object) -> None:
-    item = _object(
-        value,
-        required=_STORE_AVAILABILITY_REQUIRED,
-        allowed=_STORE_AVAILABILITY_REQUIRED,
-    )
-    for key in ("nextOpeningTime", "nextSchedulingTime"):
-        if item[key] is not None:
-            _text(item[key], maximum=100)
-    _text(item["storeStatus"], maximum=40)
+    item = _public_object(value, required=_DELIVERY_FEE_REQUIRED)
+    _display_text(item["deliveryFeeFormatted"])
+    _display_text(item["feeType"])
 
 
 def _parse_summary(value: object) -> _BasketSummary:
@@ -183,17 +165,17 @@ def _parse_summary(value: object) -> _BasketSummary:
     item = _object(value, required=_SUMMARY_REQUIRED, allowed=allowed)
     basket_id = _opaque_id(item["basketId"])
     basket_version = _opaque_id(item["basketVersion"])
-    _int(item["basketItems"], maximum=100)
-    _text(item["basketPriceFormatted"], maximum=100, allow_empty=True)
+    _finite_number(item["basketItems"])
+    _display_text(item["basketPriceFormatted"])
     customer_id = _customer_id(item["customerId"])
     _parse_delivery_fee_info(item["deliveryFeeInfo"])
     if "distance" in item and item["distance"] is not None:
         distance = item["distance"]
         if isinstance(distance, str):
-            _text(distance, maximum=100, allow_empty=True)
+            _display_text(distance)
         else:
             # Retain the already observed legacy numeric form.
-            _number(distance, minimum=0, maximum=1_000_000)
+            _finite_number(distance)
     _parse_nullable_eta(item["eta"])
     handling_strategy = _text(item["handlingStrategy"], maximum=40)
     if handling_strategy != item["handlingStrategy"]:
@@ -205,9 +187,9 @@ def _parse_summary(value: object) -> _BasketSummary:
     # Public Zod strips storeAvailability and unknown summary display extras.
     # They are bounded by the collection preflight and discarded.
     if "storeImage" in item and item["storeImage"] is not None:
-        _text(item["storeImage"], maximum=1_000, allow_empty=True)
-    _text(item["storeName"], maximum=160)
-    _text(item["updatedAt"], maximum=80)
+        _display_text(item["storeImage"])
+    _display_text(item["storeName"])
+    _display_text(item["updatedAt"])
     return _BasketSummary(
         basket_id=basket_id,
         basket_version=basket_version,
