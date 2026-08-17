@@ -9,15 +9,15 @@ DOMAIN = "glovo"
 # Runtime attributes intended for access-control checks. The trust identifier is
 # the SHA-256 of this canonical build descriptor:
 #
-# ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|version=1.1.0+home.16|profile=coordinator-source-provenance-v1
+# ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|version=1.1.0+home.17|profile=coordinator-source-provenance-v1
 #
 # It is deliberately a literal, stable pin: runtime code never derives it from
 # credentials, order identifiers, coordinates, or mutable fixture contents.
 DATA_PROVENANCE_ATTRIBUTE = "data_provenance"
 INTEGRATION_TRUST_ID_ATTRIBUTE = "integration_trust_id"
 INTEGRATION_TRUST_ID = (
-    "ha-glovo:1.1.0+home.16:sha256:"
-    "9fd214ec12d458b3dbb67574b3d09d61225114eaced8f6772cbbc3601bb3a990"
+    "ha-glovo:1.1.0+home.17:sha256:"
+    "10df998e0fcd0a52ed6c2c8f2e59d973f2cdb4a86df3687fa961bd6c3d0f1b6b"
 )
 
 PROVENANCE_LIVE_API = "live_api"

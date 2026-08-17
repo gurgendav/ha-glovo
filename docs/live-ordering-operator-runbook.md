@@ -1,10 +1,10 @@
 # Guarded live paid-checkout operator runbook
 
-> **Home.16 release policy:** this offline candidate authorizes no deployment, provider call, basket adoption or mutation, quote, checkout, payment, or live test. It makes no provider idempotency claim. Home.8 and Home.9 remain historical unsafe/no-go candidates, not deployable identities.
+> **Home.17 release policy:** this offline candidate authorizes no deployment, provider call, basket adoption or mutation, quote, checkout, payment, or live test. It makes no provider idempotency claim. Home.8 and Home.9 remain historical unsafe/no-go candidates, not deployable identities.
 
 ## Non-negotiable operating model
 
-1. **Fresh default-off consent after migration.** Config-entry migration v9 closes preparation consent/acknowledgement and paid-checkout consent/acknowledgement, even if all four were true in published Home.15. Preserve unrelated options, then require fresh re-opt-in. Reauthentication also closes all four gates.
+1. **Fresh default-off consent after migration.** Config-entry migration v10 closes preparation consent/acknowledgement and paid-checkout consent/acknowledgement, even if all four were true in published Home.16. Preserve unrelated options, then require fresh re-opt-in. Reauthentication also closes all four gates.
 2. **One account authority.** Basket authority is account-scoped and cross-administrator serialized. A second administrator shares the same `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, or `CONFLICT` state and cannot create a parallel writable basket.
 3. **Read before any write.** After setup or reload, runtime state is `UNKNOWN`. Reacquire fresh account/address/store/menu/product context and perform explicit read-only adoption before any basket mutation.
 4. **Bounded discovery.** Adoption issues one collection GET plus at most one conditional full per-store GET. It does not poll, retry, fall back, request a quote, or mutate provider state.
@@ -17,9 +17,9 @@
 
 ## Preflight for any separately authorized future operation
 
-- [ ] Artifact is exactly `1.1.0+home.16` with canonical trust digest `9fd214ec12d458b3dbb67574b3d09d61225114eaced8f6772cbbc3601bb3a990` and clean release gates.
+- [ ] Artifact is exactly `1.1.0+home.17` with canonical trust digest `10df998e0fcd0a52ed6c2c8f2e59d973f2cdb4a86df3687fa961bd6c3d0f1b6b` and clean release gates.
 - [ ] `ORDERING_WEB_VERSION` is `v1.2569.0`; no newer authenticated basket client constant is claimed.
-- [ ] Migration completed at minor v9 and all four gates are false.
+- [ ] Migration completed at minor v10 and all four gates are false.
 - [ ] Journal, preparation authority, ordering safety state, and basket evidence Store are coherent with no unresolved/manual/integrity fault.
 - [ ] Named administrator performs fresh re-opt-in; paid consent remains separate from preparation consent.
 - [ ] Provider app is available for independent inspection and shows no conflicting order/payment.
@@ -61,4 +61,4 @@
 
 ## Current release boundary
 
-Do not deploy, run a canary, perform live read-only adoption, mutate a basket, request a paid quote, confirm checkout, submit payment, or call provider status as part of Home.16 release preparation. Those steps require a separate explicit authorization and are not claimed by this artifact.
+Do not deploy, run a canary, perform live read-only adoption, mutate a basket, request a paid quote, confirm checkout, submit payment, or call provider status as part of Home.17 release preparation. Those steps require a separate explicit authorization and are not claimed by this artifact.

@@ -827,13 +827,13 @@ def test_manifest_version_and_trust_identity_match_paid_checkout_release() -> No
     const_source = (ROOT / "custom_components/glovo/const.py").read_text()
     descriptor = (
         "ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|"
-        "version=1.1.0+home.16|profile=coordinator-source-provenance-v1"
+        "version=1.1.0+home.17|profile=coordinator-source-provenance-v1"
     )
     digest = hashlib.sha256(descriptor.encode()).hexdigest()
-    assert digest == "9fd214ec12d458b3dbb67574b3d09d61225114eaced8f6772cbbc3601bb3a990"
-    assert manifest["version"] == "1.1.0+home.16"
+    assert digest == "10df998e0fcd0a52ed6c2c8f2e59d973f2cdb4a86df3687fa961bd6c3d0f1b6b"
+    assert manifest["version"] == "1.1.0+home.17"
     assert descriptor in const_source
-    assert "ha-glovo:1.1.0+home.16:sha256:" in const_source
+    assert "ha-glovo:1.1.0+home.17:sha256:" in const_source
     assert digest in const_source
     assert datetime.now(UTC).tzinfo is UTC
 

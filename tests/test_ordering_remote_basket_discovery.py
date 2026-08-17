@@ -326,6 +326,40 @@ def test_nullable_store_logo_is_accepted_and_discarded(
     assert_calls(live, fixture, full=True)
 
 
+def test_zero_increments_limit_is_accepted_as_unbounded_metadata(
+    live: dict[str, ModuleType],
+) -> None:
+    full = current_full_basket_payload()
+    full["products"][0]["quantity"]["incrementsLimit"] = 0
+    client, intent, fixture = client_and_intent(live, [summary()], full)
+
+    result = run(discover(client, intent, live))
+
+    discovery = live["ordering_remote_basket_discovery"]
+    assert result.status is discovery.RemoteBasketDiscoveryStatus.ADOPTED
+    assert result.snapshot is not None
+    assert b'"incrementsLimit":null' in result.snapshot.provider_projection_bytes
+    assert_calls(live, fixture, full=True)
+
+
+@pytest.mark.parametrize("limit", [-1, True, "0", 1.5, 51])
+def test_malformed_increments_limit_is_rejected_at_exact_path(
+    live: dict[str, ModuleType], limit: Any
+) -> None:
+    full = current_full_basket_payload()
+    full["products"][0]["quantity"]["incrementsLimit"] = limit
+    client, intent, fixture = client_and_intent(live, [summary()], full)
+    discovery = live["ordering_remote_basket_discovery"]
+
+    with pytest.raises(discovery.RemoteBasketDiscoveryError) as raised:
+        run(discover(client, intent, live))
+
+    assert raised.value.stage == "full_parse"
+    assert raised.value.reason == "schema"
+    assert raised.value.path == "products.quantity.incrementsLimit"
+    assert_calls(live, fixture, full=True)
+
+
 @pytest.mark.parametrize(
     "logo",
     [

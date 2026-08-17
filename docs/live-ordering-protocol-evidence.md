@@ -1,8 +1,8 @@
 # Reviewed production final-checkout protocol evidence
 
-**Home.16 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v9, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
+**Home.17 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v10, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
 
-This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. Building Home.16 made no deployment and no authenticated/provider request: no live canary, basket adoption or mutation, quote, status, checkout, order, completion, cancellation, or payment call occurred while preparing this candidate.
+This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. Building Home.17 made no deployment and no authenticated/provider request: no live canary, basket adoption or mutation, quote, status, checkout, order, completion, cancellation, or payment call occurred while preparing this candidate.
 
 ## Home.8 supervised preparation stop (2026-08-14)
 
@@ -26,7 +26,7 @@ Home.9 preserved the authenticated `v1.2569.0` request identity but did not yet 
 durable account-scoped basket evidence plus mandatory fresh provider re-adoption after
 runtime reload. Missing local memory could therefore not safely prove remote absence.
 Home.9 is retained only as a historical unsafe/no-go candidate for provider basket
-mutation; Home.16 does not inherit its consent or writable basket authority.
+mutation; Home.17 does not inherit its consent or writable basket authority.
 
 ## Withdrawn home.5 canary (2026-08-13)
 
@@ -62,7 +62,7 @@ Replacement follows the first-party clone-current-basket/change-products PUT beh
 Anonymous public landing and marketplace bundles did not expose a newer authenticated
 basket constant. They therefore do not supersede the reproducibly preserved
 authenticated first-party request version `v1.2569.0`, which remains the exact
-`ORDERING_WEB_VERSION` for Home.16. No authenticated or Glovo API request was made.
+`ORDERING_WEB_VERSION` for Home.17. No authenticated or Glovo API request was made.
 
 Module `52500` establishes the authenticated collection read as exactly
 `GET /v1/authenticated/customers/{customerId}/baskets`, with no query, and passes the
@@ -81,7 +81,7 @@ The same helper and validator independently distinguish the per-store rich read:
 empty data or one full `BasketSchema` object (helper offset `21409`). That is a different
 route and cardinality from the bare summary collection.
 
-Home.16 implements only the bounded read policy justified by those two routes: one
+Home.17 implements only the bounded read policy justified by those two routes: one
 collection GET and at most one conditional full per-store GET, with no query, retry,
 polling, fallback, or mutation. The local collection proof is capped at 20 summaries.
 Zero matching summaries yields `ABSENT_VERIFIED`; exactly one identity-consistent full
@@ -99,7 +99,7 @@ integer `lowerBound` and `upperBound`, and optional `storeAvailability` is an ex
 containing nullable `nextOpeningTime`, nullable `nextSchedulingTime`, and string
 `storeStatus`. No response values, identifiers, names, prices, coordinates, credentials,
 or raw body were retained. Home.13 introduced these display-only extensions, Home.14
-added privacy-safe failure classification, and Home.16 retains both behaviors. The strict
+added privacy-safe failure classification, and Home.17 retains both behaviors. The strict
 parser accepts and discards only those observed display-only
 extensions, keeps the legacy nullable ETA forms, bounds ETA integers, requires lower not to
 exceed upper, and continues to reject unknown fields and malformed types.
@@ -109,7 +109,7 @@ additional root lifecycle metadata (`baseOrderUrn`, `basketCreationWidgetId`,
 `basketPriceBeforeLastRequest`, catalog/country/currency codes, timestamps, `status`, and
 `storeInfo`), optional price `total`, MBS display state (`muxApplied`, `surcharge`, and
 `tiers`), quantity display counts, and product display metadata. Home.13 introduced strict
-validation, Home.14 added privacy-safe failure classification, and Home.16 retains both.
+validation, Home.14 added privacy-safe failure classification, and Home.17 retains both.
 The parser validates each
 observed object against an exact key set and bounded primitive types, discards those fields
 from the private authority projection, and keeps IDs, structured increments, customization
@@ -125,11 +125,19 @@ operator observed the exact intended 500 Cal basket in the Glovo app. The subseq
 strict rich-basket discovery stopped at the value-free diagnostic
 `stage=full_parse reason=schema path=root.storeInfo.logo`; no raw response value was
 retained. This establishes only that the display-only `storeInfo.logo` field can be
-nullable. Home.16 therefore accepts exactly `null` or the pre-existing bounded string
+nullable. Home.17 therefore accepts exactly `null` or the pre-existing bounded string
 for that required key and discards it from the authority projection. Objects, arrays,
 booleans, numbers, oversized strings, unknown keys, and malformed sibling fields remain
 schema failures at a privacy-safe exact path. Product, store, address, customer, price,
 basket ID, and basket-version validation and matching are unchanged.
+
+The 2026-08-17 supervised Home.16 read then reached
+`products.quantity.incrementsLimit`. The public Glovo web schema declares this field as an
+optional nullable integer, and its increase guard treats integer zero as unbounded
+(`!incrementsLimit`). Home.17 therefore accepts only the pre-existing positive bounded
+integer contract plus zero, normalizing zero to the existing no-limit state. Negative,
+string, boolean, floating-point, and over-limit values remain rejected at the exact path;
+product quantity and every consequential identity check remain unchanged.
 
 Authority is account-scoped and cross-administrator serialized. The runtime closed states
 are `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, and `CONFLICT`; `UNKNOWN` is never false
@@ -165,7 +173,7 @@ Pending, authentication, `PROCESS_PAYMENT`, malformed data, transport failure, c
 
 Any future release operation using the reviewed production adapter is limited to this policy:
 
-1. migration v9 closes all four gates—including for fully opted-in Home.15 entries—and requires a fresh default-off administrator re-opt-in;
+1. migration v10 closes all four gates—including for fully opted-in Home.16 entries—and requires a fresh default-off administrator re-opt-in;
 2. account-scoped `UNKNOWN`/`ABSENT_VERIFIED`/`ADOPTED`/`CONFLICT` authority with cross-administrator serialization;
 3. fresh read-only provider re-adoption after every setup/reload using one collection GET and at most one conditional per-store full GET before any basket mutation;
 4. a fresh authoritative exact paid quote, separate confirmation, exact store/items/options/full admin-only ephemeral address/masked saved card/price lines/total/currency/ETA/expiry display, and amount-bound acknowledgement;
@@ -175,7 +183,7 @@ Any future release operation using the reviewed production adapter is limited to
 8. at most one explicit known-ID status GET per administrator action, with no polling;
 9. provider identifiers and the full address excluded from public/recovery projections, logs, and hash-only basket evidence.
 
-This evidence does **not** establish provider idempotency or authorize a payment. Home.16 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
+This evidence does **not** establish provider idempotency or authorize a payment. Home.17 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
 
 ## Principal static sources
 
