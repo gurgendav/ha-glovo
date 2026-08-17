@@ -177,15 +177,20 @@ class SavedPayment:
     payment_instrument_id: str = field(repr=False)
     metadata_id: int = field(repr=False)
     display_name: str = field(repr=False)
-    display_description: str = field(repr=False)
+    display_description: str | None = field(repr=False)
     last_four_digits: str | None = field(repr=False)
     selected: bool = field(repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payment_instrument_id", _opaque_id(self.payment_instrument_id))
         object.__setattr__(self, "metadata_id", _int(self.metadata_id, minimum=1))
-        object.__setattr__(self, "display_name", _text(self.display_name, maximum=40))
-        object.__setattr__(self, "display_description", _text(self.display_description, maximum=80))
+        object.__setattr__(self, "display_name", _text(self.display_name, maximum=100))
+        if self.display_description is not None:
+            object.__setattr__(
+                self,
+                "display_description",
+                _text(self.display_description, maximum=250, allow_empty=True),
+            )
         if self.last_four_digits is not None:
             if not isinstance(self.last_four_digits, str) or not re.fullmatch(r"\d{1,4}", self.last_four_digits):
                 _fail()
@@ -660,100 +665,196 @@ def build_payment_query(
     currency: str,
     checkout_session: str | None = None,
     store_address_id: int | None = None,
-    client_supports: tuple[str, ...] = (),
-    client_ready: bool | None = None,
 ) -> dict[str, str]:
+    """Build the exact headless browser-fallback payment-method query."""
+
     amount = _int(amount_minor, maximum=100_000_000_000)
     if not isinstance(currency, str) or currency not in ISO_4217_EXPONENTS:
         _fail()
-    query = {"amount": str(amount), "currency": currency, "context": "checkout"}
+    query = {
+        "amount": str(amount),
+        "currency": currency,
+        "clientSupports": "",
+        "clientReady": "",
+        "context": "checkout",
+    }
     if checkout_session is not None:
         query["checkoutSessionId"] = _opaque_id(checkout_session)
     if store_address_id is not None:
         query["storeAddressId"] = str(_int(store_address_id, minimum=1))
-    if not isinstance(client_supports, tuple) or len(client_supports) > 4:
-        _fail()
-    if client_supports:
-        if len(set(client_supports)) != len(client_supports) or any(
-            item != "CREDIT_CARD" for item in client_supports
-        ):
-            _fail()
-        query["clientSupports"] = ",".join(client_supports)
-    if client_ready is not None:
-        query["clientReady"] = "true" if _bool(client_ready) else "false"
     if len(json.dumps(query, separators=(",", ":"))) > 1_000:
         _fail()
     return query
 
 
-def parse_saved_payments(payload: Any) -> tuple[SavedPayment, ...]:
-    _bounded_payload(payload)
-    root = _object(payload, required={"data"}, allowed={"data"})
-    outer = _object(root["data"], required={"data"}, allowed={"data"})
-    inner = _object(
-        outer["data"],
-        required={"paymentMethods", "actions"},
-        allowed={"paymentMethods", "actions"},
+def _contains_sensitive_payment_key(value: Any) -> bool:
+    """Return whether a retained card object exposes raw payment material."""
+
+    sensitive = {
+        "cardnumber",
+        "fullcardnumber",
+        "pan",
+        "cvv",
+        "cvc",
+        "cryptogram",
+        "tokenization",
+        "rawcard",
+    }
+
+    def walk(item: Any) -> bool:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+                if normalized in sensitive or walk(child):
+                    return True
+        elif isinstance(item, list):
+            return any(walk(child) for child in item)
+        return False
+
+    return walk(value)
+
+
+_PAYMENT_TYPES: Final = frozenset({"CREDIT_CARD", "CASH", "ALTERNATIVE"})
+_ALTERNATIVE_PLATFORMS: Final = frozenset(
+    {"KaspiDirect", "Edenred", "PayPal", "GooglePay", "ApplePay", "BLIK", "DotPay"}
+)
+_PAYMENT_MESSAGE_TYPES: Final = frozenset({"DISABLED", "ERROR", "NORMAL", "WARNING"})
+_PAYMENT_ACTION_PROVIDERS: Final = frozenset({"ProcessOut", "DH"})
+
+
+def _nullable_payment_text(value: Any, *, maximum: int) -> str | None:
+    if value is None:
+        return None
+    return _text(value, maximum=maximum, allow_empty=True)
+
+
+def _validate_payment_display(
+    value: Any, *, allow_message: bool
+) -> tuple[str, str | None]:
+    display = _object(value, required={"displayName", "icon", "tags"})
+    name = _text(display["displayName"], maximum=100)
+    description = _nullable_payment_text(display.get("description"), maximum=250)
+    icon = _object(display["icon"], required={"lightImageId", "darkImageId"})
+    _text(icon["lightImageId"], maximum=250)
+    _text(icon["darkImageId"], maximum=250)
+    for raw_tag in _array(display["tags"], maximum=16):
+        tag = _object(raw_tag, required={"text", "style"})
+        _text(tag["text"], maximum=100, allow_empty=True)
+        _text(tag["style"], maximum=50)
+    if allow_message and display.get("message") is not None:
+        message = _object(display["message"], required={"text", "type"})
+        _text(message["text"], maximum=250, allow_empty=True)
+        message_type = message["type"]
+        _text(message_type, maximum=20)
+        if message_type not in _PAYMENT_MESSAGE_TYPES:
+            _fail()
+    return name, description
+
+
+def _validate_payment_action(value: Any) -> None:
+    action = _object(
+        value,
+        required={"type", "paymentMethod", "provider", "displayAttributes"},
     )
-    actions = _array(inner["actions"], maximum=8)
-    if actions:
+    _text(action["type"], maximum=80)
+    _text(action["paymentMethod"], maximum=80)
+    provider = action["provider"]
+    _text(provider, maximum=20)
+    if provider not in _PAYMENT_ACTION_PROVIDERS:
         _fail()
+    _validate_payment_display(action["displayAttributes"], allow_message=True)
+    metadata = action.get("metadata")
+    if metadata is not None:
+        metadata_obj = _object(metadata)
+        for key in ("hostedPaymentPageUrl", "returnUrl", "resultEndpoint"):
+            if key in metadata_obj:
+                _nullable_payment_text(metadata_obj[key], maximum=2_000)
+
+
+def parse_saved_payments(payload: Any) -> tuple[SavedPayment, ...]:
+    """Validate the mixed first-party schema, then return eligible saved cards."""
+
+    _bounded_payload(payload)
+    # Axios ``response.data.data`` is one JSON envelope, not two.
+    root = _object(payload, required={"data"})
+    inner = _object(root["data"], required={"paymentMethods", "actions"})
+    for action in _array(inner["actions"], maximum=8):
+        _validate_payment_action(action)
     methods = _array(inner["paymentMethods"], maximum=MAX_PAYMENT_METHODS)
     result: list[SavedPayment] = []
     instrument_ids: set[str] = set()
     metadata_ids: set[int] = set()
     required = {
         "type",
-        "paymentInstrumentId",
         "selected",
         "metadata",
-        "display",
+        "displayAttributes",
     }
-    forbidden_fragments = (
-        "cardnumber",
-        "pan",
-        "cvv",
-        "cryptogram",
-        "tokenization",
-        "wallet",
-        "paypal",
-        "rawcard",
-    )
     for item in methods:
-        method = _object(item, required=required, allowed=required)
-        normalized_keys = "".join(str(key).casefold() for key in method)
-        if any(fragment in normalized_keys for fragment in forbidden_fragments):
+        method = _object(item, required=required)
+        method_type = method["type"]
+        _text(method_type, maximum=40)
+        if method_type not in _PAYMENT_TYPES:
             _fail()
-        if method["type"] != "CREDIT_CARD":
-            _fail()
-        instrument_id = _opaque_id(method["paymentInstrumentId"])
-        metadata = _object(
-            method["metadata"],
-            required={"id"},
-            allowed={"id", "lastFourDigits"},
+        instrument_raw = method.get("paymentInstrumentId")
+        if instrument_raw is not None:
+            _text(instrument_raw, maximum=250, allow_empty=True)
+        selected = _bool(method["selected"])
+        display_name, display_description = _validate_payment_display(
+            method["displayAttributes"], allow_message=True
         )
-        metadata_id = _int(metadata["id"], minimum=1)
-        last_four = metadata.get("lastFourDigits")
-        if last_four is not None:
-            if not isinstance(last_four, str) or not re.fullmatch(r"\d{1,4}", last_four):
+        metadata = _object(method["metadata"])
+
+        if method_type == "CASH":
+            if "maxAmount" not in metadata:
                 _fail()
-        display = _object(
-            method["display"],
-            required={"name", "description"},
-            allowed={"name", "description"},
-        )
-        if instrument_id in instrument_ids or metadata_id in metadata_ids:
+            _number(metadata["maxAmount"], minimum=-1_000_000_000, maximum=1_000_000_000)
+            continue
+        if method_type == "ALTERNATIVE":
+            platform = metadata.get("platform")
+            _text(platform, maximum=40)
+            if platform not in _ALTERNATIVE_PLATFORMS:
+                _fail()
+            _nullable_payment_text(metadata.get("apmUser"), maximum=250)
+            continue
+
+        if _contains_sensitive_payment_key(method):
+            _fail()
+        metadata_raw = metadata.get("id")
+        if metadata_raw is not None:
+            _number(metadata_raw, minimum=-1_000_000_000, maximum=1_000_000_000)
+        last_four_raw = metadata.get("lastFourDigits")
+        if last_four_raw is not None:
+            _text(last_four_raw, maximum=250, allow_empty=True)
+
+        # A schema-valid card becomes headless payment authority only when its
+        # private identifiers and masked suffix are exact and usable.
+        try:
+            instrument_id = _opaque_id(instrument_raw)
+        except ContractError:
+            continue
+        if instrument_id != instrument_raw:
+            continue
+        if (
+            isinstance(metadata_raw, bool)
+            or not isinstance(metadata_raw, int)
+            or metadata_raw < 1
+            or not isinstance(last_four_raw, str)
+            or re.fullmatch(r"\d{1,4}", last_four_raw) is None
+        ):
+            continue
+        if instrument_id in instrument_ids or metadata_raw in metadata_ids:
             _fail()
         instrument_ids.add(instrument_id)
-        metadata_ids.add(metadata_id)
+        metadata_ids.add(metadata_raw)
         result.append(
             SavedPayment(
                 payment_instrument_id=instrument_id,
-                metadata_id=metadata_id,
-                display_name=_text(display["name"], maximum=40),
-                display_description=_text(display["description"], maximum=80),
-                last_four_digits=last_four,
-                selected=_bool(method["selected"]),
+                metadata_id=metadata_raw,
+                display_name=display_name,
+                display_description=display_description,
+                last_four_digits=last_four_raw,
+                selected=selected,
             )
         )
     return tuple(result)

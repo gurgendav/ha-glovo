@@ -212,8 +212,6 @@ def _payment_fingerprint(value: SavedPayment) -> str:
         {
             "paymentInstrumentId": value.payment_instrument_id,
             "metadataId": value.metadata_id,
-            "displayName": value.display_name,
-            "displayDescription": value.display_description,
             "lastFourDigits": value.last_four_digits,
             "selected": value.selected,
             "eligibleType": "CREDIT_CARD",
@@ -327,17 +325,17 @@ class QuoteRequest:
                     "storeAddressId": basket.store_address_id,
                     "basketId": basket.basket_id,
                     "paymentMethodSupport": {
-                        "supported": ["CREDIT_CARD"],
-                        "available": ["CREDIT_CARD"],
+                        "clientSupports": [],
+                        "clientReady": [],
                     },
                 },
                 "components": {
                     "productList": [item.canonical_dict() for item in basket.products],
                     "deliveryAddress": _address_body(self.delivery_address),
                     "paymentMethod": {
-                        "type": "CREDIT_CARD",
                         "paymentInstrumentId": self.payment.payment_instrument_id,
-                        "metadataId": self.payment.metadata_id,
+                        "type": "CreditCard",
+                        "creditCard": {"token": self.payment.metadata_id},
                     },
                 },
                 "analytics": {"templateReceived": None},

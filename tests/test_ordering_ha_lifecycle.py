@@ -1655,7 +1655,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
     location_contexts: list[dict[str, str]] = []
     read_responses = {
         "/customer_profile/api/v1/address_book/me/addresses": [
-            address_payload(), address_payload()
+            address_payload(), address_payload(), address_payload()
         ],
         "/v3/stores/fixture-kitchen": [
             store_payload(),
@@ -1842,6 +1842,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         ("GET", "/v3/me"),
         ("GET", "/v3/stores/fixture-kitchen"),
         ("POST", "/v1/authenticated/customers/42/baskets"),
+        ("GET", "/customer_profile/api/v1/address_book/me/addresses"),
         ("GET", "/v3/stores/fixture-kitchen"),
         ("GET", "/v4/payment_methods"),
         ("GET", "/v3/stores/fixture-kitchen"),
@@ -1857,7 +1858,24 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         "longitude": "44.513",
     }
     assert location_contexts == [expected_location] * 10
-    assert ledger[8][2] == {} and ledger[12][2] == {}
+    assert ledger[8][2] == {} and ledger[13][2] == {}
+    assert ledger[11][2] == {
+        "amount": "550000",
+        "currency": "AMD",
+        "storeAddressId": "81",
+        "clientSupports": "",
+        "clientReady": "",
+        "context": "checkout",
+    }
+    assert ledger[15][2] == {
+        "amount": "560000",
+        "currency": "AMD",
+        "checkoutSessionId": "checkout-private-1",
+        "storeAddressId": "81",
+        "clientSupports": "",
+        "clientReady": "",
+        "context": "checkout",
+    }
     runtime = entry.runtime_data
     assert runtime.ordering_runtime.live_checkout_available is False
 
@@ -1962,7 +1980,7 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         assert entry.options["ordering_acknowledged"] is False
         assert entry.options["allow_live_checkout"] is False
         assert entry.options["live_checkout_acknowledged"] is False
-        assert entry.minor_version == 14
+        assert entry.minor_version == 15
         if "scan_interval" in options:
             assert entry.options["scan_interval"] == 37
             assert entry.options["unrelated_home_option"] == "preserved"
@@ -1985,8 +2003,8 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         (True, True, False, True),
     ],
 )
-@pytest.mark.parametrize("minor_version", (6, 7, 8, 9, 10, 11, 12, 13))
-def test_prior_releases_through_opted_in_home20_v13_force_fresh_home21_opt_in(
+@pytest.mark.parametrize("minor_version", (6, 7, 8, 9, 10, 11, 12, 13, 14))
+def test_prior_releases_through_opted_in_home21_v14_force_fresh_home22_opt_in(
     ha_runtime: SimpleNamespace,
     gates: tuple[bool, bool, bool, bool],
     minor_version: int,
@@ -2009,7 +2027,7 @@ def test_prior_releases_through_opted_in_home20_v13_force_fresh_home21_opt_in(
     assert tuple(entry.options[key] for key in keys) == (False, False, False, False)
     assert entry.options["scan_interval"] == 23
     assert entry.options["unrelated_home_option"] == "preserved"
-    assert entry.minor_version == 14
+    assert entry.minor_version == 15
 
 
 @pytest.mark.parametrize(
@@ -2021,7 +2039,7 @@ def test_prior_releases_through_opted_in_home20_v13_force_fresh_home21_opt_in(
         ((True, True, False, True), (True, True, False, False)),
     ],
 )
-def test_current_v14_migration_preserves_only_dependency_consistent_booleans(
+def test_current_v15_migration_preserves_only_dependency_consistent_booleans(
     ha_runtime: SimpleNamespace,
     gates: tuple[bool, bool, bool, bool],
     expected: tuple[bool, bool, bool, bool],
@@ -2037,14 +2055,14 @@ def test_current_v14_migration_preserves_only_dependency_consistent_booleans(
         {"scan_interval": 23, "unrelated_home_option": "preserved"}
         | dict(zip(keys, gates, strict=True))
     )
-    entry.minor_version = 14
+    entry.minor_version = 15
 
     assert run(ha_runtime.integration.async_migrate_entry(hass, entry)) is True
 
     assert tuple(entry.options[key] for key in keys) == expected
     assert entry.options["scan_interval"] == 23
     assert entry.options["unrelated_home_option"] == "preserved"
-    assert entry.minor_version == 14
+    assert entry.minor_version == 15
 
 
 def test_reauth_refresh_resets_both_ordering_options_false(

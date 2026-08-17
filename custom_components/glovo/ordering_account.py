@@ -362,8 +362,6 @@ class AccountClient:
         currency: str,
         checkout_session: str | None = None,
         store_address_id: int | None = None,
-        client_supports: tuple[str, ...] = (),
-        client_ready: bool | None = None,
     ) -> tuple[MaskedPaymentSummary, ...]:
         owner, current_generation = self._identity(owner_key, generation)
         query = build_payment_query(
@@ -371,8 +369,6 @@ class AccountClient:
             currency=currency,
             checkout_session=checkout_session,
             store_address_id=store_address_id,
-            client_supports=client_supports,
-            client_ready=client_ready,
         )
         payload = await self._session.async_get("payment", _PAYMENT_PATH, query)
         payments = parse_saved_payments(payload)
@@ -479,8 +475,6 @@ class AccountClient:
                 currency=currency,
                 checkout_session=checkout_session,
                 store_address_id=store_address_id,
-                client_supports=("CREDIT_CARD",),
-                client_ready=True,
             )
         except Exception:
             return False

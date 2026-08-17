@@ -1,6 +1,6 @@
 # Guarded live paid-checkout operator runbook
 
-> **Home.21 release policy:** this offline candidate authorizes no deployment, provider call, basket adoption or mutation, quote, checkout, payment, or live test. It makes no provider idempotency claim. Home.8 and Home.9 remain historical unsafe/no-go candidates, not deployable identities.
+> **Home.22 release policy:** this offline candidate authorizes no deployment, provider call, basket adoption or mutation, quote, checkout, payment, or live test. It makes no provider idempotency claim. Home.8 and Home.9 remain historical unsafe/no-go candidates, not deployable identities.
 
 ## Non-negotiable operating model
 
@@ -17,9 +17,9 @@
 
 ## Preflight for any separately authorized future operation
 
-- [ ] Artifact is exactly `1.1.0+home.21` with canonical trust digest `9472befc17e95d4b341e6c244ac230865f5158905f1063029a19bf438f5c29bd` and clean release gates.
+- [ ] Artifact is exactly `1.1.0+home.22` with canonical trust digest `e31c3164bb0357f9aeee292b1c1828eb6397b30ca32084861f14c3db21544a44` and clean release gates.
 - [ ] `ORDERING_WEB_VERSION` is `v1.2569.0`; no newer authenticated basket client constant is claimed.
-- [ ] Migration completed at minor v14 and all four gates are false.
+- [ ] Migration completed at minor v15 and all four gates are false.
 - [ ] Journal, preparation authority, ordering safety state, and basket evidence Store are coherent with no unresolved/manual/integrity fault.
 - [ ] Named administrator performs fresh re-opt-in; paid consent remains separate from preparation consent.
 - [ ] Provider app is available for independent inspection and shows no conflicting order/payment.
@@ -61,4 +61,4 @@
 
 ## Current release boundary
 
-Do not deploy, run a canary, perform live read-only adoption, mutate a basket, request a paid quote, confirm checkout, submit payment, or call provider status as part of Home.21 release preparation. Those steps require a separate explicit authorization and are not claimed by this artifact.
+Do not deploy, run a canary, perform live read-only adoption, mutate a basket, request a paid quote, confirm checkout, submit payment, or call provider status as part of Home.22 release preparation. Those steps require a separate explicit authorization and are not claimed by this artifact.

@@ -1283,9 +1283,17 @@ def test_quote_request_is_exact_private_and_uses_canonical_basket_address_paymen
     assert set(checkout) == {"orderDetails", "components", "analytics", "basketDetails"}
     assert checkout["orderDetails"]["basketId"] == "basket-private-1"
     assert checkout["orderDetails"]["handlingStrategy"] == {"type": "DELIVERY"}
+    assert checkout["orderDetails"]["paymentMethodSupport"] == {
+        "clientSupports": [],
+        "clientReady": [],
+    }
     assert checkout["components"]["productList"] == [rich_product()]
     assert checkout["components"]["deliveryAddress"]["id"] == 17
-    assert checkout["components"]["paymentMethod"]["paymentInstrumentId"] == "instrument-private"
+    assert checkout["components"]["paymentMethod"] == {
+        "paymentInstrumentId": "instrument-private",
+        "type": "CreditCard",
+        "creditCard": {"token": 33},
+    }
     assert checkout["analytics"] == {"templateReceived": None}
     assert "Private Street" not in repr(request)
     assert "40.177" not in repr(request)

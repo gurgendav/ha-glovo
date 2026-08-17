@@ -1524,7 +1524,21 @@ class LiveOrderingFacade:
                 address = self._account.resolve_address(
                     state.address_handle, owner_key=owner, generation=generation
                 )
-                if address.canonical_fingerprint != state.address_fingerprint:
+                if (
+                    address.canonical_fingerprint != state.address_fingerprint
+                    or DeliveryLocation(
+                        address.country_code,
+                        address.city_code,
+                        address.latitude,
+                        address.longitude,
+                    )
+                    != state.delivery_location
+                    or not await self._account.async_revalidate_address(
+                        state.address_handle,
+                        owner_key=owner,
+                        generation=generation,
+                    )
+                ):
                     self._set_basket_unknown()
                     await self._async_record_basket_unknown(generation)
                     raise PublicContractError
@@ -1532,7 +1546,13 @@ class LiveOrderingFacade:
                 minor = state.snapshot.basket_price.minor
                 if minor is None or not state.currency:
                     raise PublicContractError
-                methods = await self._account.async_saved_payments(owner_key=owner, generation=generation, amount_minor=minor, currency=state.currency, store_address_id=state.snapshot.store_address_id, client_supports=("CREDIT_CARD",), client_ready=True)
+                methods = await self._account.async_saved_payments(
+                    owner_key=owner,
+                    generation=generation,
+                    amount_minor=minor,
+                    currency=state.currency,
+                    store_address_id=state.snapshot.store_address_id,
+                )
                 return {"paymentMethods": [item.public_dict() for item in methods]}
             if operation == "live/create_quote":
                 state = self._state(generation)

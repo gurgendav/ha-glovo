@@ -90,6 +90,9 @@ class Harness:
             "AM", "YRV", 40.177, 44.513
         )
         self.account_calls = 0
+        self.address_revalidation_calls: list[dict[str, Any]] = []
+        self.address_revalidates = True
+        self.payment_calls: list[dict[str, Any]] = []
         self.create_calls = 0
         self.replace_calls = 0
         self.delete_calls = 0
@@ -104,12 +107,29 @@ class Harness:
         )
         harness = self
 
+        class PaymentSelection:
+            @staticmethod
+            def public_dict() -> dict[str, str]:
+                return {"key": "payment-local", "label": "Visa •••• 4242"}
+
         class Account:
             selection_ttl_seconds = 300.0
 
             async def async_customer(self) -> Any:
                 harness.account_calls += 1
                 return harness.customer
+
+            async def async_saved_payments(self, **kwargs: Any) -> tuple[Any, ...]:
+                harness.payment_calls.append(dict(kwargs))
+                return (PaymentSelection(),)
+
+            async def async_revalidate_address(
+                self, handle: str, **kwargs: Any
+            ) -> bool:
+                harness.address_revalidation_calls.append(
+                    {"handle": handle, **dict(kwargs)}
+                )
+                return harness.address_revalidates
 
             def resolve_address(
                 self, handle: str, *, owner_key: str, generation: int
@@ -392,6 +412,32 @@ def test_public_adoption_installs_each_closed_outcome_and_never_mutates(
         assert adopted["revision"] == 1
         assert adopted["storeHandle"] == "store-admin-b"
         assert adopted["lines"][0]["productHandle"] == "product-admin-b"
+        payments = await harness.facade.async_dispatch(
+            owner="admin-b",
+            operation="live/payment_methods",
+            request={"generation": 7},
+        )
+        assert payments == {
+            "paymentMethods": [
+                {"key": "payment-local", "label": "Visa •••• 4242"}
+            ]
+        }
+        assert harness.address_revalidation_calls == [
+            {
+                "handle": "address-admin-b",
+                "owner_key": "admin-b",
+                "generation": 7,
+            }
+        ]
+        assert harness.payment_calls == [
+            {
+                "owner_key": "admin-b",
+                "generation": 7,
+                "amount_minor": 550000,
+                "currency": "AMD",
+                "store_address_id": 81,
+            }
+        ]
 
         harness.next_discovery = harness.discovery_module.RemoteBasketDiscoveryResult(
             harness.discovery_module.RemoteBasketDiscoveryStatus.CONFLICT
@@ -408,6 +454,51 @@ def test_public_adoption_installs_each_closed_outcome_and_never_mutates(
             0,
             0,
         )
+
+    run(scenario())
+
+
+def test_payment_lookup_closes_authority_before_payment_get_when_address_is_stale(
+    harness: Harness,
+) -> None:
+    async def scenario() -> None:
+        harness.next_discovery = harness.discovery_module.RemoteBasketDiscoveryResult(
+            harness.discovery_module.RemoteBasketDiscoveryStatus.ADOPTED,
+            harness.snapshot(),
+        )
+        adopted = await harness.facade.async_dispatch(
+            owner="admin-a",
+            operation="live/basket_adopt",
+            request=harness.adopt_request("admin-a"),
+        )
+        assert adopted["status"] == "adopted"
+        harness.address_revalidates = False
+
+        with pytest.raises(harness.api.PublicContractError):
+            await harness.facade.async_dispatch(
+                owner="admin-a",
+                operation="live/payment_methods",
+                request={"generation": 7},
+            )
+
+        assert harness.address_revalidation_calls == [
+            {
+                "handle": "address-admin-a",
+                "owner_key": "admin-a",
+                "generation": 7,
+            }
+        ]
+        assert harness.payment_calls == []
+        assert (harness.create_calls, harness.replace_calls, harness.delete_calls) == (
+            0,
+            0,
+            0,
+        )
+        assert await harness.facade.async_dispatch(
+            owner="admin-a",
+            operation="live/basket",
+            request={"generation": 7},
+        ) == {"status": "unknown"}
 
     run(scenario())
 

@@ -60,6 +60,23 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
+### Saved-card and first-quote compatibility in Home.22
+
+Release `1.1.0+home.22` fixes the complete live read-only payment boundary reached after
+successful Home.21 basket adoption. Pinned first-party static evidence establishes one
+JSON `data` envelope, `displayAttributes`, exact mixed method/action variants, empty
+browser-fallback capability values, and the first-quote `CreditCard/token` projection.
+Home.22 validates that full bounded schema and discards cash, alternative methods, and
+actions only after validation. Only an exact eligible saved card enters owner-scoped
+authority; private IDs, selected state, masked suffix, and duplicate identity remain
+strict, while raw card-number/PAN/CVV/cryptogram-like material fails closed.
+
+Production-shaped regressions cover `ADOPTED → payment_methods`, initial and post-quote
+payment queries, and the exact first-quote body without a basket mutation. Config-entry
+migration v15 resets all four
+consequential gates, including a fully opted-in Home.21 v14 entry, and requires fresh
+preparation and checkout consent after deployment.
+
 ### Guarded live paid checkout in Home.21
 
 Release `1.1.0+home.21` production-composes the reviewed strict final request factory

@@ -1,8 +1,8 @@
 # Reviewed production final-checkout protocol evidence
 
-**Home.21 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v14, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
+**Home.22 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v15, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
 
-This is a dated first-party static-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. Building Home.21 made no deployment and no authenticated/provider request: no live canary, basket adoption or mutation, quote, status, checkout, order, completion, cancellation, or payment call occurred while preparing this candidate.
+This is a dated first-party static- and bounded live-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. Building the Home.22 artifact itself made no deployment or provider request. The separately authorized Home.21 preparation-only canary described below made read-only account/catalog/basket/payment-method calls, stopped before quote completion, and exposed no checkout submission route.
 
 ## Home.8 supervised preparation stop (2026-08-14)
 
@@ -62,7 +62,7 @@ Replacement follows the first-party clone-current-basket/change-products PUT beh
 Anonymous public landing and marketplace bundles did not expose a newer authenticated
 basket constant. They therefore do not supersede the reproducibly preserved
 authenticated first-party request version `v1.2569.0`, which remains the exact
-`ORDERING_WEB_VERSION` for Home.21. No authenticated or Glovo API request was made.
+`ORDERING_WEB_VERSION` for Home.22. No newer authenticated web-version evidence is claimed.
 
 Module `52500` establishes the authenticated collection read as exactly
 `GET /v1/authenticated/customers/{customerId}/baskets`, with no query, and passes the
@@ -151,6 +151,44 @@ restore mutation authority. Every setup/reload invalidates ephemeral context and
 fresh provider re-adoption with fresh account/address/store/menu/product handles before
 any basket mutation or paid quote. An ambiguous mutation is never retried.
 
+## Home.21 saved-payment read stop and Home.22 payment/quote contract (2026-08-17)
+
+A separately authorized preparation-only Home.21 canary successfully performed exact
+read-only basket adoption and established a non-null integer provider total and ISO
+currency. Its next `GET /v4/payment_methods` transport completed, but Home.21 rejected
+the response locally as `LiveFlowUnavailable`. The canary contained no final-checkout
+route and submitted no basket write, quote, checkout, payment, or order at that stage.
+Raw payment payloads and provider IDs were intentionally not retained.
+
+Pinned first-party static evidence resolves the complete contract class. The payment
+helper calls `GET /v4/payment_methods`, returns one JSON `data` envelope, and parses
+`CREDIT_CARD`, `CASH`, and `ALTERNATIVE` methods plus provider actions. It uses
+`displayAttributes`; credit-card metadata `id` and `lastFourDigits` are nullish. The
+headless browser fallback sends `amount`, `currency`, optional `checkoutSessionId`,
+`storeAddressId`, empty `clientSupports`, empty `clientReady`, and `context=checkout`.
+It must not advertise Apple Pay or Google Pay capability.
+
+The first quote body uses empty capability arrays and projects the selected card as
+`paymentMethod={paymentInstrumentId,type:"CreditCard",creditCard:{token:<metadata.id>}}`.
+Home.21 instead expected a second response envelope, `display`, card-only capability
+claims, and `type:"CREDIT_CARD"` with sibling `metadataId`; the local failure is therefore
+fully explained without retaining private provider data.
+
+Home.22 validates the complete bounded mixed schema and discards supported-but-headless-
+unsupported methods/actions only after validation. Unknown object keys follow first-party
+strip semantics. Only an exact saved card with opaque instrument ID, positive integer
+metadata token, boolean selected state, 1–4 digit masked suffix, and unique identities can
+enter owner-scoped authority. Raw card-number/PAN/CVV/CVC/cryptogram-like material fails
+closed recursively. Initial payment lookup first revalidates exact saved-address identity and
+delivery location, then checks fresh store state and uses the exact empty capability query.
+Post-quote payment GET uses the same query plus the exact checkout session. The first
+quote uses the exact `CreditCard/token` projection, and display text is excluded from the
+consequential payment fingerprint.
+
+Config-entry migration v15 resets all four preparation/checkout gates, including a fully
+opted-in Home.21 v14 entry. Deployment and any later live canary require separate operator
+authorization; the release artifact itself claims no successful live quote.
+
 ## Frozen final-checkout evidence (2026-08-13)
 
 | Area | Reviewed first-party static evidence | Adapter policy |
@@ -177,7 +215,7 @@ Pending, authentication, `PROCESS_PAYMENT`, malformed data, transport failure, c
 
 Any future release operation using the reviewed production adapter is limited to this policy:
 
-1. migration v14 closes all four gates—including for fully opted-in Home.20 entries—and requires a fresh default-off administrator re-opt-in;
+1. migration v15 closes all four gates—including for fully opted-in Home.21 entries—and requires a fresh default-off administrator re-opt-in;
 2. account-scoped `UNKNOWN`/`ABSENT_VERIFIED`/`ADOPTED`/`CONFLICT` authority with cross-administrator serialization;
 3. fresh read-only provider re-adoption after every setup/reload using one collection GET and at most one conditional per-store full GET before any basket mutation;
 4. a fresh authoritative exact paid quote, separate confirmation, exact store/items/options/full admin-only ephemeral address/masked saved card/price lines/total/currency/ETA/expiry display, and amount-bound acknowledgement;
@@ -187,11 +225,13 @@ Any future release operation using the reviewed production adapter is limited to
 8. at most one explicit known-ID status GET per administrator action, with no polling;
 9. provider identifiers and the full address excluded from public/recovery projections, logs, and hash-only basket evidence.
 
-This evidence does **not** establish provider idempotency or authorize a payment. Home.21 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
+This evidence does **not** establish provider idempotency or authorize a payment. Home.22 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
 
 ## Principal static sources
 
-First-party web assets fetched anonymously on 2026-08-13:
+First-party web assets fetched anonymously on 2026-08-13. The checkout schema and
+payment API chunks were fetched again on 2026-08-17 and remained byte-identical; the
+authenticated order-summary page asset remains frozen 2026-08-13 evidence:
 
 - checkout API/schema chunk `9332-3c136e6442e27d4b.js`, SHA-256 `e5ca6c219d41098b2945e2a4860be115ed41db99633624bb45684f313ffaeac3`;
 - checkout orchestration page `page-a0c178e019539f90.js`, SHA-256 `17da38f448aab8f5ffcebeb06a3c5d2b97e88f104a7b19b9f693d99b44f8ae6b`;

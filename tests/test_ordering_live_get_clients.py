@@ -196,21 +196,58 @@ def live_address_payload() -> dict[str, Any]:
 
 
 def payment_payload() -> dict[str, Any]:
+    def display(name: str, description: str | None) -> dict[str, Any]:
+        return {
+            "displayName": name,
+            "description": description,
+            "icon": {
+                "lightImageId": "payment-light",
+                "darkImageId": "payment-dark",
+            },
+            "tags": [],
+            "message": None,
+        }
+
     return {
         "data": {
-            "data": {
-                "paymentMethods": [
-                    {
-                        "type": "CREDIT_CARD",
-                        "paymentInstrumentId": "instrument-private",
-                        "selected": True,
-                        "metadata": {"id": 33, "lastFourDigits": "4242"},
-                        "display": {"name": "Visa", "description": "Card ending 4242"},
-                    }
-                ],
-                "actions": [],
-            }
-        }
+            "paymentMethods": [
+                {
+                    "type": "CREDIT_CARD",
+                    "paymentInstrumentId": "instrument-private",
+                    "selected": True,
+                    "metadata": {"id": 33, "lastFourDigits": "4242"},
+                    "displayAttributes": display("Visa", "Card ending 4242"),
+                },
+                {
+                    "type": "CASH",
+                    "paymentInstrumentId": None,
+                    "selected": False,
+                    "metadata": {"maxAmount": 1000000},
+                    "displayAttributes": display("Cash", None),
+                },
+                {
+                    "type": "ALTERNATIVE",
+                    "paymentInstrumentId": None,
+                    "selected": False,
+                    "metadata": {"platform": "PayPal", "apmUser": None},
+                    "displayAttributes": display("PayPal", None),
+                },
+            ],
+            "actions": [
+                {
+                    "type": "ADD_PAYMENT_METHOD",
+                    "paymentMethod": "CREDIT_CARD",
+                    "provider": "ProcessOut",
+                    "displayAttributes": {
+                        key: value
+                        for key, value in display("Add card", None).items()
+                        if key != "message"
+                    },
+                    "metadata": None,
+                }
+            ],
+        },
+        "providerExtension": {"bounded": True},
     }
 
 
@@ -564,10 +601,8 @@ def test_all_contracts_accept_minimal_forms_and_reject_missing_wrong_types(
     assert len(contracts.parse_saved_addresses(minimal_address)) == 1
 
     minimal_payment = payment_payload()
-    minimal_payment["data"]["data"]["paymentMethods"][0]["metadata"].pop(
-        "lastFourDigits"
-    )
-    assert contracts.parse_saved_payments(minimal_payment)[0].last_four_digits is None
+    minimal_payment["data"]["paymentMethods"][0]["metadata"].pop("lastFourDigits")
+    assert contracts.parse_saved_payments(minimal_payment) == ()
 
     minimal_store = store_payload()
     minimal_store["rating"] = None
@@ -589,10 +624,10 @@ def test_all_contracts_accept_minimal_forms_and_reject_missing_wrong_types(
             contracts.parse_saved_addresses,
             {"data": {"data": {"addresses": "not-an-array"}}},
         ),
-        (contracts.parse_saved_payments, {"data": {"data": {"paymentMethods": []}}}),
+        (contracts.parse_saved_payments, {"data": {"paymentMethods": []}}),
         (
             contracts.parse_saved_payments,
-            {"data": {"data": {"paymentMethods": [], "actions": False}}},
+            {"data": {"paymentMethods": [], "actions": False}},
         ),
         (contracts.parse_store, {"id": 1}),
     )
@@ -601,7 +636,7 @@ def test_all_contracts_accept_minimal_forms_and_reject_missing_wrong_types(
             parser(payload)
 
     wrong_payment = payment_payload()
-    wrong_payment["data"]["data"]["paymentMethods"][0]["metadata"]["id"] = True
+    wrong_payment["data"]["paymentMethods"][0]["metadata"]["id"] = True
     with pytest.raises(contracts.ContractError):
         contracts.parse_saved_payments(wrong_payment)
     wrong_store = store_payload()
@@ -725,6 +760,8 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
     assert contracts.build_payment_query(amount_minor=1250, currency="AMD") == {
         "amount": "1250",
         "currency": "AMD",
+        "clientSupports": "",
+        "clientReady": "",
         "context": "checkout",
     }
     query = contracts.build_payment_query(
@@ -732,19 +769,21 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
         currency="AMD",
         checkout_session="session-1",
         store_address_id=81,
-        client_supports=("CREDIT_CARD",),
-        client_ready=True,
     )
-    assert set(query) == {
-        "amount", "currency", "context", "checkoutSessionId", "storeAddressId",
-        "clientSupports", "clientReady",
+    assert query == {
+        "amount": "1250",
+        "currency": "AMD",
+        "clientSupports": "",
+        "clientReady": "",
+        "context": "checkout",
+        "checkoutSessionId": "session-1",
+        "storeAddressId": "81",
     }
     for kwargs in (
         {"amount_minor": True, "currency": "AMD"},
         {"amount_minor": -1, "currency": "AMD"},
         {"amount_minor": 1, "currency": "ZZZ"},
         {"amount_minor": 1, "currency": "AMD", "store_address_id": True},
-        {"amount_minor": 1, "currency": "AMD", "client_supports": ("CASH",)},
         {"amount_minor": 1, "currency": "AMD", "checkout_session": "x" * 300},
     ):
         with pytest.raises(contracts.ContractError):
@@ -752,19 +791,109 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
 
     parsed = contracts.parse_saved_payments(payment_payload())
     assert len(parsed) == 1 and "instrument-private" not in repr(parsed[0])
-    for method_type in ("CASH", "ALTERNATIVE", "PAYPAL", "UNKNOWN"):
-        payload = payment_payload()
-        payload["data"]["data"]["paymentMethods"][0]["type"] = method_type
+
+    public_extensions = payment_payload()
+    public_extensions["providerRootDisplay"] = {"future": True}
+    inner = public_extensions["data"]
+    inner["providerPaymentDisplay"] = "future"
+    method = inner["paymentMethods"][0]
+    method["providerMethodDisplay"] = {"future": True}
+    method["metadata"]["providerMetadataDisplay"] = "future"
+    method["displayAttributes"]["providerDisplayExtension"] = 1
+    inner["actions"][0]["providerActionExtension"] = True
+    assert contracts.parse_saved_payments(public_extensions) == parsed
+
+    for field, value in (("id", None), ("id", 3.5), ("lastFourDigits", None), ("lastFourDigits", "42424")):
+        ineligible = payment_payload()
+        ineligible["data"]["paymentMethods"][0]["metadata"][field] = value
+        assert contracts.parse_saved_payments(ineligible) == ()
+    for mutate in (
+        lambda card: card.pop("paymentInstrumentId"),
+        lambda card: card.__setitem__("paymentInstrumentId", " instrument-private "),
+    ):
+        ineligible = payment_payload()
+        mutate(ineligible["data"]["paymentMethods"][0])
+        assert contracts.parse_saved_payments(ineligible) == ()
+
+    raw = payment_payload()
+    raw["data"]["paymentMethods"][0]["cardNumber"] = "4111111111111111"
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_saved_payments(raw)
+
+    nested_raw = payment_payload()
+    nested_raw["data"]["paymentMethods"][0]["displayAttributes"]["future"] = {
+        "cvv": "123"
+    }
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_saved_payments(nested_raw)
+
+    for mutate in (
+        lambda card: card.pop("displayAttributes"),
+        lambda card: card["displayAttributes"].pop("icon"),
+        lambda card: card.__setitem__("selected", "true"),
+        lambda card: card["metadata"].__setitem__("id", "33"),
+        lambda card: card.__setitem__("type", "CARD"),
+        lambda card: card.__setitem__("type", " CREDIT_CARD "),
+    ):
+        malformed = payment_payload()
+        mutate(malformed["data"]["paymentMethods"][0])
         with pytest.raises(contracts.ContractError):
-            contracts.parse_saved_payments(payload)
-    for mutation in ("actions", "raw"):
-        payload = payment_payload()
-        if mutation == "actions":
-            payload["data"]["data"]["actions"] = [{"type": "ADD_CARD"}]
-        else:
-            payload["data"]["data"]["paymentMethods"][0]["cardNumber"] = "4111111111111111"
-        with pytest.raises(contracts.ContractError):
-            contracts.parse_saved_payments(payload)
+            contracts.parse_saved_payments(malformed)
+
+    bad_action = payment_payload()
+    bad_action["data"]["actions"][0]["provider"] = " ProcessOut "
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_saved_payments(bad_action)
+
+    valid_action_message = payment_payload()
+    valid_action_message["data"]["actions"][0]["displayAttributes"]["message"] = {
+        "text": "Add a saved card",
+        "type": "NORMAL",
+    }
+    assert len(contracts.parse_saved_payments(valid_action_message)) == 1
+
+    nullish_action_metadata = payment_payload()
+    nullish_action_metadata["data"]["actions"][0]["metadata"] = {
+        "hostedPaymentPageUrl": None,
+        "returnUrl": None,
+        "resultEndpoint": None,
+        "providerExtension": {"ignored": True},
+    }
+    assert len(contracts.parse_saved_payments(nullish_action_metadata)) == 1
+
+    bad_action_metadata = payment_payload()
+    bad_action_metadata["data"]["actions"][0]["metadata"] = {
+        "returnUrl": 7,
+    }
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_saved_payments(bad_action_metadata)
+
+    nullish_display = payment_payload()
+    for method in nullish_display["data"]["paymentMethods"]:
+        method["displayAttributes"].pop("description")
+        method["displayAttributes"].pop("message")
+    nullish_display["data"]["actions"][0]["displayAttributes"].pop("description")
+    assert len(contracts.parse_saved_payments(nullish_display)) == 1
+
+    bad_action_message = payment_payload()
+    bad_action_message["data"]["actions"][0]["displayAttributes"]["message"] = {
+        "text": "Add a saved card",
+        "type": "BROKEN",
+    }
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_saved_payments(bad_action_message)
+
+    bad_alternative = payment_payload()
+    bad_alternative["data"]["paymentMethods"][2]["metadata"]["platform"] = " PayPal "
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_saved_payments(bad_alternative)
+
+    duplicate = payment_payload()
+    duplicate["data"]["paymentMethods"].insert(
+        1, copy.deepcopy(duplicate["data"]["paymentMethods"][0])
+    )
+    with pytest.raises(contracts.ContractError):
+        contracts.parse_saved_payments(duplicate)
 
 
 def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, ModuleType]) -> None:
@@ -773,14 +902,56 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
     client = live["ordering_account"].AccountClient(harness.session, clock=Clock())
     public = run(
         client.async_saved_payments(
-            owner_key="admin-a", generation=3, amount_minor=550000, currency="AMD"
+            owner_key="admin-a",
+            generation=3,
+            amount_minor=550000,
+            currency="AMD",
+            store_address_id=81,
         )
     )[0]
+    assert harness.transport.calls == [
+        (
+            "GET",
+            path,
+            {
+                "amount": "550000",
+                "currency": "AMD",
+                "clientSupports": "",
+                "clientReady": "",
+                "context": "checkout",
+                "storeAddressId": "81",
+            },
+        )
+    ]
     assert set(public.public_dict()) == {"key", "label"}
     assert "4242" in public.masked_label
     assert "instrument-private" not in json.dumps(public.public_dict())
     private = client.resolve_payment(public.selection_key, owner_key="admin-a", generation=3)
     assert private.payment_instrument_id == "instrument-private"
+    assert run(
+        client.async_revalidate_payment(
+            public.selection_key,
+            owner_key="admin-a",
+            generation=3,
+            amount_minor=560000,
+            currency="AMD",
+            checkout_session="checkout-session-1",
+            store_address_id=81,
+        )
+    ) is True
+    assert harness.transport.calls[-1] == (
+        "GET",
+        path,
+        {
+            "amount": "560000",
+            "currency": "AMD",
+            "clientSupports": "",
+            "clientReady": "",
+            "context": "checkout",
+            "checkoutSessionId": "checkout-session-1",
+            "storeAddressId": "81",
+        },
+    )
     with pytest.raises(live["ordering_account"].InvalidSelection):
         client.resolve_payment(public.selection_key, owner_key="admin-b", generation=3)
 
