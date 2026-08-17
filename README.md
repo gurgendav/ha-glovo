@@ -60,18 +60,18 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
-### Guarded live paid checkout in Home.17
+### Guarded live paid checkout in Home.18
 
-Release `1.1.0+home.17` production-composes the reviewed strict final request factory
+Release `1.1.0+home.18` production-composes the reviewed strict final request factory
 and one-attempt adapter only when fresh preparation and paid-checkout switch/
 acknowledgement pairs are all literally true and durable authority is healthy. Config
-entry migration v10 closes all four gates—even for an opted-in Home.16 entry with all four
+entry migration v11 closes all four gates—even for an opted-in Home.17 entry with all four
 true—while preserving unrelated options. New setup and reauthentication
 also close them. The administrator must complete a fresh re-opt-in after migration.
 Preparation consent alone constructs no final adapter, publishes final checkout
 unavailable, and registers no final-submit command.
 
-Home.17 retains Home.14's privacy-safe basket failure classification and Home.15's durable
+Home.18 retains Home.14's privacy-safe basket failure classification and Home.15's durable
 account-scoped basket authority. The closed runtime states are
 `UNKNOWN`, `ABSENT_VERIFIED`, `ADOPTED`, and `CONFLICT`; missing runtime memory is never
 projected as an empty writable basket. All administrators share one authority and whole
@@ -80,11 +80,12 @@ plus at most one conditional full per-store GET, with no query, polling, fallbac
 retry, or mutation. It strictly rejects multiple, malformed, oversized, inconsistent,
 or mismatched provider state.
 
-Home.17 narrows two display-only compatibility rules from supervised basket evidence:
+Home.18 narrows two display-only compatibility rules after a complete public-schema audit:
 rich-basket `storeInfo.logo` may be `null` or the existing bounded string. The value is
-validated and discarded. Product `quantity.incrementsLimit` may use Glovo's integer zero
-sentinel for unbounded quantity; it is normalized to the existing no-limit state. Negative,
-string, boolean, floating-point, and oversized positive limits remain rejected. Objects,
+validated and discarded. Product `quantity.incrementsLimit` accepts a nonnegative signed
+32-bit provider ceiling independently of the local hard quantity cap; zero and ceilings
+above 50 normalize to the existing no-limit state within that closed domain. Negative,
+string, boolean, floating-point, and overflow limits remain rejected. Objects,
 arrays, booleans, numbers, oversized strings, unknown
 keys, and all identity, product, store, address, price, and basket-version mismatches remain
 fail-closed.
@@ -105,7 +106,7 @@ basket mutation: Home.8 stopped on the documented provider rejection, while Home
 not yet provide this durable reload/re-adoption boundary. Neither identity should be
 used to infer writable basket absence or consent.
 
-Home.17 keeps `ORDERING_WEB_VERSION` at `v1.2569.0`, the latest reproducibly preserved
+Home.18 keeps `ORDERING_WEB_VERSION` at `v1.2569.0`, the latest reproducibly preserved
 authenticated first-party evidence. Later public landing and marketplace bundles did not
 expose a newer authenticated basket constant, so this release does not claim one.
 
@@ -145,7 +146,7 @@ an exact basket, amount, and currency match; all other ambiguity remains manual.
 
 The [reviewed static protocol evidence](docs/live-ordering-protocol-evidence.md) makes no
 provider idempotency claim and does **not** establish lookup by `checkoutSessionId`.
-Home.17 is offline release readiness only: it does not claim deployment, a live canary,
+Home.18 is offline release readiness only: it does not claim deployment, a live canary,
 quote, basket adoption, checkout, payment, or provider call. Follow the
 [operator runbook](docs/live-ordering-operator-runbook.md) and
 [release checklist](docs/live-ordering-release-checklist.md); disabling or rolling back

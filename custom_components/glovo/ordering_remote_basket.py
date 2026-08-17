@@ -19,6 +19,10 @@ from .api_session import (
 MAX_PRODUCTS: Final = 50
 MAX_TOTAL_QUANTITY: Final = 100
 MAX_PRODUCT_QUANTITY: Final = 50
+# Glovo's public basket schema leaves incrementsLimit as an unbounded integer.
+# Bound the display-only provider ceiling independently from our hard local
+# product-quantity cap; values above that cap are equivalent within our domain.
+MAX_PROVIDER_INCREMENT_LIMIT: Final = 2_147_483_647
 MAX_CUSTOMIZATIONS: Final = 64
 MAX_STRING: Final = 160
 MAX_RESPONSE_BYTES: Final = 512_000
@@ -736,12 +740,11 @@ def _parse_quantity(value: object) -> tuple[StructuredQuantity, dict[str, Any]]:
     if limit is not None:
         limit = _at(
             "products.quantity.incrementsLimit",
-            lambda: _int(limit, minimum=0, maximum=MAX_PRODUCT_QUANTITY),
+            lambda: _int(limit, minimum=0, maximum=MAX_PROVIDER_INCREMENT_LIMIT),
         )
-        # Glovo's web contract treats zero as the explicit unbounded sentinel
-        # (`!incrementsLimit`). Normalize it to the existing no-limit state so
-        # it cannot weaken quantity matching or outbound request contracts.
-        if limit == 0:
+        # Zero and provider ceilings above our hard supported quantity are both
+        # unbounded within this integration's closed 1..50 quantity domain.
+        if limit == 0 or limit > MAX_PRODUCT_QUANTITY:
             limit = None
     limit_type = item.get("limitType")
     if limit_type is not None:

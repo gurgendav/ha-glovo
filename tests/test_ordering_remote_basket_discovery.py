@@ -326,11 +326,12 @@ def test_nullable_store_logo_is_accepted_and_discarded(
     assert_calls(live, fixture, full=True)
 
 
-def test_zero_increments_limit_is_accepted_as_unbounded_metadata(
-    live: dict[str, ModuleType],
+@pytest.mark.parametrize("limit", [0, 51, 2_147_483_647])
+def test_provider_unbounded_increments_limit_is_normalized_to_no_limit(
+    live: dict[str, ModuleType], limit: int
 ) -> None:
     full = current_full_basket_payload()
-    full["products"][0]["quantity"]["incrementsLimit"] = 0
+    full["products"][0]["quantity"]["incrementsLimit"] = limit
     client, intent, fixture = client_and_intent(live, [summary()], full)
 
     result = run(discover(client, intent, live))
@@ -342,7 +343,21 @@ def test_zero_increments_limit_is_accepted_as_unbounded_metadata(
     assert_calls(live, fixture, full=True)
 
 
-@pytest.mark.parametrize("limit", [-1, True, "0", 1.5, 51])
+def test_in_range_increments_limit_remains_exact(
+    live: dict[str, ModuleType],
+) -> None:
+    full = current_full_basket_payload()
+    full["products"][0]["quantity"]["incrementsLimit"] = 10
+    client, intent, fixture = client_and_intent(live, [summary()], full)
+
+    result = run(discover(client, intent, live))
+
+    assert result.snapshot is not None
+    assert b'"incrementsLimit":10' in result.snapshot.provider_projection_bytes
+    assert_calls(live, fixture, full=True)
+
+
+@pytest.mark.parametrize("limit", [-1, True, "0", 1.5, 2_147_483_648])
 def test_malformed_increments_limit_is_rejected_at_exact_path(
     live: dict[str, ModuleType], limit: Any
 ) -> None:
