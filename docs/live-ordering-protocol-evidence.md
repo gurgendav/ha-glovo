@@ -1,6 +1,6 @@
 # Reviewed production final-checkout protocol evidence
 
-**Home.25 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v18, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
+**Home.26 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v19, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
 
 This is a dated first-party static- and bounded live-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. Building the Home.22 artifact itself made no deployment or provider request. The separately authorized Home.21 preparation-only canary described below made read-only account/catalog/basket/payment-method calls, stopped before quote completion, and exposed no checkout submission route.
 
@@ -215,6 +215,28 @@ the release artifact itself still claimed no quote or payment success. Current b
 evidence below establishes that the initial lookup should omit amount/currency entirely,
 so Home.24 supersedes this experimental choreography.
 
+## Home.26 sanitized generic web-fetcher parity evidence (2026-08-18)
+
+Sanitized direct first-party request evidence pins web client version `v1.2580.2` and
+the static browser identity header names and values implemented by the shared builder:
+`Glovo-App-Version`, matching `Glovo-Client-Info`, `Referer: https://glovoapp.com/`,
+a Chrome 151/macOS `User-Agent`, `sec-ch-ua-platform: "macOS"`, Chrome 151
+`sec-ch-ua`, and `sec-ch-ua-mobile: ?0`. No `Origin` or other unevidenced header is
+added. The existing API version, web context/platform/type/development state, language,
+request TTL, and conditional JSON body content type remain unchanged.
+
+Private authorization, device/client/session identities, location, timestamps, and request
+IDs are deliberately not taken from browser evidence. They continue to be locally generated
+or derived from the validated private session and authoritative address. Device, client, and
+session identities are process-scoped and distinct; dynamic session equals session; session
+timestamp is process-scoped; request ID and delivery timestamp are fresh per request.
+
+Payment bootstrap and priced revalidation now use the same location-aware authenticated
+generic transport as basket collection/detail reads. Basket writes, quote-template creation,
+and final submission already share that common builder. Production transport-ledger tests
+prove no payment/basket fallback to the basic transport and preserve JSON content type only
+for object bodies. Public Home Assistant schemas expose no header or location override.
+
 ## Home.24 bootstrap and template contract, with Home.25 capability correction (2026-08-18)
 
 The current anonymous first-party order-summary page asset
@@ -270,7 +292,7 @@ therefore report method/action/card-like/selected/selectable/selected-selectable
 3/1/1/1/1/1 and unsupported-type count 2. Only the selected usable card receives one
 ephemeral local checkout handle; neither unselected neighbor receives authority.
 
-Migration v18 resets all four gates, including opted-in Home.24 minor v17 entries. This evidence
+Migration v19 resets all four gates, including opted-in Home.25 minor v18 entries. This evidence
 authorizes a separately supervised stop-before-payment validation only; it does not itself
 authorize final submission or payment.
 
@@ -300,7 +322,7 @@ Pending, authentication, `PROCESS_PAYMENT`, malformed data, transport failure, c
 
 Any future release operation using the reviewed production adapter is limited to this policy:
 
-1. migration v18 closes all four gates—including for fully opted-in Home.24 entries—and requires a fresh default-off administrator re-opt-in;
+1. migration v19 closes all four gates—including for fully opted-in Home.25 entries—and requires a fresh default-off administrator re-opt-in;
 2. account-scoped `UNKNOWN`/`ABSENT_VERIFIED`/`ADOPTED`/`CONFLICT` authority with cross-administrator serialization;
 3. fresh read-only provider re-adoption after every setup/reload using one collection GET and at most one conditional per-store full GET before any basket mutation;
 4. a fresh authoritative exact paid quote, separate confirmation, exact store/items/options/full admin-only ephemeral address/masked saved card/price lines/total/currency/ETA/expiry display, and amount-bound acknowledgement;
@@ -310,7 +332,7 @@ Any future release operation using the reviewed production adapter is limited to
 8. at most one explicit known-ID status GET per administrator action, with no polling;
 9. provider identifiers and the full address excluded from public/recovery projections, logs, and hash-only basket evidence.
 
-This evidence does **not** establish provider idempotency or authorize a payment. Home.25 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
+This evidence does **not** establish provider idempotency or authorize a payment. Home.26 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
 
 ## Principal static sources
 

@@ -1653,6 +1653,8 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
     )
     ledger: list[tuple[str, str, dict[str, str], Any]] = []
     location_contexts: list[dict[str, str]] = []
+    basic_paths: list[str] = []
+    location_paths: list[str] = []
     read_responses = {
         "/customer_profile/api/v1/address_book/me/addresses": [
             address_payload(), address_payload(), address_payload()
@@ -1675,6 +1677,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
 
     def get(method: str, access: str, path: str, query: dict[str, str]) -> Any:
         assert method == "GET" and access == "access-fixture"
+        basic_paths.append(path)
         ledger.append((method, path, copy.deepcopy(query), None))
         return copy.deepcopy(read_responses[path].pop(0))
 
@@ -1686,7 +1689,10 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         context: dict[str, str],
     ) -> Any:
         location_contexts.append(copy.deepcopy(context))
-        return get(method, access, path, query)
+        response = get(method, access, path, query)
+        assert basic_paths.pop() == path
+        location_paths.append(path)
+        return response
 
     def mutate(
         method: str,
@@ -1862,7 +1868,11 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         "latitude": "40.177",
         "longitude": "44.513",
     }
-    assert location_contexts == [expected_location] * 10
+    assert location_contexts == [expected_location] * 12
+    assert location_paths.count("/v4/payment_methods") == 2
+    assert "/v4/payment_methods" not in basic_paths
+    assert "/v1/authenticated/customers/42/baskets" in location_paths
+    assert "/v3/checkouts/order/1/template" not in basic_paths
     assert ledger[8][2] == {} and ledger[13][2] == {}
     assert ledger[11][2] == {
         "storeAddressId": "81",
@@ -2016,7 +2026,7 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         assert entry.options["ordering_acknowledged"] is False
         assert entry.options["allow_live_checkout"] is False
         assert entry.options["live_checkout_acknowledged"] is False
-        assert entry.minor_version == 18
+        assert entry.minor_version == 19
         if "scan_interval" in options:
             assert entry.options["scan_interval"] == 37
             assert entry.options["unrelated_home_option"] == "preserved"
@@ -2039,8 +2049,10 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         (True, True, False, True),
     ],
 )
-@pytest.mark.parametrize("minor_version", (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17))
-def test_prior_releases_through_opted_in_home24_v17_force_fresh_home25_opt_in(
+@pytest.mark.parametrize(
+    "minor_version", (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+)
+def test_prior_releases_through_opted_in_home25_v18_force_fresh_home26_opt_in(
     ha_runtime: SimpleNamespace,
     gates: tuple[bool, bool, bool, bool],
     minor_version: int,
@@ -2063,7 +2075,7 @@ def test_prior_releases_through_opted_in_home24_v17_force_fresh_home25_opt_in(
     assert tuple(entry.options[key] for key in keys) == (False, False, False, False)
     assert entry.options["scan_interval"] == 23
     assert entry.options["unrelated_home_option"] == "preserved"
-    assert entry.minor_version == 18
+    assert entry.minor_version == 19
 
 
 @pytest.mark.parametrize(
@@ -2075,7 +2087,7 @@ def test_prior_releases_through_opted_in_home24_v17_force_fresh_home25_opt_in(
         ((True, True, False, True), (True, True, False, False)),
     ],
 )
-def test_current_v18_migration_preserves_only_dependency_consistent_booleans(
+def test_current_v19_migration_preserves_only_dependency_consistent_booleans(
     ha_runtime: SimpleNamespace,
     gates: tuple[bool, bool, bool, bool],
     expected: tuple[bool, bool, bool, bool],
@@ -2091,14 +2103,14 @@ def test_current_v18_migration_preserves_only_dependency_consistent_booleans(
         {"scan_interval": 23, "unrelated_home_option": "preserved"}
         | dict(zip(keys, gates, strict=True))
     )
-    entry.minor_version = 18
+    entry.minor_version = 19
 
     assert run(ha_runtime.integration.async_migrate_entry(hass, entry)) is True
 
     assert tuple(entry.options[key] for key in keys) == expected
     assert entry.options["scan_interval"] == 23
     assert entry.options["unrelated_home_option"] == "preserved"
-    assert entry.minor_version == 18
+    assert entry.minor_version == 19
 
 
 def test_reauth_refresh_resets_both_ordering_options_false(

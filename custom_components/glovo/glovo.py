@@ -146,7 +146,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 API_URL = "https://api.glovoapp.com"
-ORDERING_WEB_VERSION = "v1.2569.0"
+ORDERING_WEB_VERSION = "v1.2580.2"
+_ORDERING_WEB_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/151.0.0.0 Safari/537.36"
+)
 _DELIVERY_CONTEXT_KEYS = frozenset(
     {"countryCode", "cityCode", "latitude", "longitude"}
 )
@@ -479,6 +484,14 @@ def _delivery_headers(context: Mapping[str, str]) -> dict[str, str]:
         "Glovo-Client-Info": (
             f"web-customer-web-react/{ORDERING_WEB_VERSION} project:customer-web"
         ),
+        "Referer": "https://glovoapp.com/",
+        "User-Agent": _ORDERING_WEB_USER_AGENT,
+        "sec-ch-ua-platform": '"macOS"',
+        "sec-ch-ua": (
+            '"Not=A?Brand";v="99", "Google Chrome";v="151", '
+            '"Chromium";v="151"'
+        ),
+        "sec-ch-ua-mobile": "?0",
         "Glovo-Device-Urn": _WEB_DEVICE_URN,
         "Glovo-Language-Code": "en",
         "Accept-Language": "en",
@@ -524,11 +537,7 @@ def single_attempt_authed_location_get(
     if query:
         url = f"{url}?{urllib.parse.urlencode(query)}"
     headers = _delivery_headers(delivery_context)
-    if basket_route:
-        return _request_json(
-            "GET", url, access_token=access_token, extra_headers=headers
-        )
-    return _request_json("GET", url, extra_headers=headers)
+    return _request_json("GET", url, access_token=access_token, extra_headers=headers)
 
 
 # Must exactly match api_session._PHASE_MUTATION_ALLOWLIST. This standalone

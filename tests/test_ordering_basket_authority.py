@@ -434,6 +434,7 @@ def test_public_adoption_installs_each_closed_outcome_and_never_mutates(
                 "owner_key": "admin-b",
                 "generation": 7,
                 "store_address_id": 81,
+                "delivery_location": harness.location,
             }
         ]
 

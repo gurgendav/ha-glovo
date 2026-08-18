@@ -50,7 +50,7 @@ _MAX_MUTATION_BYTES: Final = 256_000
 _MAX_MUTATION_DEPTH: Final = 12
 _COUNTRY_CODE_RE: Final = re.compile(r"^[A-Z]{2}$")
 _CITY_CODE_RE: Final = re.compile(r"^[A-Z0-9][A-Z0-9_-]{1,19}$")
-_LOCATION_GET_FAMILIES: Final = frozenset({"catalog", "basket"})
+_LOCATION_GET_FAMILIES: Final = frozenset({"payment", "catalog", "basket"})
 
 # Keep these literal contracts in lockstep with ``glovo.py``. The transport
 # seam accepts an explicit purpose, whereas the standalone helper uses the

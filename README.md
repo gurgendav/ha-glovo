@@ -60,6 +60,25 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
+### Generic first-party web-header parity in Home.26
+
+Release `1.1.0+home.26` updates the shared location-aware authenticated web
+fetcher context to `v1.2580.2`. Payment bootstrap and priced revalidation,
+basket discovery/adoption, basket mutations, quote-template creation, and final
+submission all inherit the same generic header builder rather than endpoint-specific
+header copies. Its sanitized static browser identity includes `Glovo-App-Version`,
+`Glovo-Client-Info`, `Referer`, `User-Agent`, `sec-ch-ua-platform`, `sec-ch-ua`,
+and `sec-ch-ua-mobile`, matching Chrome 151 on macOS. No `Origin` header was added.
+
+Private authorization, device/client/session identities, location, timestamps, and
+request IDs continue to come only from the integration's validated private context.
+Process identities remain distinct and stable for the process; request ID and delivery
+timestamp remain fresh per request. Public Home Assistant schemas cannot supply headers
+or location context. JSON object bodies retain `Content-Type: application/json`, while a
+bodyless DELETE does not gain one. Config-entry migration v19 resets all four
+consequential gates, including an opted-in Home.25 minor v18 entry, and requires fresh
+consent.
+
 ### Browser capability parity for saved-card bootstrap in Home.25
 
 Release `1.1.0+home.25` reproduces the current first-party order-summary sequence. The

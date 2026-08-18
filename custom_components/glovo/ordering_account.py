@@ -23,7 +23,7 @@ from .ordering_contracts import (
     parse_saved_payments,
     privacy_safe_payment_diagnostics,
 )
-from .api_session import ApiSessionError
+from .api_session import ApiSessionError, DeliveryLocation
 from .ordering_models import MaskedPaymentSummary, SavedAddressSummary
 
 _ADDRESS_PATH: Final = "/customer_profile/api/v1/address_book/me/addresses"
@@ -365,6 +365,7 @@ class AccountClient:
         currency: str | None = None,
         checkout_session: str | None = None,
         store_address_id: int | None = None,
+        delivery_location: DeliveryLocation,
     ) -> tuple[MaskedPaymentSummary, ...]:
         owner, current_generation = self._identity(owner_key, generation)
         query = build_payment_query(
@@ -373,7 +374,12 @@ class AccountClient:
             checkout_session=checkout_session,
             store_address_id=store_address_id,
         )
-        payload = await self._session.async_get("payment", _PAYMENT_PATH, query)
+        payload = await self._session.async_get(
+            "payment",
+            _PAYMENT_PATH,
+            query,
+            delivery_location=delivery_location,
+        )
         diagnostics = privacy_safe_payment_diagnostics(payload)
         if "amount" in query:
             diagnostics["queryScope"] = "priced"
@@ -484,6 +490,7 @@ class AccountClient:
         currency: str,
         checkout_session: str,
         store_address_id: int,
+        delivery_location: DeliveryLocation,
     ) -> bool:
         """Re-fetch the exact checkout-scoped method and require the same selected card."""
         owner, current_generation = self._identity(owner_key, generation)
@@ -502,7 +509,12 @@ class AccountClient:
             )
         except Exception:
             return False
-        payload = await self._session.async_get("payment", _PAYMENT_PATH, query)
+        payload = await self._session.async_get(
+            "payment",
+            _PAYMENT_PATH,
+            query,
+            delivery_location=delivery_location,
+        )
         diagnostics = privacy_safe_payment_diagnostics(payload)
         if diagnostics["selectedCount"] != 1:
             return False

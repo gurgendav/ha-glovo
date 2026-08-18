@@ -1547,6 +1547,7 @@ class LiveOrderingFacade:
                     owner_key=owner,
                     generation=generation,
                     store_address_id=state.snapshot.store_address_id,
+                    delivery_location=state.delivery_location,
                 )
                 result: dict[str, Any] = {
                     "paymentMethods": [item.public_dict() for item in methods]
@@ -1618,7 +1619,16 @@ class LiveOrderingFacade:
                 )
                 if not await self._account.async_revalidate_address(address_handle, owner_key=owner, generation=generation):
                     raise PublicContractError
-                if not await self._account.async_revalidate_payment(payment_handle, owner_key=owner, generation=generation, amount_minor=quote.total.amount_minor, currency=quote.total.currency, checkout_session=quote.checkout_session_id, store_address_id=quote.store_address_id):
+                if not await self._account.async_revalidate_payment(
+                    payment_handle,
+                    owner_key=owner,
+                    generation=generation,
+                    amount_minor=quote.total.amount_minor,
+                    currency=quote.total.currency,
+                    checkout_session=quote.checkout_session_id,
+                    store_address_id=quote.store_address_id,
+                    delivery_location=state.delivery_location,
+                ):
                     raise PublicContractError
                 public = self._confirmations.install(quote)
                 self._quote[owner] = _QuoteState(generation, address_handle, payment_handle, quote)

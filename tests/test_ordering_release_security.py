@@ -161,6 +161,44 @@ def test_payment_capability_scanner_pins_googlepay_and_rejects_public_override()
     assert "payment capability became caller-controlled" in "\n".join(exposed_findings)
 
 
+def test_web_header_scanner_pins_generic_context_and_rejects_public_override() -> None:
+    script = ROOT / "scripts" / "scan_ordering_privacy.py"
+    spec = importlib.util.spec_from_file_location("ordering_web_header_scan", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    sources = module.load_web_header_sources()
+    clean: list[str] = []
+    module.scan_web_header_contract(clean, sources=sources)
+    assert clean == []
+
+    stale = dict(sources)
+    stale[module.WEB_TRANSPORT_SOURCE] = stale[module.WEB_TRANSPORT_SOURCE].replace(
+        'ORDERING_WEB_VERSION = "v1.2580.2"',
+        'ORDERING_WEB_VERSION = "v1.2569.0"',
+        1,
+    )
+    stale_findings: list[str] = []
+    module.scan_web_header_contract(stale_findings, sources=stale)
+    assert "exact safe common web headers changed" in "\n".join(stale_findings)
+
+    fallback = dict(sources)
+    fallback[module.API_SESSION_SOURCE] = fallback[module.API_SESSION_SOURCE].replace(
+        '{"payment", "catalog", "basket"}', '{"catalog", "basket"}', 1
+    )
+    fallback_findings: list[str] = []
+    module.scan_web_header_contract(fallback_findings, sources=fallback)
+    assert "location-aware payment routing changed" in "\n".join(fallback_findings)
+
+    exposed = dict(sources)
+    exposed[module.PAYMENT_PUBLIC_SCHEMA_SOURCE] += (
+        '\nPUBLIC = {"User-Agent": str}\n'
+    )
+    exposed_findings: list[str] = []
+    module.scan_web_header_contract(exposed_findings, sources=exposed)
+    assert "public schema exposes web header override" in "\n".join(exposed_findings)
+
+
 def test_release_evidence_composes_guarded_final_seam_without_idempotency_claim() -> None:
     evidence = (ROOT / "docs" / "live-ordering-protocol-evidence.md").read_text(encoding="utf-8")
     assert "productionFinalCheckoutSupported: true" in evidence
@@ -178,12 +216,12 @@ def test_release_evidence_composes_guarded_final_seam_without_idempotency_claim(
         assert required in evidence
 
 
-def test_home25_release_identity_basket_evidence_and_no_action_claims_are_frozen() -> None:
+def test_home26_release_identity_header_parity_and_no_action_claims_are_frozen() -> None:
     descriptor = (
         "ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|"
-        "version=1.1.0+home.25|profile=coordinator-source-provenance-v1"
+        "version=1.1.0+home.26|profile=coordinator-source-provenance-v1"
     )
-    expected = "547ee9e8542708d57d3b714659d74f8c2371b8a602d095c6e69579c6611bc49c"
+    expected = "c711950a2891a32d2f1a1c790364e39b7b937a11bc2642f3c4e865af421e2541"
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
     const = (COMPONENT / "const.py").read_text(encoding="utf-8")
     glovo = (COMPONENT / "glovo.py").read_text(encoding="utf-8")
@@ -198,17 +236,16 @@ def test_home25_release_identity_basket_evidence_and_no_action_claims_are_frozen
     )
 
     assert hashlib.sha256(descriptor.encode()).hexdigest() == expected
-    assert manifest["version"] == "1.1.0+home.25"
+    assert manifest["version"] == "1.1.0+home.26"
     assert descriptor in const and expected in const
-    assert 'ORDERING_WEB_VERSION = "v1.2569.0"' in glovo
-    assert "v1.2570.0" not in documents
+    assert 'ORDERING_WEB_VERSION = "v1.2580.2"' in glovo
     assert (
-        "Config-entry migration v18 closes preparation consent/acknowledgement and "
+        "Config-entry migration v19 closes preparation consent/acknowledgement and "
         "paid-checkout consent/acknowledgement, even if all four were true in "
-        "published Home.24."
+        "published Home.25."
     ) in documents
     for required in (
-        "Home.25",
+        "Home.26",
         "UNKNOWN",
         "ABSENT_VERIFIED",
         "ADOPTED",
@@ -221,8 +258,8 @@ def test_home25_release_identity_basket_evidence_and_no_action_claims_are_frozen
         "at most one",
         "read-only adoption",
         "fresh re-opt-in",
-        "minor v18",
-        "opted-in Home.24",
+        "minor v19",
+        "opted-in Home.25",
         "clientSupports=GooglePay",
         "storeInfo.logo",
         "incrementsLimit",

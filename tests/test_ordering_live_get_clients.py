@@ -85,6 +85,11 @@ class Clock:
         return self.value
 
 
+def payment_location(live: dict[str, ModuleType]) -> Any:
+    """Return one validated private location for payment fetcher tests."""
+    return live["api_session"].DeliveryLocation("AM", "YRV", 40.177, 44.513)
+
+
 class FixtureTransport:
     def __init__(self, responses: dict[str, Any]) -> None:
         self.responses = responses
@@ -973,6 +978,7 @@ def test_googlepay_capability_production_shape_issues_only_selected_card_authori
             owner_key="admin-a",
             generation=3,
             store_address_id=81,
+                delivery_location=payment_location(live),
         )
     )
 
@@ -1024,6 +1030,7 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
             owner_key="admin-a",
             generation=3,
             store_address_id=81,
+                delivery_location=payment_location(live),
         )
     )[0]
     assert harness.transport.calls == [
@@ -1059,6 +1066,7 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
             currency="AMD",
             checkout_session="checkout-session-1",
             store_address_id=81,
+                delivery_location=payment_location(live),
         )
     ) is True
     assert harness.transport.calls[-1] == (
@@ -1088,7 +1096,8 @@ def test_priced_payment_revalidation_requires_one_total_provider_selected_card(
     client = live["ordering_account"].AccountClient(harness.session, clock=Clock())
     public = run(
         client.async_saved_payments(
-            owner_key="admin-a", generation=3, store_address_id=81
+            owner_key="admin-a", generation=3, store_address_id=81,
+                delivery_location=payment_location(live),
         )
     )[0]
     second = copy.deepcopy(payload["data"]["paymentMethods"][0])
@@ -1107,6 +1116,7 @@ def test_priced_payment_revalidation_requires_one_total_provider_selected_card(
             currency="AMD",
             checkout_session="checkout-session-1",
             store_address_id=81,
+                delivery_location=payment_location(live),
         )
     ) is False
 
@@ -1121,7 +1131,8 @@ def test_unselected_configured_card_is_visible_in_diagnostics_but_not_checkout_a
     client = live["ordering_account"].AccountClient(harness.session, clock=Clock())
     public = run(
         client.async_saved_payments(
-            owner_key="admin-a", generation=3, store_address_id=81
+            owner_key="admin-a", generation=3, store_address_id=81,
+                delivery_location=payment_location(live),
         )
     )
     assert public == ()
@@ -1195,7 +1206,8 @@ def test_multiple_selected_cards_fail_closed_without_checkout_handle(
     with pytest.raises(live["ordering_account"].InvalidSelection):
         run(
             client.async_saved_payments(
-                owner_key="admin-a", generation=3, store_address_id=81
+                owner_key="admin-a", generation=3, store_address_id=81,
+                delivery_location=payment_location(live),
             )
         )
     diagnostics = client.last_payment_diagnostics
@@ -1219,7 +1231,8 @@ def test_incompatible_second_selected_card_cannot_hide_before_authority_check(
     with pytest.raises(live["ordering_account"].InvalidSelection):
         run(
             client.async_saved_payments(
-                owner_key="admin-a", generation=3, store_address_id=81
+                owner_key="admin-a", generation=3, store_address_id=81,
+                delivery_location=payment_location(live),
             )
         )
     diagnostics = client.last_payment_diagnostics
@@ -1335,7 +1348,7 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
     assert sent["url"].startswith(
         "https://api.glovoapp.com/v3/stores/fixture-kitchen?"
     )
-    assert "access_token" not in sent
+    assert sent["access_token"] == "access-private"
     headers = sent["extra_headers"]
     assert set(headers) == {
         "Accept",
@@ -1346,6 +1359,11 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
         "Glovo-App-Type",
         "Glovo-App-Version",
         "Glovo-Client-Info",
+        "Referer",
+        "User-Agent",
+        "sec-ch-ua-platform",
+        "sec-ch-ua",
+        "sec-ch-ua-mobile",
         "Glovo-Device-Urn",
         "Glovo-Language-Code",
         "Accept-Language",
@@ -1367,12 +1385,20 @@ def test_location_transport_builds_only_closed_glovo_web_headers(
     assert headers["Glovo-Location-City-Code"] == "YRV"
     assert headers["Accept"] == "application/json, text/plain, */*"
     assert headers["Accept-Language"] == headers["Glovo-Language-Code"] == "en"
-    assert headers["Glovo-App-Version"] == "v1.2569.0"
+    assert headers["Glovo-App-Version"] == "v1.2580.2"
     assert headers["Glovo-Api-Version"] == "14"
     assert headers["Glovo-Request-TTL"] == "7500"
     assert headers["Glovo-Client-Info"] == (
-        "web-customer-web-react/v1.2569.0 project:customer-web"
+        "web-customer-web-react/v1.2580.2 project:customer-web"
     )
+    assert headers["Referer"] == "https://glovoapp.com/"
+    assert headers["User-Agent"].endswith("Chrome/151.0.0.0 Safari/537.36")
+    assert headers["sec-ch-ua-platform"] == '"macOS"'
+    assert headers["sec-ch-ua"] == (
+        '"Not=A?Brand";v="99", "Google Chrome";v="151", '
+        '"Chromium";v="151"'
+    )
+    assert headers["sec-ch-ua-mobile"] == "?0"
     assert re.fullmatch(r"glv:device:[0-9a-f-]{36}", headers["Glovo-Device-Urn"])
     assert headers["Glovo-Perseus-Client-Id"] != headers["Glovo-Perseus-Session-Id"]
     assert headers["Glovo-Dynamic-Session-Id"] == headers["Glovo-Perseus-Session-Id"]
@@ -1429,8 +1455,15 @@ def test_basket_location_transport_uses_exact_frozen_web_context_and_auth(
         "Glovo-App-Development-State": "prod",
         "Glovo-App-Platform": "web",
         "Glovo-App-Type": "customer",
-        "Glovo-App-Version": "v1.2569.0",
-        "Glovo-Client-Info": "web-customer-web-react/v1.2569.0 project:customer-web",
+        "Glovo-App-Version": "v1.2580.2",
+        "Glovo-Client-Info": "web-customer-web-react/v1.2580.2 project:customer-web",
+        "Referer": "https://glovoapp.com/",
+        "sec-ch-ua-platform": '"macOS"',
+        "sec-ch-ua": (
+            '"Not=A?Brand";v="99", "Google Chrome";v="151", '
+            '"Chromium";v="151"'
+        ),
+        "sec-ch-ua-mobile": "?0",
         "Glovo-Language-Code": "en",
         "Accept-Language": "en",
         "Glovo-Perseus-Consent": "essential_functional_marketing",

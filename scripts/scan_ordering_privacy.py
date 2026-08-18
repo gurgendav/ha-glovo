@@ -33,6 +33,10 @@ BASKET_PARSER_SOURCE = "custom_components/glovo/ordering_remote_basket.py"
 RUNTIME_SOURCE = "custom_components/glovo/__init__.py"
 PAYMENT_CONTRACT_SOURCE = "custom_components/glovo/ordering_contracts.py"
 PAYMENT_PUBLIC_SCHEMA_SOURCE = "custom_components/glovo/ordering_ha.py"
+WEB_TRANSPORT_SOURCE = "custom_components/glovo/glovo.py"
+API_SESSION_SOURCE = "custom_components/glovo/api_session.py"
+ACCOUNT_CLIENT_SOURCE = "custom_components/glovo/ordering_account.py"
+LIVE_API_SOURCE = "custom_components/glovo/ordering_live_api.py"
 PUBLIC_SCHEMA_SOURCES = (
     "custom_components/glovo/ordering_ha.py",
     "custom_components/glovo/ordering_surface.py",
@@ -506,6 +510,92 @@ def scan_payment_capability_contract(
             )
 
 
+def load_web_header_sources() -> dict[str, str]:
+    """Load the generic transport and private/public callers it must bind."""
+
+    names = (
+        WEB_TRANSPORT_SOURCE,
+        API_SESSION_SOURCE,
+        ACCOUNT_CLIENT_SOURCE,
+        LIVE_API_SOURCE,
+        *PUBLIC_SCHEMA_SOURCES,
+    )
+    return {name: (ROOT / name).read_text(encoding="utf-8") for name in names}
+
+
+def scan_web_header_contract(
+    findings: list[str], *, sources: Mapping[str, str] | None = None
+) -> None:
+    """Pin Home.26 generic header parity and location-bound payment routing."""
+
+    loaded = dict(sources) if sources is not None else load_web_header_sources()
+    required_names = {
+        WEB_TRANSPORT_SOURCE,
+        API_SESSION_SOURCE,
+        ACCOUNT_CLIENT_SOURCE,
+        LIVE_API_SOURCE,
+        *PUBLIC_SCHEMA_SOURCES,
+    }
+    if set(loaded) != required_names:
+        findings.append("web header scanner source inventory is incomplete")
+        return
+    transport = loaded[WEB_TRANSPORT_SOURCE]
+    session = loaded[API_SESSION_SOURCE]
+    account = loaded[ACCOUNT_CLIENT_SOURCE]
+    live_api = loaded[LIVE_API_SOURCE]
+    try:
+        start = transport.index("def _delivery_headers(")
+        end = transport.index("\ndef single_attempt_authed_location_get", start)
+    except ValueError:
+        findings.append(f"{WEB_TRANSPORT_SOURCE}: common web header builder is absent")
+        return
+    builder = transport[start:end]
+    exact_static_tokens = (
+        'ORDERING_WEB_VERSION = "v1.2580.2"',
+        '"Referer": "https://glovoapp.com/"',
+        '"User-Agent": _ORDERING_WEB_USER_AGENT',
+        '"sec-ch-ua-platform": \'"macOS"\'',
+        '\'"Not=A?Brand";v="99", "Google Chrome";v="151", \'',
+        '\'"Chromium";v="151"\'',
+        '"sec-ch-ua-mobile": "?0"',
+        'f"web-customer-web-react/{ORDERING_WEB_VERSION} project:customer-web"',
+    )
+    if not all(token in transport for token in exact_static_tokens) or '"Origin"' in builder:
+        findings.append(f"{WEB_TRANSPORT_SOURCE}: exact safe common web headers changed")
+    if (
+        "Chrome/151.0.0.0 Safari/537.36" not in transport
+        or 'return _request_json("GET", url, access_token=access_token, extra_headers=headers)' not in transport
+    ):
+        findings.append(
+            f"{WEB_TRANSPORT_SOURCE}: authenticated Chrome web transport changed"
+        )
+    if _assigned_frozenset(session, "_LOCATION_GET_FAMILIES") != frozenset(
+        {"payment", "catalog", "basket"}
+    ):
+        findings.append(f"{API_SESSION_SOURCE}: location-aware payment routing changed")
+    if (
+        account.count('"payment",\n            _PAYMENT_PATH,\n            query,\n            delivery_location=delivery_location,')
+        != 2
+        or account.count("delivery_location: DeliveryLocation,") != 2
+        or live_api.count("delivery_location=state.delivery_location,") < 2
+    ):
+        findings.append(
+            f"{ACCOUNT_CLIENT_SOURCE}: authoritative payment location binding changed"
+        )
+    public_header_names = (
+        "Glovo-App-Version",
+        "Glovo-Client-Info",
+        "Referer",
+        "User-Agent",
+        "sec-ch-ua-platform",
+        "sec-ch-ua",
+        "sec-ch-ua-mobile",
+    )
+    for name in PUBLIC_SCHEMA_SOURCES:
+        if any(header in loaded[name] for header in public_header_names):
+            findings.append(f"{name}: public schema exposes web header override")
+
+
 def scan_capabilities(findings: list[str]) -> None:
     for path in sorted(COMPONENT.rglob("*")):
         if path.suffix not in {".py", ".js"} or not path.is_file():
@@ -516,6 +606,7 @@ def scan_capabilities(findings: list[str]) -> None:
                 findings.append(f"{path.relative_to(ROOT)}: {name}")
     scan_basket_authority_contracts(findings)
     scan_payment_capability_contract(findings)
+    scan_web_header_contract(findings)
     # Home.21 must compose the exact reviewed adapter and request factory while
     # retaining the durable final coordinator. Runtime tests prove gate absence.
     runtime_text = {
