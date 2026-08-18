@@ -675,7 +675,10 @@ def build_payment_query(
     """Build either the browser bootstrap or post-template payment query."""
 
     query = {
-        "clientSupports": "",
+        # The current first-party checkout advertises this capability even when
+        # the selected tender is a saved card. Keep it internal and immutable:
+        # Home Assistant callers do not choose the browser capability profile.
+        "clientSupports": "GooglePay",
         "clientReady": "",
         "context": "checkout",
     }

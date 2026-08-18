@@ -135,6 +135,32 @@ def test_basket_authority_scanner_enforces_private_store_routes_wiring_and_proje
         assert required in encoded
 
 
+def test_payment_capability_scanner_pins_googlepay_and_rejects_public_override() -> None:
+    script = ROOT / "scripts" / "scan_ordering_privacy.py"
+    spec = importlib.util.spec_from_file_location("ordering_privacy_payment_scan", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    sources = module.load_payment_capability_sources()
+    clean: list[str] = []
+    module.scan_payment_capability_contract(clean, sources=sources)
+    assert clean == []
+
+    stale = dict(sources)
+    stale[module.PAYMENT_CONTRACT_SOURCE] = stale[module.PAYMENT_CONTRACT_SOURCE].replace(
+        '"clientSupports": "GooglePay"', '"clientSupports": ""', 1
+    )
+    stale_findings: list[str] = []
+    module.scan_payment_capability_contract(stale_findings, sources=stale)
+    assert "exact browser payment capability tuple changed" in "\n".join(stale_findings)
+
+    exposed = dict(sources)
+    exposed[module.PAYMENT_PUBLIC_SCHEMA_SOURCE] += '\nPUBLIC = {"clientSupports": str}\n'
+    exposed_findings: list[str] = []
+    module.scan_payment_capability_contract(exposed_findings, sources=exposed)
+    assert "payment capability became caller-controlled" in "\n".join(exposed_findings)
+
+
 def test_release_evidence_composes_guarded_final_seam_without_idempotency_claim() -> None:
     evidence = (ROOT / "docs" / "live-ordering-protocol-evidence.md").read_text(encoding="utf-8")
     assert "productionFinalCheckoutSupported: true" in evidence
@@ -152,12 +178,12 @@ def test_release_evidence_composes_guarded_final_seam_without_idempotency_claim(
         assert required in evidence
 
 
-def test_home24_release_identity_basket_evidence_and_no_action_claims_are_frozen() -> None:
+def test_home25_release_identity_basket_evidence_and_no_action_claims_are_frozen() -> None:
     descriptor = (
         "ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|"
-        "version=1.1.0+home.24|profile=coordinator-source-provenance-v1"
+        "version=1.1.0+home.25|profile=coordinator-source-provenance-v1"
     )
-    expected = "462673138c8af1d355247d65deae2479537a0f6ed3220217a2b58164d5fa4ddc"
+    expected = "547ee9e8542708d57d3b714659d74f8c2371b8a602d095c6e69579c6611bc49c"
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
     const = (COMPONENT / "const.py").read_text(encoding="utf-8")
     glovo = (COMPONENT / "glovo.py").read_text(encoding="utf-8")
@@ -172,17 +198,17 @@ def test_home24_release_identity_basket_evidence_and_no_action_claims_are_frozen
     )
 
     assert hashlib.sha256(descriptor.encode()).hexdigest() == expected
-    assert manifest["version"] == "1.1.0+home.24"
+    assert manifest["version"] == "1.1.0+home.25"
     assert descriptor in const and expected in const
     assert 'ORDERING_WEB_VERSION = "v1.2569.0"' in glovo
     assert "v1.2570.0" not in documents
     assert (
-        "Config-entry migration v17 closes preparation consent/acknowledgement and "
+        "Config-entry migration v18 closes preparation consent/acknowledgement and "
         "paid-checkout consent/acknowledgement, even if all four were true in "
-        "published Home.23."
+        "published Home.24."
     ) in documents
     for required in (
-        "Home.24",
+        "Home.25",
         "UNKNOWN",
         "ABSENT_VERIFIED",
         "ADOPTED",
@@ -195,8 +221,9 @@ def test_home24_release_identity_basket_evidence_and_no_action_claims_are_frozen
         "at most one",
         "read-only adoption",
         "fresh re-opt-in",
-        "minor v17",
-        "opted-in Home.23",
+        "minor v18",
+        "opted-in Home.24",
+        "clientSupports=GooglePay",
         "storeInfo.logo",
         "incrementsLimit",
         "root.storeInfo.logo",

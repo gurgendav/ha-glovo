@@ -1,0 +1,79 @@
+{
+  "data": {
+    "paymentMethods": [
+      {
+        "type": "CREDIT_CARD",
+        "paymentInstrumentId": "fixture-card-reference",
+        "selected": true,
+        "metadata": {
+          "id": null,
+          "lastFourDigits": "0000"
+        },
+        "displayAttributes": {
+          "displayName": "Saved card",
+          "description": "Card ending 0000",
+          "icon": {
+            "lightImageId": "fixture-card-light",
+            "darkImageId": "fixture-card-dark"
+          },
+          "tags": [],
+          "message": null
+        }
+      },
+      {
+        "type": "ALTERNATIVE",
+        "paymentInstrumentId": null,
+        "selected": false,
+        "metadata": {
+          "platform": "GooglePay",
+          "apmUser": null
+        },
+        "displayAttributes": {
+          "displayName": "Google Pay",
+          "description": null,
+          "icon": {
+            "lightImageId": "fixture-wallet-light",
+            "darkImageId": "fixture-wallet-dark"
+          },
+          "tags": [],
+          "message": null
+        }
+      },
+      {
+        "type": "CASH",
+        "paymentInstrumentId": null,
+        "selected": false,
+        "metadata": {
+          "maxAmount": 1000000
+        },
+        "displayAttributes": {
+          "displayName": "Cash",
+          "description": null,
+          "icon": {
+            "lightImageId": "fixture-cash-light",
+            "darkImageId": "fixture-cash-dark"
+          },
+          "tags": [],
+          "message": null
+        }
+      }
+    ],
+    "actions": [
+      {
+        "type": "ADD_CARD",
+        "paymentMethod": "CREDIT_CARD",
+        "provider": "ProcessOut",
+        "displayAttributes": {
+          "displayName": "Add card",
+          "description": null,
+          "icon": {
+            "lightImageId": "fixture-add-card-light",
+            "darkImageId": "fixture-add-card-dark"
+          },
+          "tags": [],
+          "message": null
+        }
+      }
+    ]
+  }
+}

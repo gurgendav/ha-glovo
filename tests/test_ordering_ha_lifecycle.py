@@ -1866,7 +1866,7 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
     assert ledger[8][2] == {} and ledger[13][2] == {}
     assert ledger[11][2] == {
         "storeAddressId": "81",
-        "clientSupports": "",
+        "clientSupports": "GooglePay",
         "clientReady": "",
         "context": "checkout",
     }
@@ -1875,12 +1875,45 @@ def test_admin_fixture_transport_reaches_production_preparation_path_without_fin
         "currency": "AMD",
         "checkoutSessionId": "checkout-private-1",
         "storeAddressId": "81",
-        "clientSupports": "",
+        "clientSupports": "GooglePay",
         "clientReady": "",
         "context": "checkout",
     }
     runtime = entry.runtime_data
     assert runtime.ordering_runtime.live_checkout_available is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("clientSupports", ""), ("clientReady", "GooglePay")),
+)
+def test_payment_capability_is_not_caller_controlled_by_public_ha_schema(
+    ha_runtime: SimpleNamespace,
+    field: str,
+    value: str,
+) -> None:
+    hass = ha_runtime.FakeHass()
+    entry = ha_runtime.FakeEntry(
+        {
+            "allow_ordering": True,
+            "ordering_acknowledged": True,
+            "allow_live_checkout": True,
+            "live_checkout_acknowledged": True,
+        }
+    )
+    assert run(ha_runtime.integration.async_setup_entry(hass, entry)) is True
+    connection = _call_ws(
+        ha_runtime,
+        hass,
+        "glovo/ordering/live/payment_methods",
+        {
+            "type": "glovo/ordering/live/payment_methods",
+            "generation": entry.runtime_data.ordering_manager.generation,
+            field: value,
+        },
+    )
+    assert connection.results == []
+    assert connection.errors[0][1] == "invalid_format"
 
 
 def test_bad_preparation_authority_storage_fails_closed_without_mutation_session_or_facade(
@@ -1983,7 +2016,7 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         assert entry.options["ordering_acknowledged"] is False
         assert entry.options["allow_live_checkout"] is False
         assert entry.options["live_checkout_acknowledged"] is False
-        assert entry.minor_version == 17
+        assert entry.minor_version == 18
         if "scan_interval" in options:
             assert entry.options["scan_interval"] == 37
             assert entry.options["unrelated_home_option"] == "preserved"
@@ -2006,8 +2039,8 @@ def test_migration_forces_fresh_opt_in_and_keeps_runtime_panel_disabled(
         (True, True, False, True),
     ],
 )
-@pytest.mark.parametrize("minor_version", (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16))
-def test_prior_releases_through_opted_in_home23_v16_force_fresh_home24_opt_in(
+@pytest.mark.parametrize("minor_version", (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17))
+def test_prior_releases_through_opted_in_home24_v17_force_fresh_home25_opt_in(
     ha_runtime: SimpleNamespace,
     gates: tuple[bool, bool, bool, bool],
     minor_version: int,
@@ -2030,7 +2063,7 @@ def test_prior_releases_through_opted_in_home23_v16_force_fresh_home24_opt_in(
     assert tuple(entry.options[key] for key in keys) == (False, False, False, False)
     assert entry.options["scan_interval"] == 23
     assert entry.options["unrelated_home_option"] == "preserved"
-    assert entry.minor_version == 17
+    assert entry.minor_version == 18
 
 
 @pytest.mark.parametrize(
@@ -2042,7 +2075,7 @@ def test_prior_releases_through_opted_in_home23_v16_force_fresh_home24_opt_in(
         ((True, True, False, True), (True, True, False, False)),
     ],
 )
-def test_current_v17_migration_preserves_only_dependency_consistent_booleans(
+def test_current_v18_migration_preserves_only_dependency_consistent_booleans(
     ha_runtime: SimpleNamespace,
     gates: tuple[bool, bool, bool, bool],
     expected: tuple[bool, bool, bool, bool],
@@ -2058,14 +2091,14 @@ def test_current_v17_migration_preserves_only_dependency_consistent_booleans(
         {"scan_interval": 23, "unrelated_home_option": "preserved"}
         | dict(zip(keys, gates, strict=True))
     )
-    entry.minor_version = 17
+    entry.minor_version = 18
 
     assert run(ha_runtime.integration.async_migrate_entry(hass, entry)) is True
 
     assert tuple(entry.options[key] for key in keys) == expected
     assert entry.options["scan_interval"] == 23
     assert entry.options["unrelated_home_option"] == "preserved"
-    assert entry.minor_version == 17
+    assert entry.minor_version == 18
 
 
 def test_reauth_refresh_resets_both_ordering_options_false(

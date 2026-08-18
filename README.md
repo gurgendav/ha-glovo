@@ -60,12 +60,15 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
-### Browser-equivalent saved-card bootstrap and quote template in Home.24
+### Browser capability parity for saved-card bootstrap in Home.25
 
-Release `1.1.0+home.24` reproduces the current first-party order-summary sequence. The
+Release `1.1.0+home.25` reproduces the current first-party order-summary sequence. The
 initial `GET /v4/payment_methods` is a bootstrap lookup containing `storeAddressId`,
-empty browser wallet-capability strings, and `context=checkout`—it deliberately omits
-`amount`, `currency`, and `checkoutSessionId`. Exactly one provider-selected compatible
+`clientSupports=GooglePay`, empty `clientReady=`, and `context=checkout`—it deliberately
+omits `amount`, `currency`, and `checkoutSessionId`. Post-template payment revalidation
+uses the same fixed capability tuple while preserving the exact decimal amount, currency,
+checkout session, and store-address rules. These capability values are internal constants,
+not caller-controlled Home Assistant request fields. Exactly one provider-selected compatible
 saved card is then projected into `POST /v3/checkouts/order/1/template` as
 `CreditCard`; its provider token is projected with exact tri-state semantics: an absent
 metadata key is omitted, explicit null is sent as JSON null, and a finite number is sent
@@ -83,8 +86,10 @@ selected-selectable counts, with bounded rejection categories and masked suffixe
 Configured-but-unselected cards are visible diagnostically but never receive a checkout
 handle; multiple selected cards fail closed. Numeric provider tokens may be finite zero,
 negative, or fractional numbers as permitted by the current web schema, but are never
-published. Migration v17 resets all four consequential gates, including opted-in Home.23
-v16 entries, and requires fresh consent.
+Config-entry migration v18 resets all four consequential gates, including opted-in Home.24
+minor v17 entries, and requires fresh consent. A sanitized production-shaped regression
+covers one selected usable card with a null metadata token, unselected Google Pay and cash
+neighbors, and one add-card action; only the selected card receives an ephemeral local handle.
 
 ### Experimental payment diagnostics in Home.23
 

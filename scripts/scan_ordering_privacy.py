@@ -31,6 +31,8 @@ BASKET_DISCOVERY_SOURCE = (
 )
 BASKET_PARSER_SOURCE = "custom_components/glovo/ordering_remote_basket.py"
 RUNTIME_SOURCE = "custom_components/glovo/__init__.py"
+PAYMENT_CONTRACT_SOURCE = "custom_components/glovo/ordering_contracts.py"
+PAYMENT_PUBLIC_SCHEMA_SOURCE = "custom_components/glovo/ordering_ha.py"
 PUBLIC_SCHEMA_SOURCES = (
     "custom_components/glovo/ordering_ha.py",
     "custom_components/glovo/ordering_surface.py",
@@ -461,6 +463,49 @@ def scan_basket_authority_contracts(
             findings.append(f"{name}: public schema exposes provider identifier")
 
 
+def load_payment_capability_sources() -> dict[str, str]:
+    """Load the private payment query builder and public HA schema."""
+
+    return {
+        name: (ROOT / name).read_text(encoding="utf-8")
+        for name in (PAYMENT_CONTRACT_SOURCE, PAYMENT_PUBLIC_SCHEMA_SOURCE)
+    }
+
+
+def scan_payment_capability_contract(
+    findings: list[str], *, sources: Mapping[str, str] | None = None
+) -> None:
+    """Pin browser capability parity without making it public caller input."""
+
+    loaded = dict(sources) if sources is not None else load_payment_capability_sources()
+    if set(loaded) != {PAYMENT_CONTRACT_SOURCE, PAYMENT_PUBLIC_SCHEMA_SOURCE}:
+        findings.append("payment capability scanner source inventory is incomplete")
+        return
+    contracts = loaded[PAYMENT_CONTRACT_SOURCE]
+    public_schema = loaded[PAYMENT_PUBLIC_SCHEMA_SOURCE]
+    try:
+        start = contracts.index("def build_payment_query(")
+        end = contracts.index("\ndef privacy_safe_payment_diagnostics", start)
+    except ValueError:
+        findings.append(f"{PAYMENT_CONTRACT_SOURCE}: payment query builder is absent")
+        return
+    builder = contracts[start:end]
+    required = (
+        '\"clientSupports\": \"GooglePay\"',
+        '\"clientReady\": \"\"',
+        '\"context\": \"checkout\"',
+    )
+    if not all(builder.count(token) == 1 for token in required):
+        findings.append(
+            f"{PAYMENT_CONTRACT_SOURCE}: exact browser payment capability tuple changed"
+        )
+    for forbidden in ('\"clientSupports\"', '\"clientReady\"'):
+        if forbidden in public_schema:
+            findings.append(
+                f"{PAYMENT_PUBLIC_SCHEMA_SOURCE}: payment capability became caller-controlled"
+            )
+
+
 def scan_capabilities(findings: list[str]) -> None:
     for path in sorted(COMPONENT.rglob("*")):
         if path.suffix not in {".py", ".js"} or not path.is_file():
@@ -470,6 +515,7 @@ def scan_capabilities(findings: list[str]) -> None:
             if pattern.search(text):
                 findings.append(f"{path.relative_to(ROOT)}: {name}")
     scan_basket_authority_contracts(findings)
+    scan_payment_capability_contract(findings)
     # Home.21 must compose the exact reviewed adapter and request factory while
     # retaining the durable final coordinator. Runtime tests prove gate absence.
     runtime_text = {

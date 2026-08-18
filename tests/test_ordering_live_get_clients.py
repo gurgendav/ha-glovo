@@ -19,6 +19,14 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 GLOVO_ROOT = ROOT / "custom_components" / "glovo"
+PAYMENT_FIXTURE = (
+    ROOT
+    / "tests"
+    / "fixtures"
+    / "glovo_ordering"
+    / "payment_methods"
+    / "googlepay-capability-three-methods.json"
+)
 MODULES = (
     "ordering_models",
     "ordering_contracts",
@@ -759,7 +767,7 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
     contracts = live["ordering_contracts"]
     assert contracts.build_payment_query(store_address_id=81) == {
         "storeAddressId": "81",
-        "clientSupports": "",
+        "clientSupports": "GooglePay",
         "clientReady": "",
         "context": "checkout",
     }
@@ -772,7 +780,7 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
     assert query == {
         "amount": "3289.6",
         "currency": "AMD",
-        "clientSupports": "",
+        "clientSupports": "GooglePay",
         "clientReady": "",
         "context": "checkout",
         "checkoutSessionId": "session-1",
@@ -792,6 +800,10 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
     ):
         with pytest.raises(contracts.ContractError):
             contracts.build_payment_query(**kwargs)
+    with pytest.raises(TypeError):
+        contracts.build_payment_query(  # type: ignore[call-arg]
+            store_address_id=81, client_supports=""
+        )
 
     parsed = contracts.parse_saved_payments(payment_payload())
     assert len(parsed) == 1 and "instrument-private" not in repr(parsed[0])
@@ -948,6 +960,61 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
         contracts.parse_saved_payments(duplicate)
 
 
+def test_googlepay_capability_production_shape_issues_only_selected_card_authority(
+    live: dict[str, ModuleType],
+) -> None:
+    payload = json.loads(PAYMENT_FIXTURE.read_text(encoding="utf-8"))
+    path = "/v4/payment_methods"
+    harness = SessionHarness(live, {path: payload})
+    client = live["ordering_account"].AccountClient(harness.session, clock=Clock())
+
+    public = run(
+        client.async_saved_payments(
+            owner_key="admin-a",
+            generation=3,
+            store_address_id=81,
+        )
+    )
+
+    assert harness.transport.calls == [
+        (
+            "GET",
+            path,
+            {
+                "clientSupports": "GooglePay",
+                "clientReady": "",
+                "context": "checkout",
+                "storeAddressId": "81",
+            },
+        )
+    ]
+    assert len(public) == 1
+    assert len(client._payments) == 1
+    selected = client.resolve_payment(
+        public[0].selection_key, owner_key="admin-a", generation=3
+    )
+    assert selected.selected is True
+    assert selected.metadata_id is None
+    assert selected.metadata_id_present is True
+
+    diagnostics = client.last_payment_diagnostics
+    assert diagnostics is not None
+    assert diagnostics["methodCount"] == 3
+    assert diagnostics["actionCount"] == 1
+    assert diagnostics["cardLikeCount"] == 1
+    assert diagnostics["selectedCount"] == 1
+    assert diagnostics["selectableCount"] == 1
+    assert diagnostics["selectedSelectableCount"] == 1
+    assert diagnostics["rejectionCounts"]["unsupportedType"] == 2
+    assert [(method["type"], method["selected"]) for method in diagnostics["methods"]] == [
+        ("CREDIT_CARD", True),
+        ("ALTERNATIVE", False),
+        ("CASH", False),
+    ]
+    assert all("key" not in method for method in diagnostics["methods"])
+    assert "fixture-card-reference" not in json.dumps(diagnostics)
+
+
 def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, ModuleType]) -> None:
     path = "/v4/payment_methods"
     harness = SessionHarness(live, {path: payment_payload()})
@@ -964,7 +1031,7 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
             "GET",
             path,
             {
-                "clientSupports": "",
+                "clientSupports": "GooglePay",
                 "clientReady": "",
                 "context": "checkout",
                 "storeAddressId": "81",
@@ -1000,7 +1067,7 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
         {
             "amount": "5600",
             "currency": "AMD",
-            "clientSupports": "",
+            "clientSupports": "GooglePay",
             "clientReady": "",
             "context": "checkout",
             "checkoutSessionId": "checkout-session-1",

@@ -1,6 +1,6 @@
 # Reviewed production final-checkout protocol evidence
 
-**Home.24 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v17, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
+**Home.25 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v18, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
 
 This is a dated first-party static- and bounded live-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. Building the Home.22 artifact itself made no deployment or provider request. The separately authorized Home.21 preparation-only canary described below made read-only account/catalog/basket/payment-method calls, stopped before quote completion, and exposed no checkout submission route.
 
@@ -215,7 +215,7 @@ the release artifact itself still claimed no quote or payment success. Current b
 evidence below establishes that the initial lookup should omit amount/currency entirely,
 so Home.24 supersedes this experimental choreography.
 
-## Home.24 browser-equivalent bootstrap and template contract (2026-08-18)
+## Home.24 bootstrap and template contract, with Home.25 capability correction (2026-08-18)
 
 The current anonymous first-party order-summary page asset
 `page-e941a98a54df929d.js` (SHA-256
@@ -241,7 +241,15 @@ establishes this exact order:
 7. only after a template exists may a payment-method refresh add decimal `amount`,
    `currency`, and `checkoutSessionId`.
 
-Home.24 reproduces this sequence. It parses the real HTTP `{checkout: ...}` envelope and
+Home.24 reproduced this sequence but retained the empty capability initializer rather than
+the capability value present on the dispatched browser request. Home.25 pins
+`clientSupports=GooglePay`, empty `clientReady=`, and `context=checkout` for both the
+initial unpriced bootstrap and post-template priced revalidation. The initial request still
+omits amount, currency, and checkout session; the priced request preserves the exact
+amount/currency/session/store-address rules. The capability tuple is not exposed in the
+public Home Assistant request schema.
+
+Home.25 parses the real HTTP `{checkout: ...}` envelope and
 lower-camel component types, exact-converts provider major-unit numbers to integer minor
 units, binds the embedded card/token/suffix to the bootstrap selection, and uses the
 original private request components—not display response components—for any final
@@ -255,7 +263,14 @@ suffix, display object, and sensitive material. Only masked suffixes are public;
 instrument/token values remain absent. A configured `selected:false` card is visible in
 diagnostics but cannot become checkout authority, and multiple selected cards fail closed.
 
-Migration v17 resets all four gates, including opted-in Home.23 v16 entries. This evidence
+Sanitized current response evidence contains exactly three methods and one action: one
+selected usable `CREDIT_CARD` with a masked suffix and explicit null metadata ID, plus
+unselected `ALTERNATIVE/GooglePay` and `CASH` methods and one add-card action. Diagnostics
+therefore report method/action/card-like/selected/selectable/selected-selectable counts of
+3/1/1/1/1/1 and unsupported-type count 2. Only the selected usable card receives one
+ephemeral local checkout handle; neither unselected neighbor receives authority.
+
+Migration v18 resets all four gates, including opted-in Home.24 minor v17 entries. This evidence
 authorizes a separately supervised stop-before-payment validation only; it does not itself
 authorize final submission or payment.
 
@@ -285,7 +300,7 @@ Pending, authentication, `PROCESS_PAYMENT`, malformed data, transport failure, c
 
 Any future release operation using the reviewed production adapter is limited to this policy:
 
-1. migration v17 closes all four gates—including for fully opted-in Home.23 entries—and requires a fresh default-off administrator re-opt-in;
+1. migration v18 closes all four gates—including for fully opted-in Home.24 entries—and requires a fresh default-off administrator re-opt-in;
 2. account-scoped `UNKNOWN`/`ABSENT_VERIFIED`/`ADOPTED`/`CONFLICT` authority with cross-administrator serialization;
 3. fresh read-only provider re-adoption after every setup/reload using one collection GET and at most one conditional per-store full GET before any basket mutation;
 4. a fresh authoritative exact paid quote, separate confirmation, exact store/items/options/full admin-only ephemeral address/masked saved card/price lines/total/currency/ETA/expiry display, and amount-bound acknowledgement;
@@ -295,7 +310,7 @@ Any future release operation using the reviewed production adapter is limited to
 8. at most one explicit known-ID status GET per administrator action, with no polling;
 9. provider identifiers and the full address excluded from public/recovery projections, logs, and hash-only basket evidence.
 
-This evidence does **not** establish provider idempotency or authorize a payment. Home.24 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
+This evidence does **not** establish provider idempotency or authorize a payment. Home.25 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
 
 ## Principal static sources
 
