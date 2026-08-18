@@ -10,7 +10,7 @@ import math
 import re
 import socket
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -757,21 +757,20 @@ def test_live_address_uses_redacted_provider_subtitle_then_safe_title(
 
 def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, ModuleType]) -> None:
     contracts = live["ordering_contracts"]
-    assert contracts.build_payment_query(amount_minor=1250, currency="AMD") == {
-        "amount": "12.5",
-        "currency": "AMD",
+    assert contracts.build_payment_query(store_address_id=81) == {
+        "storeAddressId": "81",
         "clientSupports": "",
         "clientReady": "",
         "context": "checkout",
     }
     query = contracts.build_payment_query(
-        amount_minor=1250,
+        amount_minor=328960,
         currency="AMD",
         checkout_session="session-1",
         store_address_id=81,
     )
     assert query == {
-        "amount": "12.5",
+        "amount": "3289.6",
         "currency": "AMD",
         "clientSupports": "",
         "clientReady": "",
@@ -785,8 +784,10 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
     for kwargs in (
         {"amount_minor": True, "currency": "AMD"},
         {"amount_minor": -1, "currency": "AMD"},
+        {"amount_minor": 1},
+        {"currency": "AMD"},
         {"amount_minor": 1, "currency": "ZZZ"},
-        {"amount_minor": 1, "currency": "AMD", "store_address_id": True},
+        {"store_address_id": True},
         {"amount_minor": 1, "currency": "AMD", "checkout_session": "x" * 300},
     ):
         with pytest.raises(contracts.ContractError):
@@ -799,11 +800,23 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
     assert diagnostics["envelope"] == "one_data"
     assert diagnostics["methodCount"] == 3
     assert diagnostics["actionCount"] == 1
+    assert diagnostics["cardLikeCount"] == 1
+    assert diagnostics["selectedCount"] == 1
+    assert diagnostics["selectableCount"] == 1
+    assert diagnostics["selectedSelectableCount"] == 1
+    assert diagnostics["rejectionCounts"] == {
+        "unsupportedType": 2,
+        "instrumentReference": 0,
+        "metadataToken": 0,
+        "maskedSuffix": 0,
+        "display": 0,
+        "sensitiveMaterial": 0,
+    }
     assert diagnostics["methods"][0] == {
         "type": "CREDIT_CARD",
         "selected": True,
         "instrument": "present",
-        "metadataId": "integer",
+        "metadataId": "number",
         "maskedCard": "•••• 4242",
         "display": "object",
         "sensitiveMaterial": False,
@@ -824,7 +837,25 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
     inner["actions"][0]["providerActionExtension"] = True
     assert contracts.parse_saved_payments(public_extensions) == parsed
 
-    for field, value in (("id", None), ("id", 3.5), ("lastFourDigits", None), ("lastFourDigits", "42424")):
+    for metadata_id in (None, 0, -1, 3.5):
+        compatible = payment_payload()
+        compatible["data"]["paymentMethods"][0]["metadata"]["id"] = metadata_id
+        accepted = contracts.parse_saved_payments(compatible)
+        assert len(accepted) == 1 and accepted[0].metadata_id == metadata_id
+        assert accepted[0].metadata_id_present is True
+    missing_token = payment_payload()
+    missing_token["data"]["paymentMethods"][0]["metadata"].pop("id")
+    accepted_missing = contracts.parse_saved_payments(missing_token)
+    assert len(accepted_missing) == 1 and accepted_missing[0].metadata_id is None
+    assert accepted_missing[0].metadata_id_present is False
+    for invalid_metadata_id in (True, math.nan, math.inf, -math.inf, "33"):
+        malformed_token = payment_payload()
+        malformed_token["data"]["paymentMethods"][0]["metadata"][
+            "id"
+        ] = invalid_metadata_id
+        with pytest.raises(contracts.ContractError):
+            contracts.parse_saved_payments(malformed_token)
+    for field, value in (("lastFourDigits", None), ("lastFourDigits", "42424")):
         ineligible = payment_payload()
         ineligible["data"]["paymentMethods"][0]["metadata"][field] = value
         assert contracts.parse_saved_payments(ineligible) == ()
@@ -925,8 +956,6 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
         client.async_saved_payments(
             owner_key="admin-a",
             generation=3,
-            amount_minor=550000,
-            currency="AMD",
             store_address_id=81,
         )
     )[0]
@@ -935,8 +964,6 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
             "GET",
             path,
             {
-                "amount": "5500",
-                "currency": "AMD",
                 "clientSupports": "",
                 "clientReady": "",
                 "context": "checkout",
@@ -949,8 +976,9 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
     assert "instrument-private" not in json.dumps(public.public_dict())
     diagnostics = client.last_payment_diagnostics
     assert diagnostics is not None
-    assert diagnostics["queryAmount"] == "5500"
-    assert diagnostics["currency"] == "AMD"
+    assert diagnostics["queryScope"] == "bootstrap"
+    assert "queryAmount" not in diagnostics
+    assert "currency" not in diagnostics
     assert diagnostics["methods"][0]["maskedCard"] == "•••• 4242"
     assert "instrument-private" not in json.dumps(diagnostics)
     private = client.resolve_payment(public.selection_key, owner_key="admin-a", generation=3)
@@ -981,6 +1009,157 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
     )
     with pytest.raises(live["ordering_account"].InvalidSelection):
         client.resolve_payment(public.selection_key, owner_key="admin-b", generation=3)
+
+
+@pytest.mark.parametrize("malformed_neighbor", [False, True])
+def test_priced_payment_revalidation_requires_one_total_provider_selected_card(
+    live: dict[str, ModuleType], malformed_neighbor: bool
+) -> None:
+    path = "/v4/payment_methods"
+    payload = payment_payload()
+    harness = SessionHarness(live, {path: payload})
+    client = live["ordering_account"].AccountClient(harness.session, clock=Clock())
+    public = run(
+        client.async_saved_payments(
+            owner_key="admin-a", generation=3, store_address_id=81
+        )
+    )[0]
+    second = copy.deepcopy(payload["data"]["paymentMethods"][0])
+    second["paymentInstrumentId"] = "other-private"
+    second["metadata"]["id"] = 34
+    second["metadata"]["lastFourDigits"] = "1111"
+    if malformed_neighbor:
+        second.pop("paymentInstrumentId")
+    payload["data"]["paymentMethods"].append(second)
+    assert run(
+        client.async_revalidate_payment(
+            public.selection_key,
+            owner_key="admin-a",
+            generation=3,
+            amount_minor=560000,
+            currency="AMD",
+            checkout_session="checkout-session-1",
+            store_address_id=81,
+        )
+    ) is False
+
+
+def test_unselected_configured_card_is_visible_in_diagnostics_but_not_checkout_authority(
+    live: dict[str, ModuleType],
+) -> None:
+    payload = payment_payload()
+    payload["data"]["paymentMethods"][0]["selected"] = False
+    path = "/v4/payment_methods"
+    harness = SessionHarness(live, {path: payload})
+    client = live["ordering_account"].AccountClient(harness.session, clock=Clock())
+    public = run(
+        client.async_saved_payments(
+            owner_key="admin-a", generation=3, store_address_id=81
+        )
+    )
+    assert public == ()
+    diagnostics = client.last_payment_diagnostics
+    assert diagnostics is not None
+    assert diagnostics["queryScope"] == "bootstrap"
+    assert diagnostics["cardLikeCount"] == 1
+    assert diagnostics["selectedCount"] == 0
+    assert diagnostics["selectableCount"] == 1
+    assert diagnostics["selectedSelectableCount"] == 0
+    assert diagnostics["methods"][0]["maskedCard"] == "•••• 4242"
+    assert diagnostics["methods"][0]["selected"] is False
+    assert "instrument-private" not in json.dumps(diagnostics)
+
+
+@pytest.mark.parametrize(
+    ("reason", "mutate"),
+    [
+        ("instrumentReference", lambda card: card.pop("paymentInstrumentId")),
+        ("metadataToken", lambda card: card["metadata"].__setitem__("id", "wrong-type")),
+        ("maskedSuffix", lambda card: card["metadata"].pop("lastFourDigits")),
+        ("display", lambda card: card.__setitem__("displayAttributes", None)),
+        ("sensitiveMaterial", lambda card: card.__setitem__("cardNumber", "not-retained")),
+    ],
+)
+def test_payment_diagnostics_classify_local_rejections_without_private_values(
+    live: dict[str, ModuleType], reason: str, mutate: Callable[[dict[str, Any]], object]
+) -> None:
+    payload = payment_payload()
+    mutate(payload["data"]["paymentMethods"][0])
+    diagnostics = live["ordering_contracts"].privacy_safe_payment_diagnostics(payload)
+    assert diagnostics["cardLikeCount"] == 1
+    assert diagnostics["selectableCount"] == 0
+    assert diagnostics["selectedSelectableCount"] == 0
+    assert diagnostics["rejectionCounts"][reason] == 1
+    rendered = json.dumps(diagnostics)
+    assert "instrument-private" not in rendered
+    assert "not-retained" not in rendered
+
+
+def test_payment_diagnostic_counts_are_bounded_to_retained_rows(
+    live: dict[str, ModuleType],
+) -> None:
+    payload = payment_payload()
+    prototype = payload["data"]["paymentMethods"][0]
+    prototype["metadata"]["id"] = "wrong-type"
+    payload["data"]["paymentMethods"] = [
+        copy.deepcopy(prototype) for _ in range(100)
+    ]
+    diagnostics = live["ordering_contracts"].privacy_safe_payment_diagnostics(payload)
+    assert diagnostics["methodCount"] == 64
+    assert len(diagnostics["methods"]) == 64
+    assert diagnostics["cardLikeCount"] == 64
+    assert diagnostics["selectedCount"] == 64
+    assert diagnostics["rejectionCounts"]["metadataToken"] == 64
+    assert all(0 <= count <= 64 for count in diagnostics["rejectionCounts"].values())
+
+
+def test_multiple_selected_cards_fail_closed_without_checkout_handle(
+    live: dict[str, ModuleType],
+) -> None:
+    payload = payment_payload()
+    second = copy.deepcopy(payload["data"]["paymentMethods"][0])
+    second["paymentInstrumentId"] = "instrument-private-2"
+    second["metadata"]["id"] = 34
+    second["metadata"]["lastFourDigits"] = "9571"
+    payload["data"]["paymentMethods"].insert(1, second)
+    path = "/v4/payment_methods"
+    harness = SessionHarness(live, {path: payload})
+    client = live["ordering_account"].AccountClient(harness.session, clock=Clock())
+    with pytest.raises(live["ordering_account"].InvalidSelection):
+        run(
+            client.async_saved_payments(
+                owner_key="admin-a", generation=3, store_address_id=81
+            )
+        )
+    diagnostics = client.last_payment_diagnostics
+    assert diagnostics is not None
+    assert diagnostics["selectedSelectableCount"] == 2
+    assert "instrument-private" not in json.dumps(diagnostics)
+
+
+def test_incompatible_second_selected_card_cannot_hide_before_authority_check(
+    live: dict[str, ModuleType],
+) -> None:
+    payload = payment_payload()
+    second = copy.deepcopy(payload["data"]["paymentMethods"][0])
+    second["paymentInstrumentId"] = None
+    second["metadata"]["id"] = None
+    second["metadata"]["lastFourDigits"] = None
+    payload["data"]["paymentMethods"].insert(1, second)
+    path = "/v4/payment_methods"
+    harness = SessionHarness(live, {path: payload})
+    client = live["ordering_account"].AccountClient(harness.session, clock=Clock())
+    with pytest.raises(live["ordering_account"].InvalidSelection):
+        run(
+            client.async_saved_payments(
+                owner_key="admin-a", generation=3, store_address_id=81
+            )
+        )
+    diagnostics = client.last_payment_diagnostics
+    assert diagnostics is not None
+    assert diagnostics["selectedCount"] == 2
+    assert diagnostics["selectedSelectableCount"] == 1
+    assert "instrument-private" not in json.dumps(diagnostics)
 
 
 def test_store_parser_eligibility_cost_enum_duplicates_and_strict_types(live: dict[str, ModuleType]) -> None:

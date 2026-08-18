@@ -60,16 +60,38 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
-### Payment amount compatibility and safe diagnostics in Home.23
+### Browser-equivalent saved-card bootstrap and quote template in Home.24
 
-Release `1.1.0+home.23` corrects the payment-method lookup boundary without changing
-local money authority: baskets and quotes remain exact integer minor units, while the
-browser `amount` query is projected to Glovo's provider/display units using the ISO
-currency exponent and no floating point. The admin-only payment response also includes
-a bounded privacy-safe structural diagnostic (counts, selected state, private-ID
-presence/type, masked suffix, and sensitive-material detection) but never private payment
-identifiers or raw provider bodies. Migration v16 resets all four consequential gates,
-including fully opted-in Home.22 v15 entries, and requires fresh consent.
+Release `1.1.0+home.24` reproduces the current first-party order-summary sequence. The
+initial `GET /v4/payment_methods` is a bootstrap lookup containing `storeAddressId`,
+empty browser wallet-capability strings, and `context=checkout`—it deliberately omits
+`amount`, `currency`, and `checkoutSessionId`. Exactly one provider-selected compatible
+saved card is then projected into `POST /v3/checkouts/order/1/template` as
+`CreditCard`; its provider token is projected with exact tri-state semantics: an absent
+metadata key is omitted, explicit null is sent as JSON null, and a finite number is sent
+unchanged.
+
+The template parser now consumes the real HTTP `checkout` envelope and lower-camel web
+component schema. It binds the embedded selected card, products total, decimal picker
+total, integer `purchaseTotalCents`, currency, basket/store/address identities, selected
+ETA, and formatted fee lines. Decimal provider/display amounts are converted to exact
+local integer minor units without binary floating-point arithmetic. Final submission
+continues to require the private input components rather than echoing display components.
+
+Administrator diagnostics separate raw card-like, selected, locally selectable, and
+selected-selectable counts, with bounded rejection categories and masked suffixes only.
+Configured-but-unselected cards are visible diagnostically but never receive a checkout
+handle; multiple selected cards fail closed. Numeric provider tokens may be finite zero,
+negative, or fractional numbers as permitted by the current web schema, but are never
+published. Migration v17 resets all four consequential gates, including opted-in Home.23
+v16 entries, and requires fresh consent.
+
+### Experimental payment diagnostics in Home.23
+
+Home.23 added the first bounded payment diagnostics and decimal amount projection, but
+its initial lookup still sent basket amount/currency before a checkout template existed.
+Home.24 supersedes that choreography. Local monetary authority remains exact integer
+minor units throughout.
 
 ### Saved-card and first-quote compatibility in Home.22
 

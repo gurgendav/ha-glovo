@@ -152,12 +152,12 @@ def test_release_evidence_composes_guarded_final_seam_without_idempotency_claim(
         assert required in evidence
 
 
-def test_home23_release_identity_basket_evidence_and_no_action_claims_are_frozen() -> None:
+def test_home24_release_identity_basket_evidence_and_no_action_claims_are_frozen() -> None:
     descriptor = (
         "ha-glovo|upstream=0142e44c091f3ff594fe627499070d515598ac5a|"
-        "version=1.1.0+home.23|profile=coordinator-source-provenance-v1"
+        "version=1.1.0+home.24|profile=coordinator-source-provenance-v1"
     )
-    expected = "6ac400fb9981d661878e6e603a60fc3213d19a9f83e62d09a47f536da36c7329"
+    expected = "462673138c8af1d355247d65deae2479537a0f6ed3220217a2b58164d5fa4ddc"
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
     const = (COMPONENT / "const.py").read_text(encoding="utf-8")
     glovo = (COMPONENT / "glovo.py").read_text(encoding="utf-8")
@@ -172,12 +172,17 @@ def test_home23_release_identity_basket_evidence_and_no_action_claims_are_frozen
     )
 
     assert hashlib.sha256(descriptor.encode()).hexdigest() == expected
-    assert manifest["version"] == "1.1.0+home.23"
+    assert manifest["version"] == "1.1.0+home.24"
     assert descriptor in const and expected in const
     assert 'ORDERING_WEB_VERSION = "v1.2569.0"' in glovo
     assert "v1.2570.0" not in documents
+    assert (
+        "Config-entry migration v17 closes preparation consent/acknowledgement and "
+        "paid-checkout consent/acknowledgement, even if all four were true in "
+        "published Home.23."
+    ) in documents
     for required in (
-        "Home.23",
+        "Home.24",
         "UNKNOWN",
         "ABSENT_VERIFIED",
         "ADOPTED",
@@ -190,8 +195,8 @@ def test_home23_release_identity_basket_evidence_and_no_action_claims_are_frozen
         "at most one",
         "read-only adoption",
         "fresh re-opt-in",
-        "minor v16",
-        "fully opted-in Home.22",
+        "minor v17",
+        "opted-in Home.23",
         "storeInfo.logo",
         "incrementsLimit",
         "root.storeInfo.logo",

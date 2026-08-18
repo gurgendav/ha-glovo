@@ -11,7 +11,8 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Final, cast
+from decimal import Decimal, InvalidOperation
+from typing import Any, Final, NoReturn, cast
 
 from .api_session import ApiSessionError, DeliveryLocation, MutationPurpose
 from .ordering_contracts import AddressSnapshot, SavedPayment
@@ -31,21 +32,59 @@ from .ordering_remote_basket import (
 QUOTE_MAX_AGE: Final = 45.0
 MAX_TEMPLATE_BYTES: Final = 512_000
 MAX_DEPTH: Final = 12
-MAX_COMPONENTS: Final = 16
+MAX_COMPONENTS: Final = 64
 MAX_PRICE_LINES: Final = 40
 MAX_STRING: Final = 300
-_SOURCE_SCREENS: Final = frozenset({"STORE_PAGE", "BASKET", "CHECKOUT"})
-_COMPONENT_TYPES: Final = frozenset(
-    {
-        "PAYMENT_METHOD_PICKER",
-        "PRICE_BREAKDOWN",
-        "DELIVERY_ETA",
-        "STORE_CAPABILITIES",
-    }
+_SOURCE_SCREENS: Final = frozenset({"CART", "REORDER", "UNKNOWN"})
+_NOTE_STYLES: Final = frozenset({"PRIME", "ALERT"})
+_PRICE_ACTIONS: Final = frozenset({"SHOW_FEES_BREAKDOWN", "SHOW_DELIVERY_BREAKDOWN"})
+_FEE_LABEL_STYLES: Final = frozenset(
+    {"LOYALTY", "PLAIN", "PROMOTION", "STRIKETHROUGH"}
 )
-_CAPABILITIES: Final = frozenset({"DELIVERY", "CREDIT_CARD", "IMMEDIATE"})
-_LINE_TYPES: Final = frozenset({"OTHER", "DELIVERY", "TOTAL"})
-_LINE_STYLES: Final = frozenset({"DEFAULT", "EMPHASIS", "MUTED"})
+# Exact response id -> (discriminated component type, provider data key) pairs from
+# the first-party checkout component record.  Keeping the pair closed prevents a
+# schema-valid type from being attached to the wrong neighboring component id.
+_WEB_RESPONSE_COMPONENTS: Final = {
+    "additionalInfo": ("additionalInfo", "infoPanelData"),
+    "allergies": ("textInput", "textInputData"),
+    "bagCostDisclaimer": ("staticText", "staticTextData"),
+    "cashDisclaimer": ("staticText", "staticTextData"),
+    "courierDisclaimer": ("infoPanel", "infoPanelData"),
+    "courierTip": ("singleOptionChoice", "singleOptionChoiceData"),
+    "courierTipping": ("staticText", "staticTextData"),
+    "cutlery": ("binaryChoice", "binaryChoiceData"),
+    "deliveryAddress": ("addressPicker", "addressPickerData"),
+    "deliveryOptions": ("staticText", "staticTextData"),
+    "edenredSuggestion": ("infoPanel", "infoPanelData"),
+    "foodIntermediatorDisclaimer": ("staticText", "staticTextData"),
+    "legalDisclaimer": ("staticText", "staticTextData"),
+    "legalVerificationBanner": ("infoPanel", "infoPanelData"),
+    "mcdBagCostDisclaimer": ("staticText", "staticTextData"),
+    "mealVoucherSelection": (
+        "mealVoucherSelectionInput",
+        "mealVoucherSelectionInputData",
+    ),
+    "omnibusSummaryDisclaimer": ("staticText", "staticTextData"),
+    "orderContent": ("orderContent", "orderContentData"),
+    "paymentMethod": ("paymentMethodPicker", "paymentMethodPickerData"),
+    "paymentMethodBanner": ("infoPanel", "infoPanelData"),
+    "paymentMethodHeader": ("staticText", "staticTextData"),
+    "persistentTipCheckBox": ("binaryChoice", "binaryChoiceData"),
+    "phone": ("phoneInput", "phoneInputData"),
+    "pickupAddress": ("addressPicker", "addressPickerData"),
+    "placeOrder": ("placeOrder", "buttonData"),
+    "priceBreakdown": ("priceBreakdown", "priceBreakdownData"),
+    "primeUpsell": ("primeUpsell", "primeUpsellData"),
+    "productList": ("productList", "productListData"),
+    "promocode": ("promoInput", "promoInputData"),
+    "recipientDetails": ("recipientDetails", "recipientDetailsData"),
+    "savingsInfo": ("savingsInfo", "savingsInfoData"),
+    "schedulingTime": ("timeSelector", "timeSelectorData"),
+    "weightedProductInfoBanner": ("infoPanel", "infoPanelData"),
+}
+_COMPONENT_BASE_FIELDS: Final = frozenset(
+    {"id", "type", "placement", "triggersRefresh"}
+)
 _LOCAL_KEY_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 
@@ -81,7 +120,7 @@ class InvalidQuoteConfirmation(RuntimeError):
         super().__init__("quote confirmation is invalid")
 
 
-def _fail(category: str = "schema") -> None:
+def _fail(category: str = "schema") -> NoReturn:
     raise QuoteContractError(category)
 
 
@@ -191,19 +230,13 @@ def _canonical_hash(value: object) -> str:
 
 def _address_body(value: AddressSnapshot) -> dict[str, Any]:
     return {
-        "id": value.remote_id,
-        "addressLine": value.address_line,
+        "label": value.address_line,
         "details": value.details,
         "latitude": value.latitude,
         "longitude": value.longitude,
-        "countryCode": value.country_code,
-        "cityCode": value.city_code,
-        "cityName": value.city_name,
-        "kind": value.kind,
-        "tag": value.tag,
-        "fields": [
-            {"type": item.field_type, "value": item.value} for item in value.fields
-        ],
+        # The current web client sends only postal custom fields here. Saved-address
+        # structural fields are not provider custom-field IDs, so never project them.
+        "customFields": [],
     }
 
 
@@ -212,6 +245,7 @@ def _payment_fingerprint(value: SavedPayment) -> str:
         {
             "paymentInstrumentId": value.payment_instrument_id,
             "metadataId": value.metadata_id,
+            "metadataIdPresent": value.metadata_id_present,
             "lastFourDigits": value.last_four_digits,
             "selected": value.selected,
             "eligibleType": "CREDIT_CARD",
@@ -313,11 +347,15 @@ class QuoteRequest:
     def private_body(self) -> dict[str, Any]:
         """Build the only approved new-quote shape; never log or persist it."""
         basket = self.basket
+        credit_card: dict[str, Any] = {}
+        if self.payment.metadata_id_present:
+            credit_card["token"] = self.payment.metadata_id
         return {
             "checkout": {
+                "sourceScreen": self.source_screen,
                 "orderDetails": {
-                    "sourceScreen": self.source_screen,
                     "orderType": "STORES",
+                    "origin": "CHECKOUT",
                     "cityCode": basket.city_code,
                     "categoryId": basket.store_category_id,
                     "handlingStrategy": {"type": "DELIVERY"},
@@ -335,7 +373,7 @@ class QuoteRequest:
                     "paymentMethod": {
                         "paymentInstrumentId": self.payment.payment_instrument_id,
                         "type": "CreditCard",
-                        "creditCard": {"token": self.payment.metadata_id},
+                        "creditCard": credit_card,
                     },
                 },
                 "analytics": {"templateReceived": None},
@@ -356,6 +394,9 @@ class ProviderPriceLine:
     line_type: str
     style: str | None = None
     notes: tuple[str, ...] = ()
+    value_prefix: str | None = None
+    value_prefix_style: str | None = None
+    note_style: str | None = None
 
     def canonical_dict(self) -> dict[str, Any]:
         return {
@@ -364,6 +405,9 @@ class ProviderPriceLine:
             "type": self.line_type,
             "style": self.style,
             "notes": list(self.notes),
+            "valuePrefix": self.value_prefix,
+            "valuePrefixStyle": self.value_prefix_style,
+            "noteStyle": self.note_style,
         }
 
     def public_dict(self) -> dict[str, Any]:
@@ -376,6 +420,12 @@ class ProviderPriceLine:
             result["style"] = self.style
         if self.notes:
             result["notes"] = list(self.notes)
+        if self.value_prefix is not None:
+            result["valuePrefix"] = self.value_prefix
+        if self.value_prefix_style is not None:
+            result["valuePrefixStyle"] = self.value_prefix_style
+        if self.note_style is not None:
+            result["noteStyle"] = self.note_style
         return result
 
 
@@ -499,44 +549,94 @@ class AuthoritativeQuote:
         }
 
 
+def _major_to_minor(value: object, currency: str) -> int:
+    """Convert provider picker major units to exact local integer minor units."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _fail()
+    if not math.isfinite(float(value)) or currency not in ISO_4217_EXPONENTS:
+        _fail()
+    try:
+        scaled = Decimal(str(value)) * (Decimal(10) ** ISO_4217_EXPONENTS[currency])
+        integral = scaled.to_integral_value()
+    except (InvalidOperation, ValueError, OverflowError):
+        _fail()
+    if scaled != integral:
+        _fail("mismatch")
+    return _int(int(integral), maximum=100_000_000_000)
+
+
+def _nullable_display(value: object, *, maximum: int = 120) -> str | None:
+    return None if value is None else _display(value, maximum=maximum)
+
+
+def _validate_fee_label(value: object) -> None:
+    """Validate the exact provider delivery-fee label object without using it."""
+
+    label = _object(
+        value,
+        required={"style"},
+        allowed={"value", "style"},
+    )
+    if label.get("value") is not None:
+        _text(label["value"], maximum=120, allow_empty=True)
+    if label["style"] not in _FEE_LABEL_STYLES:
+        _fail("unsupported")
+
+
 def _parse_price_lines(value: object) -> tuple[ProviderPriceLine, ...]:
     rows = _array(value, minimum=1, maximum=MAX_PRICE_LINES)
     result: list[ProviderPriceLine] = []
     total_count = 0
+    required = {
+        "title", "value", "type", "isNoteHighlighted", "noteStyle", "showDivider"
+    }
+    allowed = required | {
+        "value",
+        "isNoteHighlighted",
+        "note",
+        "noteStyle",
+        "showDivider",
+        "valuePrefix",
+        "valueStyle",
+        "valuePrefixStyle",
+        "action",
+        "actionResource",
+    }
     for raw in rows:
-        item = _object(
-            raw,
-            required={"title", "value", "type"},
-            allowed={"title", "value", "type", "style", "notes", "actions"},
-        )
+        item = _object(raw, required=required, allowed=allowed)
         line_type = _text(item["type"], maximum=20)
-        if line_type not in _LINE_TYPES:
+        if line_type not in {"OTHER", "DELIVERY", "TOTAL"}:
             _fail("unsupported")
         total_count += int(line_type == "TOTAL")
-        raw_value = item["value"]
-        display_value = (
-            None if raw_value is None else _display(raw_value, maximum=100)
-        )
-        style = item.get("style")
-        if style is not None:
-            style = _text(style, maximum=20)
-            if style not in _LINE_STYLES:
+        for key in ("isNoteHighlighted", "showDivider"):
+            if not isinstance(item[key], bool):
+                _fail()
+        note_style = item.get("noteStyle")
+        if note_style is not None:
+            note_style = _text(note_style, maximum=20)
+            if note_style not in _NOTE_STYLES:
                 _fail("unsupported")
-        notes_value = item.get("notes", [])
-        notes = tuple(
-            _display(note, maximum=120)
-            for note in _array(notes_value, maximum=4)
-        )
-        actions = _array(item.get("actions", []), maximum=0)
-        if actions:
-            _fail("unsupported")
+        action = item.get("action")
+        if action is not None:
+            action = _text(action, maximum=40)
+            if action not in _PRICE_ACTIONS:
+                _fail("unsupported")
+        action_resource = item.get("actionResource")
+        if action_resource is not None:
+            _text(action_resource, maximum=MAX_STRING)
+        note = _nullable_display(item.get("note"))
         result.append(
             ProviderPriceLine(
                 title=_display(item["title"], maximum=100),
-                value=display_value,
+                value=_nullable_display(item.get("value"), maximum=100),
                 line_type=line_type,
-                style=style,
-                notes=notes,
+                style=_nullable_display(item.get("valueStyle"), maximum=40),
+                notes=() if note is None else (note,),
+                value_prefix=_nullable_display(item.get("valuePrefix"), maximum=100),
+                value_prefix_style=_nullable_display(
+                    item.get("valuePrefixStyle"), maximum=40
+                ),
+                note_style=note_style,
             )
         )
     if total_count != 1:
@@ -545,110 +645,271 @@ def _parse_price_lines(value: object) -> tuple[ProviderPriceLine, ...]:
 
 
 def _parse_components(
-    value: object, *, total: Money, eta: str | None
-) -> tuple[tuple[ProviderPriceLine, ...], str]:
+    value: object, *, total: Money, request: QuoteRequest
+) -> tuple[tuple[ProviderPriceLine, ...], str, str]:
     rows = _array(value, minimum=2, maximum=MAX_COMPONENTS)
     seen: set[str] = set()
     lines: tuple[ProviderPriceLine, ...] | None = None
+    eta: str | None = None
     normalized: list[dict[str, Any]] = []
     for raw in rows:
-        component = _object(
-            raw, required={"type", "data"}, allowed={"type", "data"}
-        )
-        component_type = _text(component["type"], maximum=40)
-        if component_type not in _COMPONENT_TYPES or component_type in seen:
+        if not isinstance(raw, dict) or not {"id", "type"}.issubset(raw):
+            _fail()
+        component_id = _text(raw["id"], maximum=60)
+        component_type = _text(raw["type"], maximum=60)
+        component_schema = _WEB_RESPONSE_COMPONENTS.get(component_id)
+        if (
+            component_schema is None
+            or component_type != component_schema[0]
+            or component_id in seen
+        ):
             _fail("unsupported")
-        seen.add(component_type)
-        data = component["data"]
-        if component_type == "PAYMENT_METHOD_PICKER":
-            wrapper = _object(
-                data,
-                required={"paymentMethodPickerData"},
-                allowed={"paymentMethodPickerData"},
+        seen.add(component_id)
+        placement = raw.get("placement")
+        if placement is not None:
+            allowed_placements = (
+                {"floating", "summary"}
+                if component_id == "placeOrder"
+                else {"main", "summary", "floating"}
+            )
+            if placement not in allowed_placements:
+                _fail("unsupported")
+        triggers_refresh = raw.get("triggersRefresh")
+        if triggers_refresh is not None and not isinstance(triggers_refresh, bool):
+            _fail()
+        if component_id == "paymentMethod":
+            if component_type != "paymentMethodPicker":
+                _fail("unsupported")
+            component = _object(
+                raw,
+                required={"id", "type", "paymentMethodPickerData"},
+                allowed=_COMPONENT_BASE_FIELDS | {"paymentMethodPickerData"},
             )
             picker = _object(
-                wrapper["paymentMethodPickerData"],
-                required={"orderTotal", "currencyCode"},
-                allowed={"orderTotal", "currencyCode"},
+                component["paymentMethodPickerData"],
+                required={
+                    "required", "countryCode", "currencyCode", "priceStatus",
+                    "orderTotal", "productsTotal", "value",
+                },
+                allowed={
+                    "required", "countryCode", "currencyCode", "priceStatus",
+                    "orderTotal", "productsTotal", "cash", "value",
+                },
             )
             if (
-                _int(picker["orderTotal"]) != total.amount_minor
+                picker["required"] is not True
+                or picker["countryCode"] != request.delivery_address.country_code
                 or picker["currencyCode"] != total.currency
+                or _major_to_minor(picker["orderTotal"], total.currency) != total.amount_minor
+                or request.basket.basket_price.minor is None
+                or _major_to_minor(picker["productsTotal"], total.currency)
+                != request.basket.basket_price.minor
             ):
                 _fail("mismatch")
+            _text(picker["priceStatus"], maximum=40)
+            cash = picker.get("cash")
+            if cash is not None:
+                cash_data = _object(
+                    cash, required={"isAllowed"}, allowed={"isAllowed", "message"}
+                )
+                if not isinstance(cash_data["isAllowed"], bool):
+                    _fail()
+                if cash_data.get("message") is not None:
+                    _display(cash_data["message"], maximum=120)
+            payment_value = _object(
+                picker["value"],
+                required={"type", "paymentInstrumentId", "creditCard"},
+                allowed={"type", "isDefault", "tags", "paymentInstrumentId", "creditCard"},
+            )
+            if (
+                payment_value["type"] != "CreditCard"
+                or payment_value["paymentInstrumentId"] != request.payment.payment_instrument_id
+            ):
+                _fail("mismatch")
+            if "isDefault" in payment_value and not isinstance(payment_value["isDefault"], bool):
+                _fail()
+            if "tags" in payment_value:
+                for tag in _array(payment_value["tags"], maximum=16):
+                    _text(tag, maximum=60)
+            card = _object(
+                payment_value["creditCard"],
+                required=set(),
+                allowed={
+                    "lastFourDigits", "provider", "paymentProvider", "defaultCard", "token"
+                },
+            )
+            response_token = card.get("token")
+            if response_token is not None:
+                if isinstance(response_token, bool) or not isinstance(
+                    response_token, (str, int, float)
+                ):
+                    _fail()
+                if isinstance(response_token, (int, float)) and not math.isfinite(
+                    float(response_token)
+                ):
+                    _fail()
+            request_token = request.payment.metadata_id
+            if request.payment.metadata_id_present:
+                if "token" not in card or response_token != request_token:
+                    _fail("mismatch")
+            elif "token" in card:
+                _fail("mismatch")
+            suffix = card.get("lastFourDigits")
+            if suffix is not None:
+                if not isinstance(suffix, str) or re.fullmatch(r"\d{1,4}", suffix) is None:
+                    _fail()
+                if suffix != request.payment.last_four_digits:
+                    _fail("mismatch")
+            elif request.payment.last_four_digits is not None:
+                _fail("mismatch")
+            for key in ("provider", "paymentProvider"):
+                if card.get(key) is not None:
+                    _text(card[key], maximum=80)
+            if "defaultCard" in card and not isinstance(card["defaultCard"], bool):
+                _fail()
             normalized.append(
                 {
+                    "id": component_id,
                     "type": component_type,
-                    "orderTotal": total.amount_minor,
+                    "orderTotalMinor": total.amount_minor,
+                    "productsTotalMinor": request.basket.basket_price.minor,
+                    "countryCode": request.delivery_address.country_code,
                     "currencyCode": total.currency,
+                    "paymentFingerprint": request.payment_fingerprint,
                 }
             )
-        elif component_type == "PRICE_BREAKDOWN":
-            wrapper = _object(
-                data,
-                required={"priceBreakdownData"},
-                allowed={"priceBreakdownData"},
+        elif component_id == "priceBreakdown":
+            if component_type != "priceBreakdown":
+                _fail("unsupported")
+            component = _object(
+                raw,
+                required={"id", "type", "priceBreakdownData"},
+                allowed=_COMPONENT_BASE_FIELDS | {"priceBreakdownData"},
             )
             breakdown = _object(
-                wrapper["priceBreakdownData"],
+                component["priceBreakdownData"],
                 required={"breakDown"},
                 allowed={"breakDown"},
             )
             lines = _parse_price_lines(breakdown["breakDown"])
             normalized.append(
-                {"type": component_type, "lines": [line.canonical_dict() for line in lines]}
+                {"id": component_id, "type": component_type, "lines": [line.canonical_dict() for line in lines]}
             )
-        elif component_type == "DELIVERY_ETA":
-            eta_data = _object(data, required={"eta"}, allowed={"eta"})
-            component_eta = eta_data["eta"]
-            if component_eta is not None:
-                component_eta = _display(component_eta, maximum=100)
-            if component_eta != eta:
-                _fail("mismatch")
-            normalized.append({"type": component_type, "eta": component_eta})
-        else:
-            capability_data = _object(
-                data, required={"capabilities"}, allowed={"capabilities"}
-            )
-            raw_capabilities = _array(
-                capability_data["capabilities"], minimum=1, maximum=len(_CAPABILITIES)
-            )
-            capabilities = [_text(item, maximum=30) for item in raw_capabilities]
-            if (
-                len(set(capabilities)) != len(capabilities)
-                or any(item not in _CAPABILITIES for item in capabilities)
-                or "DELIVERY" not in capabilities
-                or "CREDIT_CARD" not in capabilities
-                or "IMMEDIATE" not in capabilities
-            ):
+        elif component_id == "schedulingTime":
+            if component_type != "timeSelector":
                 _fail("unsupported")
-            normalized.append({"type": component_type, "capabilities": capabilities})
+            component = _object(
+                raw,
+                required={"id", "type", "timeSelectorData"},
+                allowed=_COMPONENT_BASE_FIELDS | {"timeSelectorData"},
+            )
+            time_data = _object(
+                component["timeSelectorData"],
+                required={"required", "selectors", "icon", "iconSelected"},
+                allowed={"required", "selectors", "value", "icon", "iconSelected"},
+            )
+            if not isinstance(time_data["required"], bool):
+                _fail()
+            selected_value_raw = time_data.get("value")
+            if selected_value_raw is None:
+                # Optional in the provider display schema, but no authoritative ETA
+                # can be selected without it for a paid quote.
+                _fail("mismatch")
+            selected_value = _text(selected_value_raw, maximum=80)
+            for key in ("icon", "iconSelected"):
+                icon = _object(
+                    time_data[key],
+                    required={"lightImageId", "darkImageId"},
+                    allowed={"lightImageId", "darkImageId"},
+                )
+                _text(icon["lightImageId"], maximum=120)
+                _text(icon["darkImageId"], maximum=120)
+            selected_descriptions: list[str] = []
+            selectors = _array(time_data["selectors"], minimum=1, maximum=16)
+            for selector_raw in selectors:
+                selector = _object(
+                    selector_raw,
+                    required={"label", "description", "disabled"},
+                    allowed={
+                        "value", "label", "description", "disabled",
+                        "mainDeliveryFeeLabel", "secondaryDeliveryFeeLabel", "feeTag",
+                        "options",
+                    },
+                )
+                selector_value_raw = selector.get("value")
+                selector_value = (
+                    None
+                    if selector_value_raw is None
+                    else _text(selector_value_raw, maximum=80)
+                )
+                _display(selector["label"], maximum=100)
+                description = _display(selector["description"], maximum=100)
+                if not isinstance(selector["disabled"], bool):
+                    _fail()
+                for key in (
+                    "mainDeliveryFeeLabel", "secondaryDeliveryFeeLabel", "feeTag"
+                ):
+                    if key in selector:
+                        _validate_fee_label(selector[key])
+                if "options" in selector:
+                    for option_raw in _array(selector["options"], maximum=32):
+                        option = _object(
+                            option_raw,
+                            required={"label", "timeSlots"},
+                            allowed={"label", "timeSlots"},
+                        )
+                        _display(option["label"], maximum=100)
+                        for slot_raw in _array(option["timeSlots"], maximum=64):
+                            slot = _object(
+                                slot_raw,
+                                required={"label", "value"},
+                                allowed={"label", "value"},
+                            )
+                            _display(slot["label"], maximum=100)
+                            _text(slot["value"], maximum=100)
+                if selector_value == selected_value and selector["disabled"] is False:
+                    selected_descriptions.append(description)
+            if len(selected_descriptions) != 1:
+                _fail("mismatch")
+            eta = selected_descriptions[0]
+            normalized.append(
+                {"id": component_id, "type": component_type, "value": selected_value, "eta": eta}
+            )
+        else:
+            # The first-party validator owns these display-only schemas. We accept
+            # only its closed id/type/data-key pairing, never execute actions/URLs,
+            # and bind the bounded opaque data into the quote fingerprint.
+            data_key = component_schema[1]
+            _object(
+                raw,
+                required={"id", "type", data_key},
+                allowed=_COMPONENT_BASE_FIELDS | {data_key},
+            )
+            normalized.append({"id": component_id, "type": component_type, "hash": _canonical_hash(raw)})
     if (
-        "PAYMENT_METHOD_PICKER" not in seen
-        or "PRICE_BREAKDOWN" not in seen
-        or "DELIVERY_ETA" not in seen
-        or "STORE_CAPABILITIES" not in seen
+        "paymentMethod" not in seen
+        or "priceBreakdown" not in seen
+        or "schedulingTime" not in seen
         or lines is None
+        or eta is None
     ):
         _fail("unsupported")
-    return lines, _canonical_hash(normalized)
+    return lines, eta, _canonical_hash(normalized)
 
 
 def parse_quote_template(
     payload: object, *, request: QuoteRequest, received_at: object
 ) -> AuthoritativeQuote:
-    """Parse only response.data.checkout and bind it to the exact request."""
+    """Parse the current HTTP ``checkout`` envelope and bind it to the request."""
     if not isinstance(request, QuoteRequest):
         _fail()
     receipt = _finite(received_at)
     if not math.isfinite(receipt + QUOTE_MAX_AGE):
         _fail("stale")
     _bounded_payload(payload)
-    root = _object(payload, required={"response"}, allowed={"response"})
-    response = _object(root["response"], required={"data"}, allowed={"data"})
-    data = _object(response["data"], required={"checkout"}, allowed={"checkout"})
+    root = _object(payload, required={"checkout"}, allowed={"checkout"})
     checkout = _object(
-        data["checkout"],
+        root["checkout"],
         required={"name", "orderType", "enabled", "orderDetails", "components", "analytics"},
         allowed={"name", "orderType", "enabled", "orderDetails", "components", "analytics"},
     )
@@ -665,8 +926,7 @@ def parse_quote_template(
             "currencyCode",
             "purchaseTotalCents",
             "basketVersion",
-            "eta",
-            "legalVerificationRequired",
+            "isLegalVerificationRequired",
         },
         allowed={
             "checkoutSessionId",
@@ -675,12 +935,11 @@ def parse_quote_template(
             "storeId",
             "storeAddressId",
             "basketId",
-            "basketWidgetId",
+            "basketCreationWidgetId",
             "currencyCode",
             "purchaseTotalCents",
             "basketVersion",
-            "eta",
-            "legalVerificationRequired",
+            "isLegalVerificationRequired",
         },
     )
     checkout_session_id = _id(details["checkoutSessionId"])
@@ -689,7 +948,7 @@ def parse_quote_template(
     template_id = (
         None if template_value is None else _int(template_value, minimum=1, maximum=2_147_483_647)
     )
-    widget_id = details.get("basketWidgetId")
+    widget_id = details.get("basketCreationWidgetId")
     if widget_id is not None:
         _id(widget_id)
     currency = details["currencyCode"]
@@ -710,39 +969,31 @@ def parse_quote_template(
         or basket_version != basket.basket_version
     ):
         _fail("mismatch")
-    legal = details["legalVerificationRequired"]
+    legal = details["isLegalVerificationRequired"]
     if legal not in {False, None} or isinstance(legal, int) and not isinstance(legal, bool):
         _fail("unsupported")
-    eta_value = details["eta"]
-    eta = None if eta_value is None else _display(eta_value, maximum=100)
-    price_lines, capability_fingerprint = _parse_components(
-        checkout["components"], total=total, eta=eta
+    price_lines, eta, capability_fingerprint = _parse_components(
+        checkout["components"], total=total, request=request
     )
     analytics = _object(
         checkout["analytics"],
         required=set(),
-        allowed={"sourceScreen", "templateReceived"},
+        allowed={"templateReceived", "checkoutLoaded"},
     )
-    if "sourceScreen" in analytics and analytics["sourceScreen"] not in _SOURCE_SCREENS:
-        _fail("unsupported")
-    if "templateReceived" in analytics and not isinstance(analytics["templateReceived"], bool):
-        _fail()
-    projection_details = dict(details)
-    projection_details.pop("currencyCode", None)
-    projection_details.pop("purchaseTotalCents", None)
-    projection_details.pop("basketVersion", None)
-    projection_details.pop("eta", None)
-    projection_details.pop("legalVerificationRequired", None)
-    projection_details.pop("templateId", None)
-    basket_widget = projection_details.pop("basketWidgetId", None)
+    # Analytics payloads are opaque provider telemetry echoed by the web client.
+    # They are already bounded above and are never exposed publicly.
+    request_checkout = request.private_body()["checkout"]
+    projection_details = dict(request_checkout["orderDetails"])
     projection_details["versionId"] = version_id
     projection_details["basketId"] = basket_id
-    if basket_widget is not None:
-        projection_details["basketCreationWidgetId"] = basket_widget
+    if widget_id is not None:
+        projection_details["basketCreationWidgetId"] = widget_id
     projection_details["checkoutSessionId"] = checkout_session_id
     submit_projection = {
         "orderDetails": projection_details,
-        "components": checkout["components"],
+        # Browser submission echoes the private input components, not display
+        # components returned by the template.
+        "components": request_checkout["components"],
         "analytics": {"templateReceived": analytics.get("templateReceived")},
     }
     submit_projection_bytes = json.dumps(

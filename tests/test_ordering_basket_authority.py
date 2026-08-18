@@ -433,8 +433,6 @@ def test_public_adoption_installs_each_closed_outcome_and_never_mutates(
             {
                 "owner_key": "admin-b",
                 "generation": 7,
-                "amount_minor": 550000,
-                "currency": "AMD",
                 "store_address_id": 81,
             }
         ]

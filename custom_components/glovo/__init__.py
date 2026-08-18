@@ -55,7 +55,7 @@ from .ordering_state import (
 
 _LOGGER = logging.getLogger(__name__)
 CONFIG_ENTRY_VERSION = 1
-CONFIG_ENTRY_MINOR_VERSION = 16
+CONFIG_ENTRY_MINOR_VERSION = 17
 
 
 def _ordering_options(entry: GlovoConfigEntry) -> dict[str, object]:

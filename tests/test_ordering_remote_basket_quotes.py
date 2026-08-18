@@ -273,18 +273,51 @@ def address(contracts: ModuleType) -> Any:
     )
 
 
-def payment(contracts: ModuleType) -> Any:
+def payment(
+    contracts: ModuleType,
+    *,
+    metadata_id: int | float | None = 33,
+    metadata_id_present: bool = True,
+) -> Any:
     return contracts.SavedPayment(
         payment_instrument_id="instrument-private",
-        metadata_id=33,
+        metadata_id=metadata_id,
         display_name="Visa",
         display_description="Card ending 4242",
         last_four_digits="4242",
         selected=True,
+        metadata_id_present=metadata_id_present,
     )
 
 
+def _price_line(
+    title: str,
+    value: str | None,
+    line_type: str,
+    *,
+    note: str | None = None,
+    note_style: str | None = None,
+    value_prefix: str | None = None,
+) -> dict[str, Any]:
+    """Return the exact current web price-breakdown line shape."""
+    return {
+        "title": title,
+        "value": value,
+        "type": line_type,
+        "isNoteHighlighted": note_style is not None,
+        "note": note,
+        "noteStyle": note_style,
+        "showDivider": line_type == "TOTAL",
+        "valuePrefix": value_prefix,
+        "valueStyle": None,
+        "valuePrefixStyle": None,
+        "action": None,
+        "actionResource": None,
+    }
+
+
 def quote_response(**changes: Any) -> dict[str, Any]:
+    """Current first-party /v3/checkouts/order/1/template HTTP JSON shape."""
     order_details = {
         "checkoutSessionId": "checkout-private-1",
         "versionId": 3,
@@ -292,12 +325,12 @@ def quote_response(**changes: Any) -> dict[str, Any]:
         "storeId": 71,
         "storeAddressId": 81,
         "basketId": "basket-private-1",
-        "basketWidgetId": None,
+        "basketCreationWidgetId": None,
         "currencyCode": "AMD",
+        # Despite its name this field remains the integer minor-unit authority.
         "purchaseTotalCents": 560000,
         "basketVersion": "basket-v1",
-        "eta": "20–30 min",
-        "legalVerificationRequired": False,
+        "isLegalVerificationRequired": False,
     }
     order_details.update(changes.pop("order_details", {}))
     checkout = {
@@ -307,43 +340,110 @@ def quote_response(**changes: Any) -> dict[str, Any]:
         "orderDetails": order_details,
         "components": [
             {
-                "type": "PAYMENT_METHOD_PICKER",
-                "data": {
-                    "paymentMethodPickerData": {"orderTotal": 560000, "currencyCode": "AMD"}
+                "id": "paymentMethod",
+                "type": "paymentMethodPicker",
+                "placement": "main",
+                "triggersRefresh": True,
+                "paymentMethodPickerData": {
+                    "required": True,
+                    "countryCode": "AM",
+                    "currencyCode": "AMD",
+                    "priceStatus": "FINAL",
+                    # Current web schema expresses picker totals in major/display units.
+                    "orderTotal": 5600.0,
+                    "productsTotal": 5500.0,
+                    "cash": {"isAllowed": False},
+                    "value": {
+                        "type": "CreditCard",
+                        "isDefault": True,
+                        "paymentInstrumentId": "instrument-private",
+                        "creditCard": {
+                            "lastFourDigits": "4242",
+                            "provider": "fixture",
+                            "paymentProvider": "fixture",
+                            "defaultCard": True,
+                            "token": 33,
+                        },
+                    },
                 },
             },
             {
-                "type": "PRICE_BREAKDOWN",
-                "data": {
-                    "priceBreakdownData": {
-                        "breakDown": [
-                            {"title": "Products", "value": "5,500.00 AMD", "type": "OTHER"},
-                            {"title": "Delivery", "value": "100.00 AMD", "type": "DELIVERY"},
-                            {
-                                "title": "Total",
-                                "value": "intentionally not parsed",
-                                "type": "TOTAL",
-                                "style": "EMPHASIS",
-                                "notes": ["Taxes included"],
-                                "actions": [],
+                "id": "priceBreakdown",
+                "type": "priceBreakdown",
+                "placement": "main",
+                "priceBreakdownData": {
+                    "breakDown": [
+                        _price_line("Products", "5,500.00 AMD", "OTHER"),
+                        _price_line("Delivery", "100.00 AMD", "DELIVERY"),
+                        _price_line(
+                            "Total",
+                            "intentionally not parsed",
+                            "TOTAL",
+                            note="Taxes included",
+                        ),
+                    ]
+                },
+            },
+            {
+                "id": "schedulingTime",
+                "type": "timeSelector",
+                "timeSelectorData": {
+                    "required": True,
+                    "selectors": [
+                        {
+                            "value": "STANDARD",
+                            "label": "Standard delivery",
+                            "description": "20–30 min",
+                            "disabled": False,
+                            "mainDeliveryFeeLabel": {
+                                "value": "FREE",
+                                "style": "PROMOTION",
                             },
-                        ]
-                    }
+                        },
+                        {
+                            # Selector values are optional in the provider schema;
+                            # an unselected neighbor without one is still valid.
+                            "label": "Later",
+                            "description": "Schedule for later",
+                            "disabled": False,
+                        }
+                    ],
+                    "value": "STANDARD",
+                    "icon": {"lightImageId": "clock", "darkImageId": "clock-dark"},
+                    "iconSelected": {
+                        "lightImageId": "clock-selected",
+                        "darkImageId": "clock-selected-dark",
+                    },
                 },
             },
-            {"type": "DELIVERY_ETA", "data": {"eta": "20–30 min"}},
+            # Other provider-validated display components are opaque, bounded echo data.
             {
-                "type": "STORE_CAPABILITIES",
-                "data": {"capabilities": ["DELIVERY", "CREDIT_CARD", "IMMEDIATE"]},
+                "id": "productList",
+                "type": "productList",
+                "placement": "main",
+                "productListData": {
+                    "label": "Products",
+                    "enabledAddProducts": True,
+                    "collapsedBehaviourEnabled": False,
+                    "products": [],
+                    "summary": "2 products",
+                },
             },
         ],
-        "analytics": {"sourceScreen": "BASKET", "templateReceived": True},
+        "analytics": {"templateReceived": None},
     }
     checkout.update(changes)
-    return {"response": {"data": {"checkout": checkout}}}
+    return {"checkout": checkout}
 
 
-def make_request(live: dict[str, ModuleType], *, generation: int = 7, owner: str = "admin-a") -> Any:
+def make_request(
+    live: dict[str, ModuleType],
+    *,
+    generation: int = 7,
+    owner: str = "admin-a",
+    metadata_id: int | float | None = 33,
+    metadata_id_present: bool = True,
+) -> Any:
     basket = live["ordering_remote_basket"].parse_remote_basket(
         basket_payload(), live["ordering_remote_basket"].parse_basket_intent(intent_payload())
     )
@@ -351,10 +451,14 @@ def make_request(live: dict[str, ModuleType], *, generation: int = 7, owner: str
         owner_key=owner,
         generation=generation,
         intent_key="intent-local-1",
-        source_screen="BASKET",
+        source_screen="CART",
         basket=basket,
         delivery_address=address(live["ordering_contracts"]),
-        payment=payment(live["ordering_contracts"]),
+        payment=payment(
+            live["ordering_contracts"],
+            metadata_id=metadata_id,
+            metadata_id_present=metadata_id_present,
+        ),
         masked_address="Saved home ••••",
         masked_payment="Saved card •••• 4242",
         store_display_name="Fixture Kitchen",
@@ -1280,15 +1384,30 @@ def test_quote_request_is_exact_private_and_uses_canonical_basket_address_paymen
     body = request.private_body()
     assert set(body) == {"checkout"}
     checkout = body["checkout"]
-    assert set(checkout) == {"orderDetails", "components", "analytics", "basketDetails"}
+    assert set(checkout) == {
+        "sourceScreen",
+        "orderDetails",
+        "components",
+        "analytics",
+        "basketDetails",
+    }
+    assert checkout["sourceScreen"] == "CART"
     assert checkout["orderDetails"]["basketId"] == "basket-private-1"
+    assert checkout["orderDetails"]["origin"] == "CHECKOUT"
+    assert "sourceScreen" not in checkout["orderDetails"]
     assert checkout["orderDetails"]["handlingStrategy"] == {"type": "DELIVERY"}
     assert checkout["orderDetails"]["paymentMethodSupport"] == {
         "clientSupports": [],
         "clientReady": [],
     }
     assert checkout["components"]["productList"] == [rich_product()]
-    assert checkout["components"]["deliveryAddress"]["id"] == 17
+    assert checkout["components"]["deliveryAddress"] == {
+        "label": "Private Street 10",
+        "details": "Private details",
+        "latitude": 40.177,
+        "longitude": 44.513,
+        "customFields": [],
+    }
     assert checkout["components"]["paymentMethod"] == {
         "paymentInstrumentId": "instrument-private",
         "type": "CreditCard",
@@ -1297,6 +1416,48 @@ def test_quote_request_is_exact_private_and_uses_canonical_basket_address_paymen
     assert checkout["analytics"] == {"templateReceived": None}
     assert "Private Street" not in repr(request)
     assert "40.177" not in repr(request)
+
+
+@pytest.mark.parametrize("metadata_id", [0, -1, 3.5])
+def test_numeric_metadata_tokens_are_projected_and_bound_exactly(
+    live: dict[str, ModuleType], metadata_id: int | float
+) -> None:
+    request = make_request(live, metadata_id=metadata_id)
+    assert request.private_body()["checkout"]["components"]["paymentMethod"][
+        "creditCard"
+    ] == {"token": metadata_id}
+    payload = quote_response()
+    payload["checkout"]["components"][0]["paymentMethodPickerData"]["value"][
+        "creditCard"
+    ]["token"] = metadata_id
+    parsed = live["ordering_live_quote"].parse_quote_template(
+        payload, request=request, received_at=500.0
+    )
+    assert parsed.payment_fingerprint == request.payment_fingerprint
+
+
+@pytest.mark.parametrize(
+    ("metadata_id_present", "response_token"),
+    [(True, "absent"), (False, "null")],
+)
+def test_missing_and_explicit_null_payment_token_states_do_not_cross_match(
+    live: dict[str, ModuleType], metadata_id_present: bool, response_token: str
+) -> None:
+    request = make_request(
+        live, metadata_id=None, metadata_id_present=metadata_id_present
+    )
+    payload = quote_response()
+    response_card = payload["checkout"]["components"][0][
+        "paymentMethodPickerData"
+    ]["value"]["creditCard"]
+    if response_token == "absent":
+        response_card.pop("token")
+    else:
+        response_card["token"] = None
+    with pytest.raises(live["ordering_live_quote"].QuoteContractError):
+        live["ordering_live_quote"].parse_quote_template(
+            payload, request=request, received_at=500.0
+        )
 
 
 def test_authoritative_quote_exact_envelope_types_cross_checks_and_one_total(
@@ -1327,6 +1488,159 @@ def test_authoritative_quote_exact_envelope_types_cross_checks_and_one_total(
         assert forbidden not in encoded
     assert public["priceLines"][2]["value"] == "intentionally not parsed"
     assert public["purchaseTotalCents"] == 560000
+    assert public["eta"] == "20–30 min"
+    assert public["payment"] == "Saved card •••• 4242"
+
+
+def test_browser_screenshot_decimal_total_stays_bound_to_integer_authority(
+    live: dict[str, ModuleType],
+) -> None:
+    """3,289.60 AMD on the picker must bind exactly to 328,960 minor units."""
+    payload = quote_response(order_details={"purchaseTotalCents": 328960})
+    picker = payload["checkout"]["components"][0]["paymentMethodPickerData"]
+    picker["orderTotal"] = 3289.6
+    lines = payload["checkout"]["components"][1]["priceBreakdownData"]["breakDown"]
+    lines[:] = [
+        _price_line("Products", "3,200.00 ֏", "OTHER"),
+        _price_line("Prime Delivery", "FREE", "DELIVERY", value_prefix="149.00 ֏"),
+        _price_line("Service fee", "89.60 ֏", "OTHER", value_prefix="−60%"),
+        _price_line("Total", "3,289.60 ֏", "TOTAL"),
+    ]
+    parsed = live["ordering_live_quote"].parse_quote_template(
+        payload, request=make_request(live), received_at=500.0
+    )
+    assert parsed.total.amount_minor == 328960
+    assert parsed.public_confirmation()["purchaseTotalCents"] == 328960
+    assert live["ordering_contracts"].build_payment_query(
+        amount_minor=parsed.total.amount_minor,
+        currency=parsed.total.currency,
+        checkout_session="checkout-private-1",
+        store_address_id=81,
+    )["amount"] == "3289.6"
+
+
+@pytest.mark.parametrize(
+    ("metadata_id_present", "metadata_id"),
+    [(False, None), (True, None), (True, 0), (True, -1), (True, 3.5)],
+)
+def test_payment_token_missing_null_and_numeric_states_project_and_bind_exactly(
+    live: dict[str, ModuleType],
+    metadata_id_present: bool,
+    metadata_id: int | float | None,
+) -> None:
+    request = make_request(
+        live,
+        metadata_id=metadata_id,
+        metadata_id_present=metadata_id_present,
+    )
+    request_card = request.private_body()["checkout"]["components"]["paymentMethod"][
+        "creditCard"
+    ]
+    assert ("token" in request_card) is metadata_id_present
+    if metadata_id_present:
+        assert request_card["token"] == metadata_id
+    payload = quote_response()
+    response_card = payload["checkout"]["components"][0]["paymentMethodPickerData"][
+        "value"
+    ]["creditCard"]
+    if metadata_id_present:
+        response_card["token"] = metadata_id
+    else:
+        response_card.pop("token")
+    parsed = live["ordering_live_quote"].parse_quote_template(
+        payload, request=request, received_at=500.0
+    )
+    assert parsed.total.amount_minor == 560000
+
+
+@pytest.mark.parametrize(
+    "placement", ["main", "summary", "floating"]
+)
+def test_real_response_placement_enum_is_accepted(
+    live: dict[str, ModuleType], placement: str
+) -> None:
+    payload = quote_response()
+    for component in payload["checkout"]["components"]:
+        component["placement"] = placement
+    parsed = live["ordering_live_quote"].parse_quote_template(
+        payload, request=make_request(live), received_at=500.0
+    )
+    assert parsed.eta == "20–30 min"
+
+
+def test_exact_neighbor_component_record_and_place_order_placement_are_accepted(
+    live: dict[str, ModuleType],
+) -> None:
+    payload = quote_response()
+    payload["checkout"]["components"].extend(
+        [
+            {
+                "id": "mcdBagCostDisclaimer",
+                "type": "staticText",
+                "placement": "summary",
+                "staticTextData": {"label": "Bag cost", "visualType": "disclaimer"},
+            },
+            {
+                "id": "placeOrder",
+                "type": "placeOrder",
+                "placement": "floating",
+                "buttonData": {"label": "Pay to order", "buttonType": "default"},
+            },
+        ]
+    )
+    parsed = live["ordering_live_quote"].parse_quote_template(
+        payload, request=make_request(live), received_at=500.0
+    )
+    assert parsed.eta == "20–30 min"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_value",
+        "missing_highlight",
+        "missing_note_style",
+        "missing_divider",
+        "unsupported_type",
+    ],
+)
+def test_price_line_required_fields_and_closed_types_fail_closed(
+    live: dict[str, ModuleType], mutation: str
+) -> None:
+    payload = quote_response()
+    line = payload["checkout"]["components"][1]["priceBreakdownData"]["breakDown"][0]
+    if mutation == "missing_value":
+        line.pop("value")
+    elif mutation == "missing_highlight":
+        line.pop("isNoteHighlighted")
+    elif mutation == "missing_note_style":
+        line.pop("noteStyle")
+    elif mutation == "missing_divider":
+        line.pop("showDivider")
+    else:
+        line["type"] = "SURCHARGE"
+    with pytest.raises(live["ordering_live_quote"].QuoteContractError):
+        live["ordering_live_quote"].parse_quote_template(
+            payload, request=make_request(live), received_at=500.0
+        )
+
+
+@pytest.mark.parametrize("value_state", ["omitted", "null"])
+def test_fee_label_value_is_nullish_but_style_remains_required(
+    live: dict[str, ModuleType], value_state: str
+) -> None:
+    payload = quote_response()
+    label = payload["checkout"]["components"][2]["timeSelectorData"]["selectors"][0][
+        "mainDeliveryFeeLabel"
+    ]
+    if value_state == "omitted":
+        label.pop("value")
+    else:
+        label["value"] = None
+    parsed = live["ordering_live_quote"].parse_quote_template(
+        payload, request=make_request(live), received_at=500.0
+    )
+    assert parsed.eta == "20–30 min"
 
 
 @pytest.mark.parametrize(
@@ -1340,25 +1654,43 @@ def test_authoritative_quote_exact_envelope_types_cross_checks_and_one_total(
         "mismatch_basket",
         "mismatch_version",
         "picker_total",
+        "picker_products_total",
         "picker_currency",
+        "picker_instrument",
+        "picker_token",
+        "picker_missing_token",
+        "picker_null_token",
+        "picker_suffix",
+        "picker_missing_value",
         "legal",
         "duplicate_component",
-        "unknown_component",
         "no_total",
         "two_totals",
-        "action",
+        "invalid_action",
         "unknown_line_key",
         "private_display",
+        "legacy_placement",
+        "selector_selected_field",
+        "selector_missing_top_value",
+        "selector_bad_fee_label",
+        "selector_bad_fee_value",
+        "selector_bad_icon",
+        "selector_duplicate_match",
+        "neighbor_type_mismatch",
+        "neighbor_data_key_mismatch",
+        "neighbor_unknown_top_key",
+        "place_order_bad_placement",
     ],
 )
 def test_authoritative_quote_fail_closed_matrix(live: dict[str, ModuleType], mutation: str) -> None:
     quote = live["ordering_live_quote"]
     request = make_request(live)
     payload = quote_response()
-    checkout = payload["response"]["data"]["checkout"]
+    checkout = payload["checkout"]
     details = checkout["orderDetails"]
     components = checkout["components"]
-    lines = components[1]["data"]["priceBreakdownData"]["breakDown"]
+    picker = components[0]["paymentMethodPickerData"]
+    lines = components[1]["priceBreakdownData"]["breakDown"]
     if mutation == "bad_envelope":
         payload = {"data": {"checkout": checkout}}
     elif mutation == "disabled":
@@ -1374,34 +1706,78 @@ def test_authoritative_quote_fail_closed_matrix(live: dict[str, ModuleType], mut
     elif mutation == "mismatch_version":
         details["basketVersion"] = "other"
     elif mutation == "picker_total":
-        components[0]["data"]["paymentMethodPickerData"]["orderTotal"] += 1
+        picker["orderTotal"] += 0.01
+    elif mutation == "picker_products_total":
+        picker["productsTotal"] += 0.01
     elif mutation == "picker_currency":
-        components[0]["data"]["paymentMethodPickerData"]["currencyCode"] = "USD"
+        picker["currencyCode"] = "USD"
+    elif mutation == "picker_instrument":
+        picker["value"]["paymentInstrumentId"] = "other-private"
+    elif mutation == "picker_token":
+        picker["value"]["creditCard"]["token"] = 34
+    elif mutation == "picker_missing_token":
+        picker["value"]["creditCard"].pop("token")
+    elif mutation == "picker_null_token":
+        picker["value"]["creditCard"]["token"] = None
+    elif mutation == "picker_suffix":
+        picker["value"]["creditCard"]["lastFourDigits"] = "9999"
+    elif mutation == "picker_missing_value":
+        picker.pop("value")
     elif mutation == "legal":
-        details["legalVerificationRequired"] = True
+        details["isLegalVerificationRequired"] = True
     elif mutation == "duplicate_component":
         components.append(copy.deepcopy(components[0]))
-    elif mutation == "unknown_component":
-        components.append({"type": "TIP_PICKER", "data": {}})
     elif mutation == "no_total":
         lines[2]["type"] = "OTHER"
     elif mutation == "two_totals":
         lines[0]["type"] = "TOTAL"
-    elif mutation == "action":
-        lines[2]["actions"] = [{"type": "POST"}]
+    elif mutation == "invalid_action":
+        lines[2]["action"] = "POST"
     elif mutation == "unknown_line_key":
         lines[0]["amount"] = 550000
     elif mutation == "private_display":
         lines[0]["title"] = "checkoutSessionId=checkout-private-1"
+    elif mutation == "legacy_placement":
+        components[0]["placement"] = "MAIN"
+    elif mutation == "selector_selected_field":
+        components[2]["timeSelectorData"]["selectors"][0]["selected"] = True
+    elif mutation == "selector_missing_top_value":
+        components[2]["timeSelectorData"].pop("value")
+    elif mutation == "selector_bad_fee_label":
+        components[2]["timeSelectorData"]["selectors"][0][
+            "mainDeliveryFeeLabel"
+        ].pop("style")
+    elif mutation == "selector_bad_fee_value":
+        components[2]["timeSelectorData"]["selectors"][0][
+            "mainDeliveryFeeLabel"
+        ]["value"] = 7
+    elif mutation == "selector_bad_icon":
+        components[2]["timeSelectorData"]["icon"].pop("darkImageId")
+    elif mutation == "selector_duplicate_match":
+        duplicate = copy.deepcopy(components[2]["timeSelectorData"]["selectors"][0])
+        components[2]["timeSelectorData"]["selectors"].append(duplicate)
+    elif mutation == "neighbor_type_mismatch":
+        components[3]["type"] = "button"
+    elif mutation == "neighbor_data_key_mismatch":
+        components[3]["buttonData"] = components[3].pop("productListData")
+    elif mutation == "neighbor_unknown_top_key":
+        components[3]["action"] = {"url": "https://invalid.example"}
+    elif mutation == "place_order_bad_placement":
+        components.append(
+            {
+                "id": "placeOrder",
+                "type": "placeOrder",
+                "placement": "main",
+                "buttonData": {"label": "Pay", "buttonType": "default"},
+            }
+        )
     with pytest.raises(quote.QuoteContractError):
         quote.parse_quote_template(payload, request=request, received_at=500.0)
 
 
 def test_price_formatted_lines_are_never_parsed_or_summed(live: dict[str, ModuleType]) -> None:
     payload = quote_response()
-    lines = payload["response"]["data"]["checkout"]["components"][1]["data"][
-        "priceBreakdownData"
-    ]["breakDown"]
+    lines = payload["checkout"]["components"][1]["priceBreakdownData"]["breakDown"]
     lines[0]["value"] = "not money"
     lines[1]["value"] = None
     lines[2]["value"] = "does not equal numeric total"
@@ -1472,9 +1848,9 @@ def test_confirmation_single_use_new_template_and_exact_total_invalidation(
     manager.install(first)
     old = manager.prepare(owner_key="admin-a")
     changed_payload = quote_response(order_details={"purchaseTotalCents": 560001})
-    changed_payload["response"]["data"]["checkout"]["components"][0]["data"][
-        "paymentMethodPickerData"
-    ]["orderTotal"] = 560001
+    changed_payload["checkout"]["components"][0]["paymentMethodPickerData"][
+        "orderTotal"
+    ] = 5600.01
     changed = quote.parse_quote_template(changed_payload, request=request, received_at=clock())
     manager.install(changed)
     with pytest.raises(quote.InvalidQuoteConfirmation):

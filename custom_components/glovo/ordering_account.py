@@ -197,8 +197,8 @@ class InvalidSelection(ValueError):
 
 @dataclass(frozen=True, slots=True, repr=False)
 class _PaymentContext:
-    amount_minor: int = field(repr=False)
-    currency: str = field(repr=False)
+    amount_minor: int | None = field(repr=False)
+    currency: str | None = field(repr=False)
     checkout_session: str | None = field(repr=False)
     store_address_id: int | None = field(repr=False)
 
@@ -361,8 +361,8 @@ class AccountClient:
         *,
         owner_key: str,
         generation: int,
-        amount_minor: int,
-        currency: str,
+        amount_minor: int | None = None,
+        currency: str | None = None,
         checkout_session: str | None = None,
         store_address_id: int | None = None,
     ) -> tuple[MaskedPaymentSummary, ...]:
@@ -375,9 +375,18 @@ class AccountClient:
         )
         payload = await self._session.async_get("payment", _PAYMENT_PATH, query)
         diagnostics = privacy_safe_payment_diagnostics(payload)
-        diagnostics["queryAmount"] = query["amount"]
-        diagnostics["currency"] = currency
+        if "amount" in query:
+            diagnostics["queryScope"] = "priced"
+            diagnostics["queryAmount"] = query["amount"]
+            diagnostics["currency"] = currency
+        else:
+            diagnostics["queryScope"] = "bootstrap"
         self._last_payment_diagnostics = diagnostics
+        # Count provider-selected card rows before local eligibility filtering.
+        # A malformed/incompatible second selected card must not disappear and let
+        # a different selected card become sole checkout authority.
+        if diagnostics["selectedCount"] > 1:
+            raise InvalidSelection
         payments = parse_saved_payments(payload)
         selected = tuple(item for item in payments if item.selected is True)
         if len(selected) > 1:
@@ -494,13 +503,19 @@ class AccountClient:
         except Exception:
             return False
         payload = await self._session.async_get("payment", _PAYMENT_PATH, query)
+        diagnostics = privacy_safe_payment_diagnostics(payload)
+        if diagnostics["selectedCount"] != 1:
+            return False
         current = parse_saved_payments(payload)
+        selected_current = [item for item in current if item.selected is True]
+        if len(selected_current) != 1:
+            return False
         matches = [
             item
-            for item in current
-            if item.selected is True
-            and item.payment_instrument_id == selected.payment_instrument_id
+            for item in selected_current
+            if item.payment_instrument_id == selected.payment_instrument_id
             and item.metadata_id == selected.metadata_id
+            and item.metadata_id_present == selected.metadata_id_present
             and item.last_four_digits == selected.last_four_digits
         ]
         return len(matches) == 1 and record is not None and record.owner_key == owner

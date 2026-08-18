@@ -1543,14 +1543,9 @@ class LiveOrderingFacade:
                     await self._async_record_basket_unknown(generation)
                     raise PublicContractError
                 await self._async_require_store_open(state.store, address)
-                minor = state.snapshot.basket_price.minor
-                if minor is None or not state.currency:
-                    raise PublicContractError
                 methods = await self._account.async_saved_payments(
                     owner_key=owner,
                     generation=generation,
-                    amount_minor=minor,
-                    currency=state.currency,
                     store_address_id=state.snapshot.store_address_id,
                 )
                 result: dict[str, Any] = {
@@ -1589,7 +1584,7 @@ class LiveOrderingFacade:
                     owner_key=owner,
                     generation=generation,
                     intent_key=f"intent-{state.revision}",
-                    source_screen="BASKET",
+                    source_screen="CART",
                     basket=state.snapshot,
                     delivery_address=address,
                     payment=payment,

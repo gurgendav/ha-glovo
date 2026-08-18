@@ -175,15 +175,21 @@ class AddressSnapshot:
 @dataclass(frozen=True, slots=True, repr=False)
 class SavedPayment:
     payment_instrument_id: str = field(repr=False)
-    metadata_id: int = field(repr=False)
+    metadata_id: int | float | None = field(repr=False)
     display_name: str = field(repr=False)
     display_description: str | None = field(repr=False)
     last_four_digits: str | None = field(repr=False)
     selected: bool = field(repr=False)
+    metadata_id_present: bool = field(default=True, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payment_instrument_id", _opaque_id(self.payment_instrument_id))
-        object.__setattr__(self, "metadata_id", _int(self.metadata_id, minimum=1))
+        if self.metadata_id is not None:
+            _number(self.metadata_id, minimum=-1_000_000_000, maximum=1_000_000_000)
+        if not isinstance(self.metadata_id_present, bool):
+            _fail()
+        if not self.metadata_id_present and self.metadata_id is not None:
+            _fail()
         object.__setattr__(self, "display_name", _text(self.display_name, maximum=100))
         if self.display_description is not None:
             object.__setattr__(
@@ -661,36 +667,41 @@ def address_snapshots_equal(first: AddressSnapshot, second: AddressSnapshot) -> 
 
 def build_payment_query(
     *,
-    amount_minor: int,
-    currency: str,
+    amount_minor: int | None = None,
+    currency: str | None = None,
     checkout_session: str | None = None,
     store_address_id: int | None = None,
 ) -> dict[str, str]:
-    """Build the exact headless browser-fallback payment-method query."""
+    """Build either the browser bootstrap or post-template payment query."""
 
-    amount = _int(amount_minor, maximum=100_000_000_000)
-    if not isinstance(currency, str) or currency not in ISO_4217_EXPONENTS:
-        _fail()
-    # The browser passes ``paymentMethodPickerData.orderTotal`` directly. That
-    # value uses provider major units (for example 3200 AMD), while every local
-    # authority and fingerprint deliberately stores integer minor units
-    # (320000). Keep local money exact, but project the provider's numeric query
-    # representation without floating point or insignificant trailing zeroes.
-    exponent = ISO_4217_EXPONENTS[currency]
-    if exponent:
-        digits = str(amount).zfill(exponent + 1)
-        provider_amount = (
-            f"{digits[:-exponent]}.{digits[-exponent:]}".rstrip("0").rstrip(".")
-        )
-    else:
-        provider_amount = str(amount)
     query = {
-        "amount": provider_amount,
-        "currency": currency,
         "clientSupports": "",
         "clientReady": "",
         "context": "checkout",
     }
+    if (amount_minor is None) != (currency is None):
+        _fail()
+    if amount_minor is not None and currency is not None:
+        amount = _int(amount_minor, maximum=100_000_000_000)
+        if not isinstance(currency, str) or currency not in ISO_4217_EXPONENTS:
+            _fail()
+        # The browser passes ``paymentMethodPickerData.orderTotal`` directly. That
+        # value uses provider major units (for example 3289.6 AMD), while every local
+        # authority and fingerprint deliberately stores integer minor units
+        # (328960). Project without binary floating point or insignificant zeroes.
+        exponent = ISO_4217_EXPONENTS[currency]
+        if exponent:
+            digits = str(amount).zfill(exponent + 1)
+            provider_amount = (
+                f"{digits[:-exponent]}.{digits[-exponent:]}".rstrip("0").rstrip(".")
+            )
+        else:
+            provider_amount = str(amount)
+        query["amount"] = provider_amount
+        query["currency"] = currency
+    elif checkout_session is not None:
+        # A session-scoped lookup is meaningful only after a priced template.
+        _fail()
     if checkout_session is not None:
         query["checkoutSessionId"] = _opaque_id(checkout_session)
     if store_address_id is not None:
@@ -707,6 +718,18 @@ def privacy_safe_payment_diagnostics(payload: Any) -> dict[str, Any]:
         "envelope": "invalid",
         "methodCount": 0,
         "actionCount": 0,
+        "cardLikeCount": 0,
+        "selectedCount": 0,
+        "selectableCount": 0,
+        "selectedSelectableCount": 0,
+        "rejectionCounts": {
+            "unsupportedType": 0,
+            "instrumentReference": 0,
+            "metadataToken": 0,
+            "maskedSuffix": 0,
+            "display": 0,
+            "sensitiveMaterial": 0,
+        },
         "methods": [],
     }
     if not isinstance(payload, dict):
@@ -722,6 +745,7 @@ def privacy_safe_payment_diagnostics(payload: Any) -> dict[str, Any]:
     result["methodCount"] = min(len(methods), 64)
     result["actionCount"] = min(len(actions), 64)
     safe: list[dict[str, Any]] = []
+    rejection_counts = result["rejectionCounts"]
     missing = object()
     for raw in methods[:64]:
         if not isinstance(raw, dict):
@@ -730,6 +754,13 @@ def privacy_safe_payment_diagnostics(payload: Any) -> dict[str, Any]:
         method_type = raw.get("type")
         exact_type = method_type if method_type in _PAYMENT_TYPES else "unsupported"
         selected = raw.get("selected")
+        card_like = exact_type == "CREDIT_CARD"
+        if card_like:
+            result["cardLikeCount"] += 1
+            if selected is True:
+                result["selectedCount"] += 1
+        else:
+            rejection_counts["unsupportedType"] += 1
         instrument = raw.get("paymentInstrumentId", missing)
         if instrument is missing:
             instrument_state = "missing"
@@ -751,8 +782,8 @@ def privacy_safe_payment_diagnostics(payload: Any) -> dict[str, Any]:
             metadata_id_state = "null"
         elif isinstance(metadata_id, bool):
             metadata_id_state = "invalid"
-        elif isinstance(metadata_id, int):
-            metadata_id_state = "integer"
+        elif isinstance(metadata_id, (int, float)) and math.isfinite(float(metadata_id)):
+            metadata_id_state = "number"
         elif isinstance(metadata_id, str):
             metadata_id_state = "string"
         else:
@@ -766,6 +797,28 @@ def privacy_safe_payment_diagnostics(payload: Any) -> dict[str, Any]:
             else None
         )
         display = raw.get("displayAttributes")
+        sensitive_material = _contains_sensitive_payment_key(raw)
+        if card_like:
+            compatible = True
+            if instrument_state != "present":
+                rejection_counts["instrumentReference"] += 1
+                compatible = False
+            if metadata_id_state not in {"number", "null", "missing"}:
+                rejection_counts["metadataToken"] += 1
+                compatible = False
+            if masked is None:
+                rejection_counts["maskedSuffix"] += 1
+                compatible = False
+            if not isinstance(display, dict):
+                rejection_counts["display"] += 1
+                compatible = False
+            if sensitive_material:
+                rejection_counts["sensitiveMaterial"] += 1
+                compatible = False
+            if compatible:
+                result["selectableCount"] += 1
+                if selected is True:
+                    result["selectedSelectableCount"] += 1
         safe.append(
             {
                 "type": exact_type,
@@ -774,7 +827,7 @@ def privacy_safe_payment_diagnostics(payload: Any) -> dict[str, Any]:
                 "metadataId": metadata_id_state,
                 "maskedCard": masked,
                 "display": "object" if isinstance(display, dict) else "invalid",
-                "sensitiveMaterial": _contains_sensitive_payment_key(raw),
+                "sensitiveMaterial": sensitive_material,
             }
         )
     result["methods"] = safe
@@ -877,7 +930,7 @@ def parse_saved_payments(payload: Any) -> tuple[SavedPayment, ...]:
     methods = _array(inner["paymentMethods"], maximum=MAX_PAYMENT_METHODS)
     result: list[SavedPayment] = []
     instrument_ids: set[str] = set()
-    metadata_ids: set[int] = set()
+    metadata_ids: set[int | float] = set()
     required = {
         "type",
         "selected",
@@ -914,6 +967,7 @@ def parse_saved_payments(payload: Any) -> tuple[SavedPayment, ...]:
 
         if _contains_sensitive_payment_key(method):
             _fail()
+        metadata_id_present = "id" in metadata
         metadata_raw = metadata.get("id")
         if metadata_raw is not None:
             _number(metadata_raw, minimum=-1_000_000_000, maximum=1_000_000_000)
@@ -930,17 +984,24 @@ def parse_saved_payments(payload: Any) -> tuple[SavedPayment, ...]:
         if instrument_id != instrument_raw:
             continue
         if (
-            isinstance(metadata_raw, bool)
-            or not isinstance(metadata_raw, int)
-            or metadata_raw < 1
-            or not isinstance(last_four_raw, str)
+            metadata_raw is not None
+            and (
+                isinstance(metadata_raw, bool)
+                or not isinstance(metadata_raw, (int, float))
+                or not math.isfinite(float(metadata_raw))
+            )
+        ) or (
+            not isinstance(last_four_raw, str)
             or re.fullmatch(r"\d{1,4}", last_four_raw) is None
         ):
             continue
-        if instrument_id in instrument_ids or metadata_raw in metadata_ids:
+        if instrument_id in instrument_ids or (
+            metadata_raw is not None and metadata_raw in metadata_ids
+        ):
             _fail()
         instrument_ids.add(instrument_id)
-        metadata_ids.add(metadata_raw)
+        if metadata_raw is not None:
+            metadata_ids.add(metadata_raw)
         result.append(
             SavedPayment(
                 payment_instrument_id=instrument_id,
@@ -949,6 +1010,7 @@ def parse_saved_payments(payload: Any) -> tuple[SavedPayment, ...]:
                 display_description=display_description,
                 last_four_digits=last_four_raw,
                 selected=selected,
+                metadata_id_present=metadata_id_present,
             )
         )
     return tuple(result)

@@ -1,6 +1,6 @@
 # Reviewed production final-checkout protocol evidence
 
-**Home.23 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v16, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
+**Home.24 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v17, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
 
 This is a dated first-party static- and bounded live-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. Building the Home.22 artifact itself made no deployment or provider request. The separately authorized Home.21 preparation-only canary described below made read-only account/catalog/basket/payment-method calls, stopped before quote completion, and exposed no checkout submission route.
 
@@ -189,7 +189,7 @@ Config-entry migration v15 resets all four preparation/checkout gates, including
 opted-in Home.21 v14 entry. Deployment and any later live canary require separate operator
 authorization; the release artifact itself claims no successful live quote.
 
-## Home.23 payment amount projection and safe diagnostics (2026-08-18)
+## Home.23 experimental payment projection and safe diagnostics (2026-08-18)
 
 A separately authorized Home.22 live preparation reached an adopted exact basket and
 successfully transported `GET /v4/payment_methods`, but exposed zero eligible selected
@@ -199,9 +199,9 @@ contract passes `paymentMethodPickerData.orderTotal` in provider/display units (
 The user independently confirmed that a saved card exists; no raw payment response or
 provider payment identifier was retained.
 
-Home.23 keeps all authority and monetary fingerprints in exact integer minor units, but
-projects the payment-method query deterministically into the provider's decimal amount
-representation using the ISO currency exponent and no floating point. It also returns a
+Home.23 kept all authority and monetary fingerprints in exact integer minor units, but
+experimentally projected the payment-method query into the provider's decimal amount
+representation using the ISO currency exponent and no floating point. It also returned a
 bounded administrator-only structural diagnostic beside the masked payment choices: query
 amount/currency, envelope and method/action counts, exact supported type, selected boolean,
 private-ID presence/type only, masked suffix, display-object presence, and a recursive
@@ -211,7 +211,53 @@ relax the exact selected-saved-card requirement.
 
 Config-entry migration v16 resets all four preparation/checkout gates, including a fully
 opted-in Home.22 v15 entry. Deployment and live revalidation require separate authorization;
-the release artifact itself still claims no quote or payment success.
+the release artifact itself still claimed no quote or payment success. Current browser
+evidence below establishes that the initial lookup should omit amount/currency entirely,
+so Home.24 supersedes this experimental choreography.
+
+## Home.24 browser-equivalent bootstrap and template contract (2026-08-18)
+
+The current anonymous first-party order-summary page asset
+`page-e941a98a54df929d.js` (SHA-256
+`9d4a015cc46420264849116704305509c8f3deef23f1e5d711715710fa9e4aa7`)
+establishes this exact order:
+
+1. resolve Apple Pay/Google Pay capability strings;
+2. call `GET /v4/payment_methods` before a picker total or checkout session exists,
+   passing `storeAddressId`, `clientSupports`, `clientReady`, and `context=checkout`
+   but omitting `amount`, `currency`, and `checkoutSessionId`;
+3. require one response method with `selected:true` and project
+   `CREDIT_CARD/paymentInstrumentId/metadata.id` into
+   `CreditCard/paymentInstrumentId/creditCard.token`, preserving the private tri-state:
+   omit an absent metadata key, send explicit null as JSON null, and preserve a finite
+   numeric token exactly;
+4. send that selected card with the exact basket and delivery-address input components to
+   `POST /v3/checkouts/order/1/template`;
+5. read the selected card suffix and decimal totals from
+   `paymentMethodPickerData.value` and `orderTotal/productsTotal`, while treating
+   `orderDetails.purchaseTotalCents` as integer minor-unit authority;
+6. render fees from `priceBreakdownData.breakDown` and the selected ETA from
+   `timeSelectorData`;
+7. only after a template exists may a payment-method refresh add decimal `amount`,
+   `currency`, and `checkoutSessionId`.
+
+Home.24 reproduces this sequence. It parses the real HTTP `{checkout: ...}` envelope and
+lower-camel component types, exact-converts provider major-unit numbers to integer minor
+units, binds the embedded card/token/suffix to the bootstrap selection, and uses the
+original private request components—not display response components—for any final
+projection. Unknown but browser-enumerated display components are bounded, hashed, and
+never executed locally.
+
+Privacy-safe diagnostics separately count raw methods, card-like methods, selected cards,
+locally selectable cards, and selected-selectable cards. Rejection counts are bounded to
+unsupported type, missing/invalid instrument reference, invalid metadata-token type, masked
+suffix, display object, and sensitive material. Only masked suffixes are public; private
+instrument/token values remain absent. A configured `selected:false` card is visible in
+diagnostics but cannot become checkout authority, and multiple selected cards fail closed.
+
+Migration v17 resets all four gates, including opted-in Home.23 v16 entries. This evidence
+authorizes a separately supervised stop-before-payment validation only; it does not itself
+authorize final submission or payment.
 
 ## Frozen final-checkout evidence (2026-08-13)
 
@@ -239,7 +285,7 @@ Pending, authentication, `PROCESS_PAYMENT`, malformed data, transport failure, c
 
 Any future release operation using the reviewed production adapter is limited to this policy:
 
-1. migration v16 closes all four gates—including for fully opted-in Home.22 entries—and requires a fresh default-off administrator re-opt-in;
+1. migration v17 closes all four gates—including for fully opted-in Home.23 entries—and requires a fresh default-off administrator re-opt-in;
 2. account-scoped `UNKNOWN`/`ABSENT_VERIFIED`/`ADOPTED`/`CONFLICT` authority with cross-administrator serialization;
 3. fresh read-only provider re-adoption after every setup/reload using one collection GET and at most one conditional per-store full GET before any basket mutation;
 4. a fresh authoritative exact paid quote, separate confirmation, exact store/items/options/full admin-only ephemeral address/masked saved card/price lines/total/currency/ETA/expiry display, and amount-bound acknowledgement;
@@ -249,7 +295,7 @@ Any future release operation using the reviewed production adapter is limited to
 8. at most one explicit known-ID status GET per administrator action, with no polling;
 9. provider identifiers and the full address excluded from public/recovery projections, logs, and hash-only basket evidence.
 
-This evidence does **not** establish provider idempotency or authorize a payment. Home.23 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
+This evidence does **not** establish provider idempotency or authorize a payment. Home.24 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
 
 ## Principal static sources
 
@@ -257,6 +303,7 @@ First-party web assets fetched anonymously on 2026-08-13. The checkout schema an
 payment API chunks were fetched again on 2026-08-17 and remained byte-identical; the
 authenticated order-summary page asset remains frozen 2026-08-13 evidence:
 
+- current order-summary orchestration page `page-e941a98a54df929d.js`, fetched 2026-08-18, SHA-256 `9d4a015cc46420264849116704305509c8f3deef23f1e5d711715710fa9e4aa7`;
 - checkout API/schema chunk `9332-3c136e6442e27d4b.js`, SHA-256 `e5ca6c219d41098b2945e2a4860be115ed41db99633624bb45684f313ffaeac3`;
 - checkout orchestration page `page-a0c178e019539f90.js`, SHA-256 `17da38f448aab8f5ffcebeb06a3c5d2b97e88f104a7b19b9f693d99b44f8ae6b`;
 - payment API chunk `32770-f90fab42b4d88724.js`, SHA-256 `d096962c73c42205d33d606c457844dc035a240732204408fe1d7a1182d3f786`;
