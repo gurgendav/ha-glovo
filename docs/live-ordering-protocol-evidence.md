@@ -1,6 +1,6 @@
 # Reviewed production final-checkout protocol evidence
 
-**Home.22 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v15, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
+**Home.23 verdict:** `productionFinalCheckoutSupported: true` only under the explicit guarded one-POST/manual-reconciliation policy below. Production constructs the strict request factory and adapter only when fresh literal preparation and paid-checkout gate pairs are all true and durable preparation and account-scoped basket authority are healthy. Config-entry migration v16, defaults, and reauthentication keep all gates false until a fresh re-opt-in.
 
 This is a dated first-party static- and bounded live-evidence record, not a claim that Glovo provides a public integration API or provider-enforced idempotency. Building the Home.22 artifact itself made no deployment or provider request. The separately authorized Home.21 preparation-only canary described below made read-only account/catalog/basket/payment-method calls, stopped before quote completion, and exposed no checkout submission route.
 
@@ -189,6 +189,30 @@ Config-entry migration v15 resets all four preparation/checkout gates, including
 opted-in Home.21 v14 entry. Deployment and any later live canary require separate operator
 authorization; the release artifact itself claims no successful live quote.
 
+## Home.23 payment amount projection and safe diagnostics (2026-08-18)
+
+A separately authorized Home.22 live preparation reached an adopted exact basket and
+successfully transported `GET /v4/payment_methods`, but exposed zero eligible selected
+cards. Home.22 had projected the integration's integer minor-unit basket total directly as
+the provider `amount` query. For the 3,200 AMD basket this was `320000`, while the browser
+contract passes `paymentMethodPickerData.orderTotal` in provider/display units (`3200`).
+The user independently confirmed that a saved card exists; no raw payment response or
+provider payment identifier was retained.
+
+Home.23 keeps all authority and monetary fingerprints in exact integer minor units, but
+projects the payment-method query deterministically into the provider's decimal amount
+representation using the ISO currency exponent and no floating point. It also returns a
+bounded administrator-only structural diagnostic beside the masked payment choices: query
+amount/currency, envelope and method/action counts, exact supported type, selected boolean,
+private-ID presence/type only, masked suffix, display-object presence, and a recursive
+sensitive-material flag. It never returns provider instrument IDs, metadata token values,
+PAN, CVV/CVC, cryptogram, or raw provider bodies. This diagnostic is read-only and does not
+relax the exact selected-saved-card requirement.
+
+Config-entry migration v16 resets all four preparation/checkout gates, including a fully
+opted-in Home.22 v15 entry. Deployment and live revalidation require separate authorization;
+the release artifact itself still claims no quote or payment success.
+
 ## Frozen final-checkout evidence (2026-08-13)
 
 | Area | Reviewed first-party static evidence | Adapter policy |
@@ -215,7 +239,7 @@ Pending, authentication, `PROCESS_PAYMENT`, malformed data, transport failure, c
 
 Any future release operation using the reviewed production adapter is limited to this policy:
 
-1. migration v15 closes all four gates—including for fully opted-in Home.21 entries—and requires a fresh default-off administrator re-opt-in;
+1. migration v16 closes all four gates—including for fully opted-in Home.22 entries—and requires a fresh default-off administrator re-opt-in;
 2. account-scoped `UNKNOWN`/`ABSENT_VERIFIED`/`ADOPTED`/`CONFLICT` authority with cross-administrator serialization;
 3. fresh read-only provider re-adoption after every setup/reload using one collection GET and at most one conditional per-store full GET before any basket mutation;
 4. a fresh authoritative exact paid quote, separate confirmation, exact store/items/options/full admin-only ephemeral address/masked saved card/price lines/total/currency/ETA/expiry display, and amount-bound acknowledgement;
@@ -225,7 +249,7 @@ Any future release operation using the reviewed production adapter is limited to
 8. at most one explicit known-ID status GET per administrator action, with no polling;
 9. provider identifiers and the full address excluded from public/recovery projections, logs, and hash-only basket evidence.
 
-This evidence does **not** establish provider idempotency or authorize a payment. Home.22 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
+This evidence does **not** establish provider idempotency or authorize a payment. Home.23 only composes the reviewed strict adapter behind fresh default-off gates and healthy durable authority; it preserves the no-retry policy and blocks every later checkout until an ambiguous outcome is manually or provider-status reconciled.
 
 ## Principal static sources
 

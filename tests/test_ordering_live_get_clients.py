@@ -758,7 +758,7 @@ def test_live_address_uses_redacted_provider_subtitle_then_safe_title(
 def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, ModuleType]) -> None:
     contracts = live["ordering_contracts"]
     assert contracts.build_payment_query(amount_minor=1250, currency="AMD") == {
-        "amount": "1250",
+        "amount": "12.5",
         "currency": "AMD",
         "clientSupports": "",
         "clientReady": "",
@@ -771,7 +771,7 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
         store_address_id=81,
     )
     assert query == {
-        "amount": "1250",
+        "amount": "12.5",
         "currency": "AMD",
         "clientSupports": "",
         "clientReady": "",
@@ -779,6 +779,9 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
         "checkoutSessionId": "session-1",
         "storeAddressId": "81",
     }
+    assert contracts.build_payment_query(amount_minor=1250, currency="JPY")["amount"] == "1250"
+    assert contracts.build_payment_query(amount_minor=1250, currency="KWD")["amount"] == "1.25"
+    assert contracts.build_payment_query(amount_minor=1, currency="KWD")["amount"] == "0.001"
     for kwargs in (
         {"amount_minor": True, "currency": "AMD"},
         {"amount_minor": -1, "currency": "AMD"},
@@ -791,6 +794,24 @@ def test_payment_query_is_bounded_exact_and_saved_card_only(live: dict[str, Modu
 
     parsed = contracts.parse_saved_payments(payment_payload())
     assert len(parsed) == 1 and "instrument-private" not in repr(parsed[0])
+
+    diagnostics = contracts.privacy_safe_payment_diagnostics(payment_payload())
+    assert diagnostics["envelope"] == "one_data"
+    assert diagnostics["methodCount"] == 3
+    assert diagnostics["actionCount"] == 1
+    assert diagnostics["methods"][0] == {
+        "type": "CREDIT_CARD",
+        "selected": True,
+        "instrument": "present",
+        "metadataId": "integer",
+        "maskedCard": "•••• 4242",
+        "display": "object",
+        "sensitiveMaterial": False,
+    }
+    serialized_diagnostics = json.dumps(diagnostics)
+    assert "instrument-private" not in serialized_diagnostics
+    assert '"id": 33' not in serialized_diagnostics
+
 
     public_extensions = payment_payload()
     public_extensions["providerRootDisplay"] = {"future": True}
@@ -914,7 +935,7 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
             "GET",
             path,
             {
-                "amount": "550000",
+                "amount": "5500",
                 "currency": "AMD",
                 "clientSupports": "",
                 "clientReady": "",
@@ -926,6 +947,12 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
     assert set(public.public_dict()) == {"key", "label"}
     assert "4242" in public.masked_label
     assert "instrument-private" not in json.dumps(public.public_dict())
+    diagnostics = client.last_payment_diagnostics
+    assert diagnostics is not None
+    assert diagnostics["queryAmount"] == "5500"
+    assert diagnostics["currency"] == "AMD"
+    assert diagnostics["methods"][0]["maskedCard"] == "•••• 4242"
+    assert "instrument-private" not in json.dumps(diagnostics)
     private = client.resolve_payment(public.selection_key, owner_key="admin-a", generation=3)
     assert private.payment_instrument_id == "instrument-private"
     assert run(
@@ -943,7 +970,7 @@ def test_payment_public_selection_is_masked_private_and_owned(live: dict[str, Mo
         "GET",
         path,
         {
-            "amount": "560000",
+            "amount": "5600",
             "currency": "AMD",
             "clientSupports": "",
             "clientReady": "",

@@ -1553,7 +1553,13 @@ class LiveOrderingFacade:
                     currency=state.currency,
                     store_address_id=state.snapshot.store_address_id,
                 )
-                return {"paymentMethods": [item.public_dict() for item in methods]}
+                result: dict[str, Any] = {
+                    "paymentMethods": [item.public_dict() for item in methods]
+                }
+                diagnostics = getattr(self._account, "last_payment_diagnostics", None)
+                if diagnostics is not None:
+                    result["diagnostics"] = diagnostics
+                return result
             if operation == "live/create_quote":
                 state = self._state(generation)
                 address_handle = _handle(request["addressHandle"])

@@ -60,6 +60,17 @@ authority. This release registers no Home Assistant ordering service, intent, ev
 webhook, MQTT command, or entity action. Packages cannot confirm, pay for, submit, or
 place an order.
 
+### Payment amount compatibility and safe diagnostics in Home.23
+
+Release `1.1.0+home.23` corrects the payment-method lookup boundary without changing
+local money authority: baskets and quotes remain exact integer minor units, while the
+browser `amount` query is projected to Glovo's provider/display units using the ISO
+currency exponent and no floating point. The admin-only payment response also includes
+a bounded privacy-safe structural diagnostic (counts, selected state, private-ID
+presence/type, masked suffix, and sensitive-material detection) but never private payment
+identifiers or raw provider bodies. Migration v16 resets all four consequential gates,
+including fully opted-in Home.22 v15 entries, and requires fresh consent.
+
 ### Saved-card and first-quote compatibility in Home.22
 
 Release `1.1.0+home.22` fixes the complete live read-only payment boundary reached after

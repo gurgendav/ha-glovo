@@ -671,8 +671,21 @@ def build_payment_query(
     amount = _int(amount_minor, maximum=100_000_000_000)
     if not isinstance(currency, str) or currency not in ISO_4217_EXPONENTS:
         _fail()
+    # The browser passes ``paymentMethodPickerData.orderTotal`` directly. That
+    # value uses provider major units (for example 3200 AMD), while every local
+    # authority and fingerprint deliberately stores integer minor units
+    # (320000). Keep local money exact, but project the provider's numeric query
+    # representation without floating point or insignificant trailing zeroes.
+    exponent = ISO_4217_EXPONENTS[currency]
+    if exponent:
+        digits = str(amount).zfill(exponent + 1)
+        provider_amount = (
+            f"{digits[:-exponent]}.{digits[-exponent:]}".rstrip("0").rstrip(".")
+        )
+    else:
+        provider_amount = str(amount)
     query = {
-        "amount": str(amount),
+        "amount": provider_amount,
         "currency": currency,
         "clientSupports": "",
         "clientReady": "",
@@ -685,6 +698,87 @@ def build_payment_query(
     if len(json.dumps(query, separators=(",", ":"))) > 1_000:
         _fail()
     return query
+
+
+def privacy_safe_payment_diagnostics(payload: Any) -> dict[str, Any]:
+    """Return a bounded structural fingerprint without private payment IDs."""
+
+    result: dict[str, Any] = {
+        "envelope": "invalid",
+        "methodCount": 0,
+        "actionCount": 0,
+        "methods": [],
+    }
+    if not isinstance(payload, dict):
+        return result
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return result
+    methods = data.get("paymentMethods")
+    actions = data.get("actions")
+    if not isinstance(methods, list) or not isinstance(actions, list):
+        return result
+    result["envelope"] = "one_data"
+    result["methodCount"] = min(len(methods), 64)
+    result["actionCount"] = min(len(actions), 64)
+    safe: list[dict[str, Any]] = []
+    missing = object()
+    for raw in methods[:64]:
+        if not isinstance(raw, dict):
+            safe.append({"type": "invalid", "selected": "invalid"})
+            continue
+        method_type = raw.get("type")
+        exact_type = method_type if method_type in _PAYMENT_TYPES else "unsupported"
+        selected = raw.get("selected")
+        instrument = raw.get("paymentInstrumentId", missing)
+        if instrument is missing:
+            instrument_state = "missing"
+        elif instrument is None:
+            instrument_state = "null"
+        elif (
+            isinstance(instrument, str)
+            and instrument
+            and instrument == instrument.strip()
+        ):
+            instrument_state = "present"
+        else:
+            instrument_state = "invalid"
+        metadata = raw.get("metadata")
+        metadata_id = metadata.get("id", missing) if isinstance(metadata, dict) else missing
+        if metadata_id is missing:
+            metadata_id_state = "missing"
+        elif metadata_id is None:
+            metadata_id_state = "null"
+        elif isinstance(metadata_id, bool):
+            metadata_id_state = "invalid"
+        elif isinstance(metadata_id, int):
+            metadata_id_state = "integer"
+        elif isinstance(metadata_id, str):
+            metadata_id_state = "string"
+        else:
+            metadata_id_state = "invalid"
+        last_four = metadata.get("lastFourDigits") if isinstance(metadata, dict) else None
+        masked = (
+            f"•••• {last_four}"
+            if isinstance(last_four, str)
+            and last_four.isdigit()
+            and 1 <= len(last_four) <= 4
+            else None
+        )
+        display = raw.get("displayAttributes")
+        safe.append(
+            {
+                "type": exact_type,
+                "selected": selected if isinstance(selected, bool) else "invalid",
+                "instrument": instrument_state,
+                "metadataId": metadata_id_state,
+                "maskedCard": masked,
+                "display": "object" if isinstance(display, dict) else "invalid",
+                "sensitiveMaterial": _contains_sensitive_payment_key(raw),
+            }
+        )
+    result["methods"] = safe
+    return result
 
 
 def _contains_sensitive_payment_key(value: Any) -> bool:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import secrets
@@ -20,6 +21,7 @@ from .ordering_contracts import (
     parse_customer,
     parse_saved_addresses,
     parse_saved_payments,
+    privacy_safe_payment_diagnostics,
 )
 from .api_session import ApiSessionError
 from .ordering_models import MaskedPaymentSummary, SavedAddressSummary
@@ -229,6 +231,7 @@ class AccountClient:
         )
         self._addresses: dict[str, _Selection] = {}
         self._payments: dict[str, _Selection] = {}
+        self._last_payment_diagnostics: dict[str, Any] | None = None
 
     @staticmethod
     def _identity(owner_key: str, generation: int) -> tuple[str, int]:
@@ -371,6 +374,10 @@ class AccountClient:
             store_address_id=store_address_id,
         )
         payload = await self._session.async_get("payment", _PAYMENT_PATH, query)
+        diagnostics = privacy_safe_payment_diagnostics(payload)
+        diagnostics["queryAmount"] = query["amount"]
+        diagnostics["currency"] = currency
+        self._last_payment_diagnostics = diagnostics
         payments = parse_saved_payments(payload)
         selected = tuple(item for item in payments if item.selected is True)
         if len(selected) > 1:
@@ -389,6 +396,14 @@ class AccountClient:
             )
         self._purge()
         return tuple(result)
+
+    @property
+    def last_payment_diagnostics(self) -> dict[str, Any] | None:
+        """Return the latest admin-safe structural fingerprint, if available."""
+
+        if self._last_payment_diagnostics is None:
+            return None
+        return json.loads(json.dumps(self._last_payment_diagnostics))
 
     def _resolve(
         self,
@@ -503,3 +518,4 @@ class AccountClient:
         """Invalidate all ephemeral selections on reauth/unload/rebuild."""
         self._addresses.clear()
         self._payments.clear()
+        self._last_payment_diagnostics = None
