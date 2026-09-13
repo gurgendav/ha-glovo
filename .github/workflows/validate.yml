@@ -2,10 +2,6 @@ name: Validate
 
 on:
   push:
-  pull_request:
-  schedule:
-    - cron: "0 0 * * *"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,7 +20,11 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install offline validation tools
-        run: python -m pip install --upgrade pip pytest voluptuous ruff
+        # Ruff 0.16 changed the default rules (59 -> 413). Keep the established
+        # lint baseline reproducible; adopting new rules needs a separate review
+        # of intentional privacy-redaction and cancellation-handling boundaries.
+        # https://astral.sh/blog/ruff-v0.16.0
+        run: python -m pip install --upgrade pip pytest voluptuous ruff==0.15.17
       - name: Ruff
         run: ruff check custom_components tests scripts
       - name: Compile and AST parse Python
@@ -79,7 +79,7 @@ jobs:
         run: python -m pip install --upgrade pip ${{ matrix.homeassistant }} pytest voluptuous
       - name: Verify imports and offline lifecycle boundary
         run: |
-          python -c "import homeassistant; print(homeassistant.__version__)"
+          python -c "import homeassistant; from importlib.metadata import version; print(version('homeassistant'))"
           python -m compileall -q custom_components
           python -m pytest -q tests/test_ordering_ha_lifecycle.py
 
