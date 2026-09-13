@@ -2,10 +2,6 @@ name: Validate
 
 on:
   push:
-  pull_request:
-  schedule:
-    - cron: "0 0 * * *"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -79,7 +75,7 @@ jobs:
         run: python -m pip install --upgrade pip ${{ matrix.homeassistant }} pytest voluptuous
       - name: Verify imports and offline lifecycle boundary
         run: |
-          python -c "import homeassistant; print(homeassistant.__version__)"
+          python -c "import homeassistant; from importlib.metadata import version; print(version('homeassistant'))"
           python -m compileall -q custom_components
           python -m pytest -q tests/test_ordering_ha_lifecycle.py
 
